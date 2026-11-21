@@ -13,11 +13,9 @@
 
 ## 🖼️ Preview & Screenshots
 
-> *(Tip: Replace these placeholders with actual screenshots/GIFs saved in `docs/assets/` before announcing on `r/TorBoxApp` and Discord)*
-
 | Visual Poster Catalog | Multi-Tier Subtitle Finder | 1-Click VLC M3U Streaming |
 | :---: | :---: | :---: |
-| ![Catalog View](docs/assets/TMH-General-Movies.png) | ![Subtitle Engine](docs/assets/TMH-Subtitle.png) | ![Media Details Card](docs/assets/TMH - Details - Media - Card.png) |
+| ![Catalog View](docs/assets/TMH-General-Movies.png) | ![Subtitle Engine](docs/assets/TMH-Subtitle.png) | ![Media Details Card](docs/assets/TMH-Details-Media-Card.png) |
 
 ---
 
