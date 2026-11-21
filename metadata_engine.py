@@ -1,7 +1,10 @@
 import difflib
 import hashlib
+import json
 import os
 import re
+import shutil
+import subprocess
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote_plus
 
@@ -21,112 +24,59 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9,ja;q=0.8",
 }
 
-# HTTP Session Pooled untuk menghindari SSL handshake berulang
 HTTP_SESSION = requests.Session()
 HTTP_SESSION.headers.update(HEADERS)
 _adapter = HTTPAdapter(pool_connections=16, pool_maxsize=16, max_retries=1)
 HTTP_SESSION.mount("http://", _adapter)
 HTTP_SESSION.mount("https://", _adapter)
 
+# Normalized uppercase official JAV studio/maker prefixes
 JAV_MAKER_PREFIXES = {
-    "SSIS", "SSNI", "SONE", "IPX", "IPZZ", "IPZ", "MIDV", "MIDE", "MIRD", "MIAA", "MIMK",
-    "ABP", "ABW", "ABF", "ABK", "ABS", "PRED", "PPPD", "PPPE", "JUL", "JUQ", "JUY", "JUX", "URE",
-    "STARS", "STAR", "SDDE", "SDJS", "SDMM", "SDNM", "SDAB", "FSDSS", "DLDSS", "MUDR",
-    "CAWD", "KAWD", "KWBD", "EBOD", "EYAN", "CJOD", "MEYD", "VENX", "VENU", "VEMA",
-    "HND", "HNDS", "MVSD", "BLK", "BBI", "BBAN", "WAAA", "WANZ", "DASD", "DAZD", "DANDY",
-    "GVH", "GVG", "CLUB", "ROYD", "RBD", "SHKD", "ATID", "ADN", "JUSD", "NGOD",
-    "NSFS", "NKKD", "MOND", "ROE", "ROA", "OFJE", "PBD", "BGN", "CHN", "DIC", "EDD", "FCH",
-    "GNI", "HAR", "IDBD", "JFD", "KBI", "LXV", "MGT", "NHDTB", "RCTD", "SW", "T28",
-    "VRTM", "XVSR", "YMDD", "ZUKO", "300MIUM", "300MAAN", "300NTK", "259LUXU",
-    "200GANA", "SIRO", "261ARA", "390JAC", "422ION", "435MFC", "459TEN", "483SGK",
-    "534IND", "546EROFV", "FC2", "PPV", "HEYZO", "CARIB", "CARIBPR", "1PON", "1PONDO",
-    "PACO", "PACOPACOMAMA", "10MUSUME", "MURAMURA", "GACHIP", "CWPBD", "LAFBD", "SMD", "SMBD",
-    "MKD", "MKBD", "DRG", "DSAM", "MESU", "NYB", "RED", "SKY", "SKYHD", "RHJ",
-    "S2MBD", "S2M", "CW3D2BD", "MCB3DBD", "H4610", "H0930", "C0930", "KIN8", "KIN8TENGOKU",
-    "REAL", "SCOOP", "KMP", "BAZX", "MDBK", "MDTM", "HUNTA", "HUNTC", "HUNTB", "APNS",
-    "APAA", "APAK", "DOCP", "JKSR", "SABA", "UMSO", "MCSR", "IENE", "IESP", "IDOL",
-    "NTRD", "NTR", "SDMT", "MTALL", "SILK", "TKI", "EKDV", "HODV", "DNJR", "CESD",
-    "CEAD", "CEMD", "OAE", "DVAJ", "ALDN", "AQSH", "AUKG", "AVOP", "AVSA", "BANK",
-    "BF", "BIJN", "BKD", "BOBB", "CADV", "CCV", "CHRV", "CKW", "CMC", "CMD",
-    "COGM", "CORE", "CPDE", "CRMN", "CSCT", "DASS", "DBER", "DDK", "DDT", "DFDM",
-    "DGCEMD", "DGL", "DIGI", "DJSK", "DKD", "DMAT", "DMDG", "DOA", "DOCD", "DOKS",
-    "DPMX", "DTT", "DVDES", "DVDMS", "DXMB", "EMBZ", "EMOT", "ENDX",
-    "ENFD", "ERTD", "ESK", "EUUD", "EXD", "FAA", "FAAP", "FCDC", "FNEO", "FSET",
-    "FSDS", "FUGA", "FWAY", "GANA", "GAREA", "GAS", "GDHH", "GDQN", "GENM", "GETS",
-    "GIGL", "GIRO", "GKI", "GLOD", "GMED", "GNAB", "GOJU", "GOLD", "GONE",
-    "GPROP", "GRCH", "GTJ", "GTRL", "GUN", "GYAN", "HAWA",
-    "HBAD", "HDKA", "HERR", "HERX", "HERY", "HFD", "HGOT", "HHKL", "HIKR", "HITMA",
-    "HJMO", "HKD", "HNDB", "HOI", "HOKS", "HOLD", "HONB",
-    "HONE", "HOPE", "HOT", "HOW", "HPD", "HRD", "HRV", "HSD",
-    "HSM", "HTHD", "HTMS", "HUNT", "HYK", "HZGD", "IBW", "IGU", "IHT", "IKHR",
-    "IMA", "IMD", "IMG", "IMK", "IMT", "IMV", "ING", "INU", "INV",
-    "IPSD", "IPTD", "IQPA", "IRD", "IRO", "ISRD", "ISTU", "ITR",
-    "ITSR", "IWAN", "JAC", "JAD", "JAE", "JAG", "JAH", "JAI", "JAJ", "JAK",
-    "JAL", "JAM", "JAN", "JAP", "JAR", "JAS", "JAT", "JAU", "JAV", "JAW",
-    "JAX", "JAY", "JAZ", "JBD", "JCD", "JCS", "JDD", "JDE", "JDG", "JDH",
-    "JDI", "JDJ", "JDK", "JDL", "JDM", "JDN", "JDO", "JDP", "JDQ", "JDR",
-    "JDS", "JDT", "JDU", "JDV", "JDW", "JDX", "JDY", "JDZ", "JED", "JEE",
-    "JEF", "JEG", "JEH", "JEI", "JEJ", "JEK", "JEL", "JEM", "JEN", "JEO",
-    "JEP", "JEQ", "JER", "JES", "JET", "JEU", "JEV", "JEW", "JEX", "JEY",
-    "JEZ", "JFE", "JFF", "JFG", "JFH", "JFI", "JFJ", "JFK", "JFL", "JFM",
-    "JFN", "JFO", "JFP", "JFQ", "JFR", "JFS", "JFT", "JFU", "JFV", "JFW",
-    "JFX", "JFY", "JFZ", "JGD", "JGE", "JGF", "JGG", "JGH", "JGI", "JGJ",
-    "JGK", "JGL", "JGM", "JGN", "JGO", "JGP", "JGQ", "JGR", "JGS", "JGT",
-    "JGU", "JGV", "JGW", "JGX", "JGY", "JGZ", "JHD", "JHE", "JHF", "JHG",
-    "JHH", "JHI", "JHJ", "JHK", "JHL", "JHM", "JHN", "JHO", "JHP", "JHQ",
-    "JHR", "JHS", "JHT", "JHU", "JHV", "JHW", "JHX", "JHY", "JHZ", "JID",
-    "JIE", "JIF", "JIG", "JIH", "JII", "JIJ", "JIK", "JIL", "JIM", "JIN",
-    "JIO", "JIP", "JIQ", "JIR", "JIS", "JIT", "JIU", "JIV", "JIW", "JIX",
-    "JIY", "JIZ", "JJD", "JJE", "JJF", "JJG", "JJH", "JJI", "JJJ", "JJK",
-    "JJL", "JJM", "JJN", "JJO", "JJP", "JJQ", "JJR", "JJS", "JJT", "JJU",
-    "JJV", "JJW", "JJX", "JJY", "JJZ", "JKD", "JKE", "JKF", "JKG", "JKH",
-    "JKI", "JKJ", "JKK", "JKL", "JKM", "JKN", "JKO", "JKP", "JKQ", "JKR",
-    "JKS", "JKT", "JKU", "JKV", "JKW", "JKX", "JKY", "JKZ", "JLD", "JLE",
-    "JLF", "JLG", "JLH", "JLI", "JLJ", "JLK", "JLL", "JLM", "JLN", "JLO",
-    "JLP", "JLQ", "JLR", "JLS", "JLT", "JLU", "JLV", "JLW", "JLX", "JLY",
-    "JLZ", "JMD", "JME", "JMF", "JMG", "JMH", "JMI", "JMJ", "JMK", "JML",
-    "JMM", "JMN", "JMO", "JMP", "JMQ", "JMR", "JMS", "JMT", "JMU", "JMV",
-    "JMW", "JMX", "JMY", "JMZ", "JND", "JNE", "JNF", "JNG", "JNH", "JNI",
-    "JNJ", "JNK", "JNL", "JNM", "JNN", "JNO", "JNP", "JNQ", "JNR", "JNS",
-    "JNT", "JNU", "JNV", "JNW", "JNX", "JNY", "JNZ", "JOD", "JOE", "JOF",
-    "JOG", "JOH", "JOI", "JOJ", "JOK", "JOL", "JOM", "JON", "JOO", "JOP",
-    "JOQ", "JOR", "JOS", "JOT", "JOU", "JOV", "JOW", "JOX", "JOY", "JOZ",
-    "JPD", "JPE", "JPF", "JPG", "JPH", "JPI", "JPJ", "JPK", "JPL", "JPM",
-    "JPN", "JPO", "JPP", "JPQ", "JPR", "JPS", "JPT", "JPU", "JPV", "JPW",
-    "JPX", "JPY", "JPZ", "JQD", "JQE", "JQF", "JQG", "JQH", "JQI", "JQJ",
-    "JQK", "JQL", "JQM", "JQN", "JQO", "JQP", "JQQ", "JQR", "JQS", "JQT",
-    "JQU", "JQV", "JQW", "JQX", "JQY", "JQZ", "JRD", "JRE", "JRF", "JRG",
-    "JRH", "JRI", "JRJ", "JRK", "JRL", "JRM", "JRN", "JRO", "JRP", "JRQ",
-    "JRR", "JRS", "JRT", "JRU", "JRV", "JRW", "JRX", "JRY", "JRZ", "JSD",
-    "JSE", "JSF", "JSG", "JSH", "JSI", "JSJ", "JSK", "JSL", "JSM", "JSN",
-    "JSO", "JSP", "JSQ", "JSR", "JSS", "JST", "JSU", "JSV", "JSW", "JSX",
-    "JSY", "JSZ", "JTD", "JTE", "JTF", "JTG", "JTH", "JTI", "JTJ", "JTK",
-    "JTL", "JTM", "JTN", "JTO", "JTP", "JTQ", "JTR", "JTS", "JTT", "JTU",
-    "JTV", "JTW", "JTX", "JTY", "JTZ", "JUD", "JUE", "JUF", "JUG", "JUH",
-    "JUI", "JUJ", "JUK", "JUM", "JUN", "JUO", "JUP", "JUS", "JUT", "JUU",
-    "JUV", "JUW", "JUZ", "JVD", "JVE", "JVF", "JVG", "JVI", "JVJ", "JVK",
-    "JVL", "JVM", "JVN", "JVO", "JVP", "JVQ", "JVR", "JVS", "JVT", "JVU",
-    "JVV", "JVW", "JVX", "JVY", "JVZ", "JWD", "JWE", "JWF", "JWG", "JWH",
-    "JWI", "JWJ", "JWK", "JWL", "JWM", "JWN", "JWO", "JWP", "JWQ", "JWR",
-    "JWS", "JWT", "JWU", "JWV", "JWW", "JWX", "JWY", "JWZ", "JXD", "JXE",
-    "JXF", "JXG", "JXH", "JXI", "JXJ", "JXK", "JXL", "JXM", "JXN", "JXO",
-    "JXP", "JXQ", "JXR", "JXS", "JXT", "JXU", "JXV", "JXW", "JXX", "JXY",
-    "JXZ", "JYD", "JYE", "JYF", "JYG", "JYH", "JYI", "JYJ", "JYK", "JYL",
-    "JYM", "JYN", "JYO", "JYP", "JYQ", "JYR", "JYS", "JYT", "JYU", "JYV",
-    "JYW", "JYX", "JYY", "JYZ", "JZD", "JZE", "JZF", "JZG", "JZH", "JZI",
-    "JZJ", "JZK", "JZL", "JZM", "JZN", "JZO", "JZP", "JZQ", "JZR", "JZS",
-    "JZT", "JZU", "JZV", "JZW", "JZX", "JZY", "JZZ", "uncencored", "mosaic removed"
+    p.upper()
+    for p in {
+        "SSIS", "SSNI", "SONE", "IPX", "IPZZ", "IPZ", "MIDV", "MIDE", "MIRD", "MIAA", "MIMK",
+        "ABP", "ABW", "ABF", "ABK", "ABS", "PRED", "PPPD", "PPPE", "JUL", "JUQ", "JUY", "JUX", "URE",
+        "STARS", "STAR", "SDDE", "SDJS", "SDMM", "SDNM", "SDAB", "FSDSS", "DLDSS", "MUDR",
+        "CAWD", "KAWD", "KWBD", "EBOD", "EYAN", "CJOD", "MEYD", "VENX", "VENU", "VEMA",
+        "HND", "HNDS", "MVSD", "BLK", "BBI", "BBAN", "WAAA", "WANZ", "DASD", "DAZD", "DANDY",
+        "GVH", "GVG", "CLUB", "ROYD", "RBD", "SHKD", "ATID", "ADN", "JUSD", "NGOD",
+        "NSFS", "NKKD", "MOND", "ROE", "ROA", "OFJE", "PBD", "BGN", "CHN", "DIC", "EDD", "FCH",
+        "GNI", "HAR", "IDBD", "JFD", "KBI", "LXV", "MGT", "NHDTB", "RCTD", "SW", "T28",
+        "VRTM", "XVSR", "YMDD", "ZUKO", "300MIUM", "300MAAN", "300NTK", "259LUXU",
+        "200GANA", "SIRO", "261ARA", "390JAC", "422ION", "435MFC", "459TEN", "483SGK",
+        "534IND", "546EROFV", "FC2", "PPV", "HEYZO", "CARIB", "CARIBPR", "1PON", "1PONDO",
+        "PACO", "PACOPACOMAMA", "10MUSUME", "MURAMURA", "GACHIP", "CWPBD", "LAFBD", "SMD", "SMBD",
+        "MKD", "MKBD", "DRG", "DSAM", "MESU", "NYB", "RED", "SKY", "SKYHD", "RHJ",
+        "S2MBD", "S2M", "CW3D2BD", "MCB3DBD", "H4610", "H0930", "C0930", "KIN8", "KIN8TENGOKU",
+        "REAL", "SCOOP", "KMP", "BAZX", "MDBK", "MDTM", "HUNTA", "HUNTC", "HUNTB", "APNS",
+        "APAA", "APAK", "DOCP", "JKSR", "SABA", "UMSO", "MCSR", "IENE", "IESP", "IDOL",
+        "NTRD", "NTR", "SDMT", "MTALL", "SILK", "TKI", "EKDV", "HODV", "DNJR", "CESD",
+        "CEAD", "CEMD", "OAE", "DVAJ", "ALDN", "AQSH", "AUKG", "AVOP", "AVSA", "BANK",
+        "BF", "BIJN", "BKD", "BOBB", "CADV", "CCV", "CHRV", "CKW", "CMC", "CMD",
+        "COGM", "CORE", "CPDE", "CRMN", "CSCT", "DASS", "DBER", "DDK", "DDT", "DFDM",
+        "DGCEMD", "DGL", "DIGI", "DJSK", "DKD", "DMAT", "DMDG", "DOA", "DOCD", "DOKS",
+        "DPMX", "DTT", "DVDES", "DVDMS", "DXMB", "EMBZ", "EMOT", "ENDX",
+        "ENFD", "ERTD", "ESK", "EUUD", "EXD", "FAA", "FAAP", "FCDC", "FNEO", "FSET",
+        "FSDS", "FUGA", "FWAY", "GANA", "GAREA", "GAS", "GDHH", "GDQN", "GENM", "GETS",
+        "GIGL", "GIRO", "GKI", "GLOD", "GMED", "GNAB", "GOJU", "GOLD", "GONE",
+        "GPROP", "GRCH", "GTJ", "GTRL", "GUN", "GYAN", "HAWA",
+        "HBAD", "HDKA", "HERR", "HERX", "HERY", "HFD", "HGOT", "HHKL", "HIKR", "HITMA",
+        "HJMO", "HKD", "HNDB", "HOI", "HOKS", "HOLD", "HONB",
+        "HONE", "HOPE", "HOT", "HOW", "HPD", "HRD", "HRV", "HSD",
+        "HSM", "HTHD", "HTMS", "HUNT", "HYK", "HZGD", "IBW", "IGU", "IHT", "IKHR",
+    }
 }
 
 JAV_NOISE_PREFIXES = {
     "H264", "H265", "X264", "X265", "AVC", "HEVC", "AAC", "AC3", "DTS", "FLAC", "MP3", "MP4",
     "MKV", "AVI", "WMV", "FHD", "UHD", "HD", "SD", "4K", "8K", "1080P", "720P", "2160P", "480P",
     "60FPS", "30FPS", "10BIT", "8BIT", "HDR", "DV", "WEB", "WEBRIP", "WEBDL", "BLURAY", "BDRIP",
-    "DVDRIP", "HDRIP", "CAM", "TS", "UNCENSORED", "LEAKED", "LEAK", "CHINESE", "SUB", "ENG",
-    "ITA", "JPN", "KOR", "SPA", "FRE", "GER", "RUS", "IND", "AMZN", "NF", "DSNP", "HMAX", "ATVP",
-    "RAW", "PART", "DISC", "CD", "VOL", "EP", "CH", "SEASON", "NO", "VER", "NEW", "FULL",
-    "VIP", "PRO", "MAX", "PLUS", "NET", "COM", "ORG", "JAV", "PORN", "XXX", "SEX", "VR",
-    "DDP", "ATMOS", "TRUEHD", "REMUX", "PROPER", "REPACK", "EXTENDED", "THEATRICAL", "UNRATED",
+    "DVDRIP", "HDRIP", "CAM", "TS", "UNCENSORED", "UNCENCORED", "LEAKED", "LEAK", "CHINESE",
+    "SUB", "ENG", "ITA", "JPN", "KOR", "SPA", "FRE", "GER", "RUS", "IND", "AMZN", "NF", "DSNP",
+    "HMAX", "ATVP", "RAW", "PART", "DISC", "CD", "VOL", "EP", "CH", "SEASON", "NO", "VER",
+    "NEW", "FULL", "VIP", "PRO", "MAX", "PLUS", "NET", "COM", "ORG", "JAV", "PORN", "XXX",
+    "SEX", "VR", "DDP", "ATMOS", "TRUEHD", "REMUX", "PROPER", "REPACK", "EXTENDED",
+    "THEATRICAL", "UNRATED", "FPS", "BIT", "PCM", "EAC3", "OPUS", "VORBIS", "MPEG", "XVID",
     "S01", "S02", "S03", "S04", "S05", "S06", "S07", "S08", "S09", "S10",
     "E01", "E02", "E03", "E04", "E05", "E06", "E07", "E08", "E09", "E10",
     "EP01", "EP02", "EP03", "EP04", "EP05", "EP06", "EP07", "EP08", "EP09", "EP10",
@@ -162,10 +112,9 @@ ADULT_EXPLICIT_WORDS = {
     "bdsm", "bondage", "femdom", "cuckold", "hotwife", "swinger", "shemale",
     "transsexual", "futanari", "masturbation", "dildo", "vibrator", "striptease",
     "hardcore", "softcore", "slut", "whore", "pussy", "cock",
-    "boobs", "tits", "assfuck", "deepthroat", "defloration", "czech", "cuckold", 
+    "boobs", "tits", "assfuck", "deepthroat", "defloration", "czech",
 }
 
-# Hanya judul/istilah Donghua spesifik (bebas kata generik seperti "wonderland", "bilibili", dll.)
 DONGHUA_SPECIFIC_KEYWORDS = [
     "soul land", "douluo dalu", "battle through the heavens", "doupo cangqiong",
     "martial universe", "wu dong qian kun", "the king's avatar", "quanzhi gaoshou",
@@ -188,7 +137,6 @@ DONGHUA_SPECIFIC_KEYWORDS = [
     "donghua", "chinese anime", "guoman",
 ]
 
-# Grup fansub resmi (dicocokkan secara exact word/bracket, bukan substring bebas)
 ANIME_FANSUB_GROUPS = {
     "subsplease", "erai-raws", "horriblesubs", "judas", "ember", "asw", "dkb", "golumpa",
     "yameii", "varyg", "hatsu", "commie", "fff", "utw", "coalgirls", "doki",
@@ -253,7 +201,7 @@ def _extract_season_episode(name: str) -> Tuple[Optional[int], Optional[int]]:
     return s_num, e_num
 
 
-def extract_jav_code(text: str) -> Optional[str]:
+def extract_jav_code(text: str, allow_generic_fallback: bool = True) -> Optional[str]:
     base = os.path.splitext(text)[0]
     cleaned = re.sub(r"\[[^\]]*\]", " ", base)
     cleaned = re.sub(r"\([^\)]*\)", " ", cleaned)
@@ -276,12 +224,18 @@ def extract_jav_code(text: str) -> Optional[str]:
         digits = m.group(2)
         if prefix in JAV_NOISE_PREFIXES:
             continue
+        # Ignore technical codec/resolution patterns like H264, AAC20, DDP51, etc.
+        if re.match(r"^(?:H26[45]|X26[45]|AAC|AC|DDP|DTS|AVC|HEVC|VP|AV)$", prefix):
+            continue
+
         full_span = upper[m.start() : m.end()]
         has_hyphen = "-" in full_span or "_" in full_span
+
         if prefix in JAV_MAKER_PREFIXES:
             return f"{prefix}-{digits}"
-        if has_hyphen and len(prefix) >= 3 and not prefix.isdigit():
-            if not re.match(r"^(?:S\d+|E\d+|EP\d+|CD\d+|PT\d+|VOL\d+)$", prefix):
+
+        if allow_generic_fallback and has_hyphen and len(prefix) >= 3 and not prefix.isdigit():
+            if not re.match(r"^(?:S\d+|E\d+|EP\d+|CD\d+|PT\d+|VOL\d+|PART\d+|DISC\d+)$", prefix):
                 return f"{prefix}-{digits}"
 
     return None
@@ -295,13 +249,17 @@ def _has_kana(text: str) -> bool:
     return bool(re.search(r"[\u3040-\u30ff]", text or ""))
 
 
-def _detect_english_adult_details(combined_text: str, filename: str) -> Optional[Dict[str, Any]]:
+def _has_explicit_english_adult_studio(combined_text: str) -> Optional[str]:
     low = re.sub(r"[._-]+", " ", combined_text.lower())
-    matched_studio = None
     for st in ENGLISH_ADULT_STUDIOS:
         if re.search(rf"(?:^|\s){re.escape(st)}(?:$|\s)", low):
-            matched_studio = st.title()
-            break
+            return st.title()
+    return None
+
+
+def _detect_english_adult_details(combined_text: str, filename: str) -> Optional[Dict[str, Any]]:
+    low = re.sub(r"[._-]+", " ", combined_text.lower())
+    matched_studio = _has_explicit_english_adult_studio(combined_text)
 
     tokens = set(re.findall(r"[a-z0-9]+", low))
     has_explicit_word = bool(tokens & ADULT_EXPLICIT_WORDS)
@@ -310,7 +268,6 @@ def _detect_english_adult_details(combined_text: str, filename: str) -> Optional
     if not matched_studio and not has_explicit_word:
         return None
 
-    # Ekstrak tanggal rilis format YY.MM.DD -> 20YY-MM-DD
     rel_date = None
     year_val = _extract_year(combined_text)
     m_dt = re.search(r"(?:^|[\s._-])(\d{2})\.(\d{2})\.(\d{2})(?:$|[\s._-])", combined_text)
@@ -321,7 +278,6 @@ def _detect_english_adult_details(combined_text: str, filename: str) -> Optional
             year_val = full_y
             rel_date = f"{full_y}-{mm:02d}-{dd:02d}"
 
-    # Bersihkan judul scene dari nama studio, tanggal, dan tag kualitas
     raw_stem = os.path.splitext(filename)[0]
     if raw_stem.lower() in GENERIC_FILE_STEMS and combined_text != filename:
         raw_stem = combined_text
@@ -362,7 +318,6 @@ def _is_strong_anime_signal(combined_text: str) -> bool:
     low = combined_text.lower()
     if re.search(r"(?:^|[\s._\-\[\(])anime(?:$|[\s._\-\]\)])", low):
         return True
-    # Cocokkan nama grup fansub yang berada di dalam kurung siku [SubsPlease] atau tanda hubung -SubsPlease
     brackets = re.findall(r"\[([^\]]+)\]", low)
     for b in brackets:
         b_clean = b.strip()
@@ -411,6 +366,30 @@ def download_poster_image(poster_url: Optional[str], unique_key: str, force_down
     except Exception:
         pass
     return dest_path if (os.path.isfile(dest_path) and os.path.getsize(dest_path) > 1500) else None
+
+
+def probe_video_duration_minutes(target: Optional[str]) -> int:
+    """Probes actual video duration in minutes using ffprobe (supports local paths and HTTP streams)."""
+    if not target or not shutil.which("ffprobe"):
+        return 0
+    cmd = [
+        "ffprobe",
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_format",
+        target,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if proc.returncode != 0 or not proc.stdout:
+            return 0
+        info = json.loads(proc.stdout)
+        dur_sec = float((info.get("format") or {}).get("duration") or 0)
+        if dur_sec > 0:
+            return max(1, int(round(dur_sec / 60.0)))
+    except Exception:
+        pass
+    return 0
 
 
 def _fetch_jav_metadata(code_id: str) -> Dict[str, Any]:
@@ -558,6 +537,7 @@ def _fetch_tpdb_metadata(
                 continue
     return None
 
+
 def _fetch_tmdb_metadata(
     title_query: str,
     tmdb_api_key: str,
@@ -586,7 +566,6 @@ def _fetch_tmdb_metadata(
             if not results:
                 continue
 
-            # Pilih kandidat terbaik dengan ambang kemiripan ketat (>= 0.65)
             best_top = None
             best_score = -1.0
             for cand in results[:5]:
@@ -602,7 +581,6 @@ def _fetch_tmdb_metadata(
                     best_top = cand
 
             if not best_top or best_score < 0.65:
-                # Coba cari menggunakan 2-3 kata awal jika judul memiliki subjudul (misal "Apocalypse Z New World" -> "Apocalypse Z")
                 short_words = title_query.split()
                 if len(short_words) >= 3:
                     short_q = " ".join(short_words[:2])
@@ -636,7 +614,6 @@ def _fetch_tmdb_metadata(
             origin_countries = [c.upper() for c in (det.get("origin_country") or best_top.get("origin_country") or [])]
             orig_lang = (det.get("original_language") or best_top.get("original_language") or "").lower()
 
-            # Klasifikasi akurat berdasarkan negara asal & genre resmi TMDb
             is_animation = 16 in genre_ids or any("animation" in g.lower() for g in genres)
             if is_animation and ("CN" in origin_countries or "TW" in origin_countries or orig_lang == "zh"):
                 cat = "donghua"
@@ -689,22 +666,42 @@ def _fetch_tmdb_metadata(
 def _fetch_anilist_metadata(title_query: str, force_donghua: bool = False) -> Optional[Dict[str, Any]]:
     if not title_query:
         return None
-    query = """
-    query ($search: String) {
-      Media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
-        id
-        countryOfOrigin
-        title { romaji english native }
-        seasonYear
-        duration
-        description(asHtml: false)
-        averageScore
-        genres
-        studios(isMain: true) { nodes { name } }
-        coverImage { extraLarge large }
-      }
-    }
-    """
+
+    if force_donghua:
+        query = """
+        query ($search: String) {
+          Media(search: $search, type: ANIME, countryOfOrigin: CN, sort: SEARCH_MATCH) {
+            id
+            countryOfOrigin
+            title { romaji english native }
+            seasonYear
+            duration
+            description(asHtml: false)
+            averageScore
+            genres
+            studios(isMain: true) { nodes { name } }
+            coverImage { extraLarge large }
+          }
+        }
+        """
+    else:
+        query = """
+        query ($search: String) {
+          Media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
+            id
+            countryOfOrigin
+            title { romaji english native }
+            seasonYear
+            duration
+            description(asHtml: false)
+            averageScore
+            genres
+            studios(isMain: true) { nodes { name } }
+            coverImage { extraLarge large }
+          }
+        }
+        """
+
     try:
         resp = HTTP_SESSION.post(
             "https://graphql.anilist.co",
@@ -718,12 +715,11 @@ def _fetch_anilist_metadata(title_query: str, force_donghua: bool = False) -> Op
                 t_obj = media.get("title") or {}
                 candidates = [t_obj.get("english"), t_obj.get("romaji"), t_obj.get("native")]
                 sim = max((_title_similarity(title_query, c) for c in candidates if c), default=0.0)
-                # Wajib lolos similarity >= 0.65 tanpa pengecualian agar tidak salah tangkap judul acak
                 if sim < 0.65:
                     return None
 
                 origin = (media.get("countryOfOrigin") or "").upper()
-                if origin == "CN" or origin == "TW" or force_donghua:
+                if origin in ("CN", "TW") or force_donghua:
                     cat = "donghua"
                 elif origin == "JP":
                     cat = "anime"
@@ -805,7 +801,6 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
     tmdb_key = settings.get("tmdb_api_key", "")
     tpdb_key = settings.get("tpdb_api_key", "")
 
-    # Pilih sumber judul terbaik (jika nama file generik seperti "scene01.mp4", pakai parent_name)
     stem_low = os.path.splitext(fname)[0].lower().strip()
     primary_name_for_title = parent_name if (stem_low in GENERIC_FILE_STEMS and parent_name) else fname
 
@@ -813,17 +808,34 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
     year_hint = _extract_year(combined_hint)
     clean_title = clean_search_title(primary_name_for_title)
 
-    # 1. JAV (berdasarkan kode produksi resmi JAV)
-    jav_code = extract_jav_code(combined_hint)
+    # Finalize metadata by probing actual video duration if runtime is missing and downloading poster cache
+    def _finalize(meta_dict: Dict[str, Any]) -> Dict[str, Any]:
+        if not int(meta_dict.get("runtime") or 0):
+            existing_rt = int(item.get("runtime") or 0)
+            if existing_rt > 0:
+                meta_dict["runtime"] = existing_rt
+            else:
+                probe_target = fpath if (fpath and os.path.isfile(fpath)) else (item.get("stream_url") or "")
+                if probe_target:
+                    probed_min = probe_video_duration_minutes(probe_target)
+                    if probed_min > 0:
+                        meta_dict["runtime"] = probed_min
+        meta_dict["local_poster_path"] = download_poster_image(meta_dict.get("poster_url"), unique_key)
+        return meta_dict
+
+    # Check if an explicit Western adult studio name is present first
+    explicit_western_studio = _has_explicit_english_adult_studio(combined_hint)
+
+    # 1. JAV (Strict maker prefix match first; generic hyphen fallback only if not an explicit Western studio)
+    jav_code = extract_jav_code(combined_hint, allow_generic_fallback=(explicit_western_studio is None))
     if jav_code:
         meta = _fetch_jav_metadata(jav_code)
-        meta["local_poster_path"] = download_poster_image(meta.get("poster_url"), unique_key)
-        return meta
+        return _finalize(meta)
 
-    # 2. English Adult (studio/tag eksplisit - jangan pernah dilempar ke TMDb/AniList)
+    # 2. English Adult (explicit studio/tag - never route to TMDb/AniList)
     adult_info = _detect_english_adult_details(combined_hint, fname)
     if adult_info:
-        meta = _fetch_tpdb_metadata(adult_info["title"], tpdb_key) if tpdb_key else None
+        meta = _fetch_tpdb_metadata(adult_info["title"], tpdb_key, studio_hint=adult_info.get("studio")) if tpdb_key else None
         if not meta:
             meta = {
                 "title": adult_info["title"],
@@ -836,10 +848,9 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
                 "metadata_source": "adult_scene_parser",
                 "genres": ["Adult", adult_info["studio"]] if adult_info["studio"] else ["Adult"],
             }
-        meta["local_poster_path"] = download_poster_image(meta.get("poster_url"), unique_key)
-        return meta
+        return _finalize(meta)
 
-    # 3. Donghua / Anime dengan sinyal kuat (Fansub resmi, karakter Hanzi/Kana, atau judul Donghua spesifik)
+    # 3. Donghua / Anime with strong signals
     donghua_strong = _is_strong_donghua_signal(combined_hint)
     anime_strong = _is_strong_anime_signal(combined_hint)
 
@@ -861,10 +872,9 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
             meta["season_num"] = season_num
         if episode_num is not None:
             meta["episode_num"] = episode_num
-        meta["local_poster_path"] = download_poster_image(meta.get("poster_url"), unique_key)
-        return meta
+        return _finalize(meta)
 
-    # 4. General Movie & TV Show via TMDb (otomatis mendeteksi Anime JP / Donghua CN jika terindeks di TMDb)
+    # 4. General Movie & TV Show via TMDb
     prefer_tv = season_num is not None or episode_num is not None
     meta = _fetch_tmdb_metadata(clean_title, tmdb_key, year=year_hint, prefer_tv=prefer_tv)
 
@@ -886,5 +896,4 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
     if episode_num is not None:
         meta["episode_num"] = episode_num
 
-    meta["local_poster_path"] = download_poster_image(meta.get("poster_url"), unique_key)
-    return meta
+    return _finalize(meta)

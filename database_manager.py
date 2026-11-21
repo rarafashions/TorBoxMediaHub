@@ -1,5 +1,6 @@
 import json
 import os
+import platform
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -9,6 +10,7 @@ DB_DIR = os.path.join(BASE_DIR, "database")
 BACKUP_DIR = os.path.join(BASE_DIR, "backups")
 CACHE_DIR = os.path.join(BASE_DIR, "cache")
 PLAYLIST_DIR = os.path.join(BASE_DIR, "playlists")
+STATIC_DIR = os.path.join(BASE_DIR, "static")
 DB_PATH = os.path.join(DB_DIR, "torbox_media_hub.db")
 
 VALID_CATEGORIES = {
@@ -21,14 +23,35 @@ VALID_CATEGORIES = {
     "donghua",
 }
 
+
+def get_default_player_paths() -> Dict[str, str]:
+    sys_name = platform.system().lower()
+    if sys_name == "windows":
+        return {
+            "vlc": r"C:\Program Files\VideoLAN\VLC\vlc.exe",
+            "mpv": r"C:\Program Files\mpv\mpv.exe",
+        }
+    if sys_name == "darwin":
+        return {
+            "vlc": "/Applications/VLC.app/Contents/MacOS/VLC",
+            "mpv": "/opt/homebrew/bin/mpv",
+        }
+    return {
+        "vlc": "/usr/bin/vlc",
+        "mpv": "/usr/bin/mpv",
+    }
+
+
+_DEFAULT_PATHS = get_default_player_paths()
+
 DEFAULT_SETTINGS: Dict[str, str] = {
     "torbox_api_key": "",
     "tmdb_api_key": "",
     "tpdb_api_key": "",
     "local_scan_paths": "[]",
-    "vlc_path": r"C:\Program Files\VideoLAN\VLC\vlc.exe",
-    "auto_sync_enabled": "0",
-    "auto_sync_interval_min": "30",
+    "media_player": "vlc",
+    "vlc_path": _DEFAULT_PATHS["vlc"],
+    "mpv_path": _DEFAULT_PATHS["mpv"],
 }
 
 
@@ -41,11 +64,24 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def _run_vacuum_standalone() -> None:
+    """Runs VACUUM on an isolated autocommit connection outside active transactions."""
+    if not os.path.exists(DB_PATH):
+        return
+    vconn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+    try:
+        vconn.execute("PRAGMA busy_timeout = 30000;")
+        vconn.execute("VACUUM;")
+    finally:
+        vconn.close()
+
+
 def init_db() -> None:
     os.makedirs(DB_DIR, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
     os.makedirs(PLAYLIST_DIR, exist_ok=True)
+    os.makedirs(STATIC_DIR, exist_ok=True)
 
     with get_connection() as conn:
         conn.execute("PRAGMA journal_mode = WAL;")
@@ -125,10 +161,12 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_media_has_sub ON media_items(has_subtitle);
             """
         )
-        # Migrasi aman untuk database lama agar memiliki kolom parent_name
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(media_items)").fetchall()]
         if "parent_name" not in cols:
             conn.execute("ALTER TABLE media_items ADD COLUMN parent_name TEXT;")
+
+        # Clean up legacy unused keys if present
+        conn.execute("DELETE FROM settings WHERE key IN ('auto_sync_enabled', 'auto_sync_interval_min')")
 
         for k, v in DEFAULT_SETTINGS.items():
             conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
@@ -138,9 +176,20 @@ def init_db() -> None:
 def get_settings() -> Dict[str, str]:
     with get_connection() as conn:
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
-    result = dict(DEFAULT_SETTINGS)
+    defaults = dict(DEFAULT_SETTINGS)
+    defaults.update({
+        "vlc_path": get_default_player_paths()["vlc"],
+        "mpv_path": get_default_player_paths()["mpv"],
+    })
+    result = dict(defaults)
     for r in rows:
         result[r["key"]] = r["value"]
+    if not (result.get("media_player") or "").strip():
+        result["media_player"] = "vlc"
+    if not (result.get("vlc_path") or "").strip():
+        result["vlc_path"] = defaults["vlc_path"]
+    if not (result.get("mpv_path") or "").strip():
+        result["mpv_path"] = defaults["mpv_path"]
     return result
 
 
@@ -172,7 +221,6 @@ def save_settings(payload: Dict[str, Any]) -> Dict[str, Any]:
             if k not in DEFAULT_SETTINGS:
                 continue
             val_str = json.dumps(v) if isinstance(v, (list, dict)) else str(v if v is not None else "")
-            # Jangan timpa API key asli jika user tidak mengubah input (masih kosong atau berisi karakter mask '•')
             if k in SECRET_SETTING_KEYS:
                 cleaned = val_str.strip()
                 if not cleaned or "•" in cleaned:
@@ -253,7 +301,7 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 original_title = ex["original_title"]
                 year = ex["year"]
                 release_date = ex["release_date"]
-                runtime = ex["runtime"]
+                runtime = ex["runtime"] if int(ex.get("runtime") or 0) > 0 else int(data.get("runtime") or 0)
                 studio = ex["studio"]
                 director = ex["director"]
                 plot = ex["plot"]
@@ -275,7 +323,8 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 original_title = data.get("original_title") if data.get("original_title") is not None else ex["original_title"]
                 year = data.get("year") if data.get("year") is not None else ex["year"]
                 release_date = data.get("release_date") if data.get("release_date") is not None else ex["release_date"]
-                runtime = data.get("runtime") if data.get("runtime") is not None else ex["runtime"]
+                incoming_rt = int(data.get("runtime") or 0)
+                runtime = incoming_rt if incoming_rt > 0 else int(ex.get("runtime") or 0)
                 studio = data.get("studio") if data.get("studio") is not None else ex["studio"]
                 director = data.get("director") if data.get("director") is not None else ex["director"]
                 plot = data.get("plot") if data.get("plot") is not None else ex["plot"]
@@ -568,6 +617,7 @@ def query_media_items(
             if it.get("has_metadata") != 1
             or it.get("content_category") == "uncategorized"
             or not it.get("has_poster")
+            or int(it.get("runtime") or 0) <= 0
         ]
     return items
 
@@ -579,6 +629,8 @@ def update_media_manual(media_id: int, payload: Dict[str, Any]) -> Optional[Dict
         cat = "general_movie"
     is_adult = 1 if cat in ("jav", "english_adult") else 0
     year_val = int(payload["year"]) if str(payload.get("year") or "").strip().isdigit() else None
+    runtime_raw = str(payload.get("runtime") or "").strip()
+    runtime_val = int(runtime_raw) if runtime_raw.isdigit() else 0
 
     with get_connection() as conn:
         conn.execute(
@@ -589,6 +641,7 @@ def update_media_manual(media_id: int, payload: Dict[str, Any]) -> Optional[Dict
                 content_category = ?,
                 is_adult = ?,
                 year = ?,
+                runtime = ?,
                 studio = ?,
                 plot = ?,
                 has_metadata = 1,
@@ -602,6 +655,7 @@ def update_media_manual(media_id: int, payload: Dict[str, Any]) -> Optional[Dict
                 cat,
                 is_adult,
                 year_val,
+                runtime_val,
                 (payload.get("studio") or "").strip() or None,
                 (payload.get("plot") or "").strip() or None,
                 now,
@@ -805,7 +859,9 @@ def list_db_backups() -> List[Dict[str, Any]]:
 
 
 def restore_db_backup(file_name: str) -> bool:
-    safe_name = os.path.basename(file_name)
+    safe_name = os.path.basename(file_name or "").strip()
+    if not safe_name or not safe_name.endswith(".db"):
+        return False
     src = os.path.join(BACKUP_DIR, safe_name)
     if not os.path.isfile(src):
         return False
@@ -845,8 +901,8 @@ def run_db_maintenance() -> Dict[str, Any]:
                 removed_local += 1
         conn.execute("DELETE FROM playlist_items WHERE media_id NOT IN (SELECT id FROM media_items)")
         conn.commit()
-        conn.isolation_level = None
-        conn.execute("VACUUM")
+
+    _run_vacuum_standalone()
     return {"removed_missing_local_files": removed_local, "cleared_missing_subtitles": cleared_subs}
 
 
@@ -914,8 +970,8 @@ def erase_all_media_data() -> Dict[str, Any]:
         deleted_playlists = conn.execute("DELETE FROM playlists").rowcount
         conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('media_items', 'playlists', 'playlist_items')")
         conn.commit()
-        conn.isolation_level = None
-        conn.execute("VACUUM")
+
+    _run_vacuum_standalone()
 
     cleared_cache = _clear_cache_folders(clear_subtitles=True)
     if os.path.isdir(PLAYLIST_DIR):

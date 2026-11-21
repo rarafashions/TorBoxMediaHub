@@ -52,6 +52,20 @@ def _detect_lang_from_name(name: str) -> str:
     return "en"
 
 
+def _extract_ep_tag(name: str) -> Optional[str]:
+    """Extracts normalized SxxExx or episode number tag to avoid cross-episode sidecar mismatches."""
+    m = re.search(r"(?i)(?:^|[\s._\-\[\(])S(\d{1,2})[\s._-]*E(\d{1,3})(?:$|[\s._\-\]\)])", name or "")
+    if m:
+        return f"s{int(m.group(1)):02d}e{int(m.group(2)):03d}"
+    m_x = re.search(r"(?i)(?:^|[\s._\-\[\(])(\d{1,2})x(\d{1,3})(?:$|[\s._\-\]\)])", name or "")
+    if m_x:
+        return f"s{int(m_x.group(1)):02d}e{int(m_x.group(2)):03d}"
+    m_ep = re.search(r"(?i)(?:^|[\s._\-\[\(])(?:Episode|Ep|E)[\s._-]*(\d{1,3})(?:$|[\s._\-\]\)])", name or "")
+    if m_ep:
+        return f"e{int(m_ep.group(1)):03d}"
+    return None
+
+
 def _is_valid_subtitle_bytes(raw: bytes) -> bool:
     if not raw or len(raw) < 25:
         return False
@@ -67,6 +81,17 @@ def _is_valid_subtitle_bytes(raw: bytes) -> bool:
     )
 
 
+def _cleanup_old_cached_subtitles(dest_base_name: str) -> None:
+    safe_base = re.sub(r"[^\w\-.]+", "_", dest_base_name)[:90]
+    for ext in SUBTITLE_EXTS:
+        old_fp = os.path.join(SUBTITLE_CACHE_DIR, f"{safe_base}{ext}")
+        if os.path.isfile(old_fp):
+            try:
+                os.remove(old_fp)
+            except OSError:
+                pass
+
+
 def _save_subtitle_bytes(raw: bytes, dest_base_name: str, ext: str = ".srt") -> Optional[str]:
     if not _is_valid_subtitle_bytes(raw):
         return None
@@ -75,6 +100,7 @@ def _save_subtitle_bytes(raw: bytes, dest_base_name: str, ext: str = ".srt") -> 
     if ext.lower() not in SUBTITLE_EXTS:
         ext = ".srt"
     safe_base = re.sub(r"[^\w\-.]+", "_", dest_base_name)[:90]
+    _cleanup_old_cached_subtitles(safe_base)
     out_path = os.path.join(SUBTITLE_CACHE_DIR, f"{safe_base}{ext.lower()}")
     with open(out_path, "wb") as f:
         f.write(raw)
@@ -145,9 +171,11 @@ def _detect_embedded_subtitle_via_ffprobe(target: str) -> Optional[str]:
 
 def _get_torbox_temp_stream_url(item: Dict[str, Any], torbox_api_key: str) -> Optional[str]:
     kind = item.get("torbox_kind") or "torrent"
-    pid = str(item.get("torbox_item_id") or "")
-    fid = str(item.get("torbox_file_id") or "")
-    if not torbox_api_key or not pid or not fid:
+    pid = str(item.get("torbox_item_id") or "").strip()
+    raw_fid = item.get("torbox_file_id")
+    fid = str(raw_fid).strip() if raw_fid is not None and str(raw_fid).strip() != "" else "0"
+
+    if not torbox_api_key or not pid:
         return None
     endpoint = "torrents" if kind == "torrent" else "usenet"
     id_param = "torrent_id" if kind == "torrent" else "usenet_id"
@@ -161,7 +189,7 @@ def _get_torbox_temp_stream_url(item: Dict[str, Any], torbox_api_key: str) -> Op
                 "file_id": fid,
                 "zip_link": "false",
             },
-            timeout=10,
+            timeout=12,
         )
         if resp.status_code == 200:
             url = resp.json().get("data")
@@ -193,7 +221,9 @@ def find_local_sidecar_subtitle(video_path: Optional[str]) -> Optional[Tuple[str
     if not video_path or not os.path.isfile(video_path):
         return None
     folder = os.path.dirname(video_path)
-    stem = os.path.splitext(os.path.basename(video_path))[0].lower()
+    vid_base = os.path.basename(video_path)
+    stem = os.path.splitext(vid_base)[0].lower()
+    vid_ep_tag = _extract_ep_tag(stem)
 
     best_match: Optional[Tuple[int, str, str]] = None
     try:
@@ -205,11 +235,24 @@ def find_local_sidecar_subtitle(video_path: Optional[str]) -> Optional[Tuple[str
             if not os.path.isfile(full_p) or os.path.getsize(full_p) < 25:
                 continue
             fn_low = fn.lower()
-            if stem in fn_low or fn_low.startswith(stem[: max(6, len(stem) // 2)]):
+            sub_stem = os.path.splitext(fn_low)[0]
+
+            # If video has an explicit episode tag (e.g., S01E01), enforce exact episode match
+            if vid_ep_tag:
+                sub_ep_tag = _extract_ep_tag(sub_stem)
+                if sub_ep_tag != vid_ep_tag:
+                    continue
+
+            exact_stem_match = sub_stem == stem or sub_stem.startswith(f"{stem}.") or sub_stem.startswith(f"{stem}_") or sub_stem.startswith(f"{stem} ")
+            contains_stem = stem in sub_stem
+
+            if exact_stem_match or contains_stem:
                 lang = _detect_lang_from_name(fn)
-                prio = 0 if lang == "en" else (1 if lang == "id" else 2)
-                if best_match is None or prio < best_match[0]:
-                    best_match = (prio, full_p, lang)
+                lang_prio = 0 if lang == "en" else (1 if lang == "id" else 2)
+                match_prio = 0 if exact_stem_match else 10
+                total_prio = match_prio + lang_prio
+                if best_match is None or total_prio < best_match[0]:
+                    best_match = (total_prio, full_p, lang)
     except OSError:
         return None
 
@@ -243,7 +286,7 @@ def build_torbox_subtitle_index(torbox_api_key: str) -> Dict[Tuple[str, str], Li
                     if os.path.splitext(fn)[1].lower() in SUBTITLE_EXTS:
                         sub_files.append(
                             {
-                                "file_id": str(fobj.get("id")),
+                                "file_id": str(fobj.get("id") if fobj.get("id") is not None else "0"),
                                 "file_name": fn,
                             }
                         )
@@ -268,13 +311,21 @@ def download_torbox_cloud_subtitle_from_index(
         return None
 
     vid_stem = os.path.splitext(item.get("file_name") or "")[0].lower()
+    vid_ep_tag = _extract_ep_tag(vid_stem)
+
     scored: List[Tuple[int, Dict[str, Any]]] = []
     for c in candidates:
         c_stem = os.path.splitext(c["file_name"])[0].lower()
+        c_ep_tag = _extract_ep_tag(c_stem)
+        if vid_ep_tag and c_ep_tag and vid_ep_tag != c_ep_tag:
+            continue
         lang = _detect_lang_from_name(c["file_name"])
         lang_prio = 0 if lang == "en" else (1 if lang == "id" else 2)
         name_match = 0 if (vid_stem and (vid_stem in c_stem or c_stem in vid_stem)) else 1
         scored.append((name_match * 10 + lang_prio, c))
+
+    if not scored:
+        return None
 
     scored.sort(key=lambda x: x[0])
     chosen = scored[0][1]
@@ -435,13 +486,13 @@ def fetch_subtitle_for_item(
     dest_base = f"sub_{digest}"
     category = item.get("content_category") or "uncategorized"
 
-    # 1. Cek sidecar lokal
+    # 1. Check local sidecar
     if item.get("source_type") == "local":
         sidecar = find_local_sidecar_subtitle(item.get("file_path"))
         if sidecar:
             return {"subtitle_path": sidecar[0], "subtitle_lang": sidecar[1], "subtitle_source": "local_sidecar"}
 
-    # 2. Cek file subtitle di dalam TorBox Cloud
+    # 2. Check subtitle file inside TorBox Cloud
     if item.get("source_type") == "cloud" and torbox_api_key:
         if torbox_sub_index is not None:
             tb_sub = download_torbox_cloud_subtitle_from_index(item, torbox_api_key, torbox_sub_index)
@@ -450,16 +501,16 @@ def fetch_subtitle_for_item(
         if tb_sub:
             return {"subtitle_path": tb_sub[0], "subtitle_lang": tb_sub[1], "subtitle_source": "torbox_cloud"}
 
-    # 3. Cek embedded subtitle stream (file lokal maupun TorBox Cloud)
+    # 3. Check embedded subtitle stream (local file or TorBox Cloud)
     emb = check_embedded_subtitle(item, torbox_api_key=torbox_api_key)
     if emb:
         return {"subtitle_path": emb[0], "subtitle_lang": emb[1], "subtitle_source": "embedded"}
 
-    # 4. Hentikan pencarian publik untuk English Adult
+    # 4. Stop public search for English Adult
     if category == "english_adult":
         return None
 
-    # 5. JAV -> SubtitleCat lalu OpenSubtitles
+    # 5. JAV -> SubtitleCat then OpenSubtitles
     if category == "jav":
         code_id = item.get("code_id") or ""
         if code_id:

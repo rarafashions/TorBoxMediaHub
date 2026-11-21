@@ -1,20 +1,13 @@
-# Data Pribadi, Database & API Keys
+__pycache__/
+*.py[cod]
+venv/
+.venv/
 database/
-backups/
+cache/
 playlists/
+backups/
 *.db
 *.db-wal
 *.db-shm
 *.m3u
 .env
-
-# Cache Poster & Subtitle
-cache/
-
-# File Sistem Python & OS
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-.DS_Store
-Thumbs.db
