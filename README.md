@@ -100,8 +100,8 @@ TorBoxMediaHub/
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/rarafashions/TorBox-Media-Hub.git
-cd TorBox-Media-Hub
+git clone https://github.com/rarafashions/TorBoxMediaHub.git
+cd TorBoxMediaHub
 ```
 
 ### 2. Install Dependencies
@@ -148,7 +148,7 @@ http://127.0.0.1:5050
 
 Contributions, bug reports, and feature requests are welcome!
 * **Issues & Pull Requests:** Feel free to open an issue or submit a PR on GitHub.
-* **Support Development:** If this project improves your TorBox workflow, consider starring ⭐ the repository or using our **[TorBox Referral Link](https://torbox.app/subscription?referral=YOUR_REFERRAL_CODE)** when subscribing or renewing your TorBox plan!
+* **Support Development:** If this project improves your TorBox workflow, consider starring ⭐ the repository or using our **[TorBox Referral Link]*https://bit.ly/TorBox7DaysAddistions* when subscribing or renewing your TorBox plan!
 
 ---
 
