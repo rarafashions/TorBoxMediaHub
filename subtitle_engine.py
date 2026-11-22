@@ -523,9 +523,13 @@ def fetch_subtitle_for_item(
         return None
 
     # 6. Movie / TV Show / Anime / Donghua
-    title_q = item.get("title") or item.get("file_name") or ""
     season = item.get("season_num")
     episode = item.get("episode_num")
+    if season is not None or episode is not None:
+        title_q = item.get("series_title") or item.get("title") or item.get("file_name") or ""
+    else:
+        title_q = item.get("title") or item.get("file_name") or ""
+
     os_res = _search_opensubtitles_rest(title_q, dest_base, season=season, episode=episode)
     if os_res:
         return {"subtitle_path": os_res[0], "subtitle_lang": os_res[1], "subtitle_source": "opensubtitles"}

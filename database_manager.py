@@ -1,15 +1,18 @@
 import json
 import os
 import platform
+import re
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_DIR = os.path.join(BASE_DIR, "database")
-BACKUP_DIR = os.path.join(BASE_DIR, "backups")
-CACHE_DIR = os.path.join(BASE_DIR, "cache")
-PLAYLIST_DIR = os.path.join(BASE_DIR, "playlists")
+DATA_DIR = os.path.abspath(os.environ.get("TBH_DATA_DIR") or BASE_DIR)
+
+DB_DIR = os.path.join(DATA_DIR, "database")
+BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+CACHE_DIR = os.path.join(DATA_DIR, "cache")
+PLAYLIST_DIR = os.path.join(DATA_DIR, "playlists")
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 DB_PATH = os.path.join(DB_DIR, "torbox_media_hub.db")
 
@@ -24,21 +27,45 @@ VALID_CATEGORIES = {
 }
 
 
-def get_default_player_paths() -> Dict[str, str]:
+def detect_runtime_os() -> str:
+    """Detects 'windows', 'darwin', 'android', or 'linux'."""
+    if os.environ.get("ANDROID_ROOT") or "com.termux" in os.environ.get("PREFIX", ""):
+        return "android"
     sys_name = platform.system().lower()
-    if sys_name == "windows":
+    if sys_name.startswith("win"):
+        return "windows"
+    if sys_name == "darwin":
+        return "darwin"
+    return "linux"
+
+
+def get_default_player_paths() -> Dict[str, str]:
+    os_name = detect_runtime_os()
+    if os_name == "windows":
         return {
             "vlc": r"C:\Program Files\VideoLAN\VLC\vlc.exe",
             "mpv": r"C:\Program Files\mpv\mpv.exe",
+            "potplayer": r"C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe",
+            "mpchc": r"C:\Program Files\MPC-HC\mpc-hc64.exe",
+            "custom": "",
         }
-    if sys_name == "darwin":
+    if os_name == "darwin":
         return {
             "vlc": "/Applications/VLC.app/Contents/MacOS/VLC",
             "mpv": "/opt/homebrew/bin/mpv",
+            "iina": "/Applications/IINA.app/Contents/MacOS/iina-cli",
+            "custom": "",
+        }
+    if os_name == "android":
+        return {
+            "vlc": "android://org.videolan.vlc",
+            "mpv": "android://is.xyz.mpv",
+            "custom": "android://auto",
         }
     return {
         "vlc": "/usr/bin/vlc",
         "mpv": "/usr/bin/mpv",
+        "custom": "",
     }
 
 
@@ -50,9 +77,36 @@ DEFAULT_SETTINGS: Dict[str, str] = {
     "tpdb_api_key": "",
     "local_scan_paths": "[]",
     "media_player": "vlc",
-    "vlc_path": _DEFAULT_PATHS["vlc"],
-    "mpv_path": _DEFAULT_PATHS["mpv"],
+    "vlc_path": _DEFAULT_PATHS.get("vlc", ""),
+    "mpv_path": _DEFAULT_PATHS.get("mpv", ""),
+    "custom_player_path": "",
+    "custom_player_args": "",
 }
+
+
+def derive_series_title(raw_title: str) -> str:
+    """Normalizes a title into its base series title without episode/season suffixes."""
+    t = os.path.splitext(raw_title or "")[0]
+    t = re.sub(r"\[[^\]]*\]|\([^\)]*\)", " ", t)
+    t = re.sub(r"[._]+", " ", t)
+    t = re.split(
+        r"(?i)(?:^|\s)(?:"
+        r"S\d{1,2}\s*E\d{1,3}|"
+        r"\d{1,2}x\d{1,3}|"
+        r"S\d{1,2}|"
+        r"Season\s*\d+|"
+        r"Episode\s*\d+|"
+        r"Ep\.?\s*\d+|"
+        r"Part\s*\d+|"
+        r"1080p|720p|2160p|480p|4K|WEB-?DL|WEBRip|BluRay|BDRip|DVDRip|HDRip|"
+        r"x264|x265|H264|H265|HEVC|10bit|AAC|AC3|DTS|FLAC|MULTI|DUAL|ITA|ENG|SUB"
+        r")(?:$|\s)",
+        t,
+    )[0]
+    t = re.sub(r"(?:^|\s)(19[5-9]\d|20[0-3]\d)(?:$|\s).*$", "", t)
+    t = re.sub(r"\s*-\s*\d{1,3}\s*$", "", t)
+    t = re.sub(r"\s+", " ", t).strip(" -_")
+    return t or (raw_title or "Untitled Series")
 
 
 def get_connection() -> sqlite3.Connection:
@@ -74,6 +128,156 @@ def _run_vacuum_standalone() -> None:
         vconn.execute("VACUUM;")
     finally:
         vconn.close()
+
+
+def consolidate_series_groups(conn: Optional[sqlite3.Connection] = None) -> int:
+    """
+    Menyatukan seluruh episode yang berasal dari serial yang sama berdasarkan:
+    1. Ekstraksi ulang SxxExx / NxNN dari file_name & parent_name
+    2. tmdb_id / anilist_id yang sama
+    3. Prefix judul serial kanonik (misal 'House of the Dragon 3x03 ...' -> 'House of the Dragon')
+    4. Memastikan item episodik tidak tertinggal di kategori 'general_movie' atau 'uncategorized'
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+
+    updated_rows = 0
+    try:
+        rows = conn.execute("SELECT * FROM media_items").fetchall()
+        items = [dict(r) for r in rows]
+
+        # Langkah A: Perbaiki item episodik yang salah kategori atau belum punya season/episode/series_title bersih
+        for it in items:
+            raw_name = f"{it.get('parent_name') or ''} {it.get('file_name') or ''}".strip()
+            m_sxe = re.search(r"(?i)(?:^|[\s._\-\[\(])S(\d{1,2})[\s._-]*E(\d{1,3})(?:$|[\s._\-\]\)])", raw_name)
+            m_nxn = re.search(r"(?i)(?:^|[\s._\-\[\(])(\d{1,2})x(\d{1,3})(?:$|[\s._\-\]\)])", raw_name)
+
+            new_s = it.get("season_num")
+            new_e = it.get("episode_num")
+            if m_sxe:
+                new_s = new_s if new_s is not None else int(m_sxe.group(1))
+                new_e = new_e if new_e is not None else int(m_sxe.group(2))
+            elif m_nxn:
+                new_s = new_s if new_s is not None else int(m_nxn.group(1))
+                new_e = new_e if new_e is not None else int(m_nxn.group(2))
+
+            cur_st = (it.get("series_title") or "").strip()
+            clean_st = derive_series_title(cur_st or it.get("title") or it.get("file_name") or "")
+
+            new_cat = it.get("content_category")
+            if (new_s is not None or new_e is not None) and new_cat in ("general_movie", "uncategorized"):
+                new_cat = "tv_show"
+
+            if (
+                new_s != it.get("season_num")
+                or new_e != it.get("episode_num")
+                or clean_st != cur_st
+                or new_cat != it.get("content_category")
+            ):
+                conn.execute(
+                    """
+                    UPDATE media_items
+                    SET season_num = ?, episode_num = ?, series_title = ?, content_category = ?
+                    WHERE id = ?
+                    """,
+                    (new_s, new_e, clean_st, new_cat, it["id"]),
+                )
+                it["season_num"] = new_s
+                it["episode_num"] = new_e
+                it["series_title"] = clean_st
+                it["content_category"] = new_cat
+                updated_rows += 1
+
+        # Langkah B: Kumpulkan master canonical series berdasarkan tmdb_id, anilist_id, dan judul terpendek yang bersih
+        by_ext_id: Dict[str, Dict[str, Any]] = {}
+        canonical_titles: List[Dict[str, Any]] = []
+
+        for it in items:
+            if it.get("content_category") not in ("tv_show", "anime", "donghua"):
+                continue
+            ext_key = None
+            if it.get("tmdb_id"):
+                ext_key = f"tmdb:{it['tmdb_id']}"
+            elif it.get("anilist_id"):
+                ext_key = f"anilist:{it['anilist_id']}"
+
+            if ext_key:
+                cur_master = by_ext_id.get(ext_key)
+                if not cur_master or (it.get("local_poster_path") and not cur_master.get("local_poster_path")):
+                    by_ext_id[ext_key] = it
+
+            st = (it.get("series_title") or "").strip()
+            if st and len(st) >= 3:
+                canonical_titles.append(it)
+
+        canonical_titles.sort(
+            key=lambda x: (
+                0 if (x.get("tmdb_id") or x.get("anilist_id")) else 1,
+                0 if x.get("local_poster_path") else 1,
+                len((x.get("series_title") or "").strip()),
+            )
+        )
+
+        # Langkah C: Satukan semua episode yang cocok ke master serialnya
+        for it in items:
+            if it.get("content_category") not in ("tv_show", "anime", "donghua", "general_movie", "uncategorized"):
+                continue
+
+            master = None
+            if it.get("tmdb_id") and f"tmdb:{it['tmdb_id']}" in by_ext_id:
+                master = by_ext_id[f"tmdb:{it['tmdb_id']}"]
+            elif it.get("anilist_id") and f"anilist:{it['anilist_id']}" in by_ext_id:
+                master = by_ext_id[f"anilist:{it['anilist_id']}"]
+            else:
+                st_low = (it.get("series_title") or "").strip().lower()
+                for cand in canonical_titles:
+                    c_low = (cand.get("series_title") or "").strip().lower()
+                    if not c_low:
+                        continue
+                    if st_low == c_low:
+                        master = cand
+                        break
+                    if st_low.startswith(c_low + " ") or st_low.startswith(c_low + "-"):
+                        master = cand
+                        break
+
+            if master:
+                target_st = master["series_title"]
+                target_cat = master["content_category"]
+                target_tmdb = it.get("tmdb_id") or master.get("tmdb_id")
+                target_ani = it.get("anilist_id") or master.get("anilist_id")
+                target_poster = it.get("local_poster_path") or master.get("local_poster_path")
+                target_poster_url = it.get("poster_url") or master.get("poster_url")
+
+                if (
+                    it.get("series_title") != target_st
+                    or it.get("content_category") != target_cat
+                    or it.get("tmdb_id") != target_tmdb
+                    or it.get("anilist_id") != target_ani
+                    or (not it.get("local_poster_path") and target_poster)
+                ):
+                    conn.execute(
+                        """
+                        UPDATE media_items
+                        SET series_title = ?,
+                            content_category = ?,
+                            tmdb_id = ?,
+                            anilist_id = ?,
+                            local_poster_path = COALESCE(local_poster_path, ?),
+                            poster_url = COALESCE(poster_url, ?)
+                        WHERE id = ?
+                        """,
+                        (target_st, target_cat, target_tmdb, target_ani, target_poster, target_poster_url, it["id"]),
+                    )
+                    updated_rows += 1
+
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
+    return updated_rows
 
 
 def init_db() -> None:
@@ -102,6 +306,7 @@ def init_db() -> None:
                 file_size INTEGER DEFAULT 0,
                 code_id TEXT,
                 title TEXT NOT NULL,
+                series_title TEXT,
                 original_title TEXT,
                 year INTEGER,
                 release_date TEXT,
@@ -112,6 +317,8 @@ def init_db() -> None:
                 content_category TEXT NOT NULL DEFAULT 'uncategorized',
                 season_num INTEGER,
                 episode_num INTEGER,
+                tmdb_id INTEGER,
+                anilist_id INTEGER,
                 is_adult INTEGER DEFAULT 0,
                 has_metadata INTEGER DEFAULT 0,
                 metadata_source TEXT DEFAULT 'none',
@@ -128,6 +335,14 @@ def init_db() -> None:
                 subtitle_lang TEXT,
                 subtitle_source TEXT DEFAULT 'none',
                 created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS series_season_cache (
+                series_key TEXT PRIMARY KEY,
+                category TEXT NOT NULL,
+                external_id TEXT,
+                seasons_json TEXT NOT NULL DEFAULT '[]',
                 updated_at TEXT NOT NULL
             );
 
@@ -164,32 +379,98 @@ def init_db() -> None:
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(media_items)").fetchall()]
         if "parent_name" not in cols:
             conn.execute("ALTER TABLE media_items ADD COLUMN parent_name TEXT;")
+        if "series_title" not in cols:
+            conn.execute("ALTER TABLE media_items ADD COLUMN series_title TEXT;")
+        if "tmdb_id" not in cols:
+            conn.execute("ALTER TABLE media_items ADD COLUMN tmdb_id INTEGER;")
+        if "anilist_id" not in cols:
+            conn.execute("ALTER TABLE media_items ADD COLUMN anilist_id INTEGER;")
 
-        # Clean up legacy unused keys if present
-        conn.execute("DELETE FROM settings WHERE key IN ('auto_sync_enabled', 'auto_sync_interval_min')")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_media_series_title ON media_items(series_title);")
 
-        for k, v in DEFAULT_SETTINGS.items():
-            conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (k, v))
+        # Konsolidasi & perbaiki seluruh grouping serial yang sudah ada di DB
+        consolidate_series_groups(conn)
         conn.commit()
+
+
+def get_cached_series_seasons(series_key: str) -> Optional[Dict[str, Any]]:
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM series_season_cache WHERE series_key = ?", (series_key,)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["seasons"] = _safe_json_loads(d.get("seasons_json"), [])
+    return d
+
+
+def save_cached_series_seasons(
+    series_key: str,
+    category: str,
+    seasons: List[Dict[str, Any]],
+    external_id: Optional[str] = None,
+) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO series_season_cache (series_key, category, external_id, seasons_json, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(series_key) DO UPDATE SET
+                category = excluded.category,
+                external_id = COALESCE(excluded.external_id, series_season_cache.external_id),
+                seasons_json = excluded.seasons_json,
+                updated_at = excluded.updated_at
+            """,
+            (series_key, category, external_id, json.dumps(seasons), now),
+        )
+        conn.commit()
+
+
+def _is_path_from_other_os(path_val: str, current_os: str) -> bool:
+    p = (path_val or "").strip()
+    if not p:
+        return False
+    if current_os != "windows" and (len(p) >= 2 and p[1] == ":" or "\\" in p):
+        return True
+    if current_os == "windows" and (p.startswith("/") or p.startswith("android://")):
+        return True
+    if current_os != "android" and p.startswith("android://"):
+        return True
+    return False
 
 
 def get_settings() -> Dict[str, str]:
     with get_connection() as conn:
         rows = conn.execute("SELECT key, value FROM settings").fetchall()
+    current_os = detect_runtime_os()
+    os_defaults = get_default_player_paths()
+
     defaults = dict(DEFAULT_SETTINGS)
     defaults.update({
-        "vlc_path": get_default_player_paths()["vlc"],
-        "mpv_path": get_default_player_paths()["mpv"],
+        "vlc_path": os_defaults.get("vlc", ""),
+        "mpv_path": os_defaults.get("mpv", ""),
     })
     result = dict(defaults)
     for r in rows:
         result[r["key"]] = r["value"]
+
+    if os.environ.get("TORBOX_API_KEY") and not result.get("torbox_api_key"):
+        result["torbox_api_key"] = os.environ["TORBOX_API_KEY"].strip()
+    if os.environ.get("TMDB_API_KEY") and not result.get("tmdb_api_key"):
+        result["tmdb_api_key"] = os.environ["TMDB_API_KEY"].strip()
+    if os.environ.get("TPDB_API_KEY") and not result.get("tpdb_api_key"):
+        result["tpdb_api_key"] = os.environ["TPDB_API_KEY"].strip()
+
     if not (result.get("media_player") or "").strip():
         result["media_player"] = "vlc"
-    if not (result.get("vlc_path") or "").strip():
+
+    if not (result.get("vlc_path") or "").strip() or _is_path_from_other_os(result["vlc_path"], current_os):
         result["vlc_path"] = defaults["vlc_path"]
-    if not (result.get("mpv_path") or "").strip():
+    if not (result.get("mpv_path") or "").strip() or _is_path_from_other_os(result["mpv_path"], current_os):
         result["mpv_path"] = defaults["mpv_path"]
+    if _is_path_from_other_os(result.get("custom_player_path", ""), current_os):
+        result["custom_player_path"] = ""
+
     return result
 
 
@@ -253,6 +534,8 @@ def _is_valid_poster_file(path: Optional[str]) -> bool:
 
 def serialize_row(row: sqlite3.Row, playlist_map: Optional[Dict[int, List[str]]] = None) -> Dict[str, Any]:
     d = dict(row)
+    if not d.get("series_title"):
+        d["series_title"] = derive_series_title(d.get("title") or d.get("file_name") or "")
     d["samples"] = _safe_json_loads(d.get("samples_json"), [])
     d["actresses"] = _safe_json_loads(d.get("actresses_json"), [])
     d["genres"] = _safe_json_loads(d.get("genres_json"), [])
@@ -298,6 +581,7 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
             if preserve_existing:
                 code_id = ex["code_id"]
                 title = ex["title"]
+                series_title = ex.get("series_title") or derive_series_title(ex["title"])
                 original_title = ex["original_title"]
                 year = ex["year"]
                 release_date = ex["release_date"]
@@ -308,6 +592,8 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 content_category = ex["content_category"]
                 season_num = ex["season_num"]
                 episode_num = ex["episode_num"]
+                tmdb_id = ex.get("tmdb_id")
+                anilist_id = ex.get("anilist_id")
                 is_adult = ex["is_adult"]
                 has_metadata = ex["has_metadata"]
                 metadata_source = ex["metadata_source"]
@@ -320,6 +606,11 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
             else:
                 code_id = data.get("code_id") if data.get("code_id") is not None else ex["code_id"]
                 title = data.get("title") or ex["title"]
+                series_title = (
+                    data.get("series_title")
+                    or ex.get("series_title")
+                    or derive_series_title(title)
+                )
                 original_title = data.get("original_title") if data.get("original_title") is not None else ex["original_title"]
                 year = data.get("year") if data.get("year") is not None else ex["year"]
                 release_date = data.get("release_date") if data.get("release_date") is not None else ex["release_date"]
@@ -332,6 +623,8 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 content_category = cat_cand if cat_cand in VALID_CATEGORIES else "uncategorized"
                 season_num = data.get("season_num") if data.get("season_num") is not None else ex["season_num"]
                 episode_num = data.get("episode_num") if data.get("episode_num") is not None else ex["episode_num"]
+                tmdb_id = data.get("tmdb_id") if data.get("tmdb_id") is not None else ex.get("tmdb_id")
+                anilist_id = data.get("anilist_id") if data.get("anilist_id") is not None else ex.get("anilist_id")
                 is_adult = int(data.get("is_adult", ex["is_adult"]))
                 has_metadata = int(data.get("has_metadata", ex["has_metadata"]))
                 metadata_source = data.get("metadata_source") or ex["metadata_source"]
@@ -361,6 +654,7 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                     file_size = CASE WHEN ? > 0 THEN ? ELSE file_size END,
                     code_id = ?,
                     title = ?,
+                    series_title = ?,
                     original_title = ?,
                     year = ?,
                     release_date = ?,
@@ -371,6 +665,8 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                     content_category = ?,
                     season_num = ?,
                     episode_num = ?,
+                    tmdb_id = ?,
+                    anilist_id = ?,
                     is_adult = ?,
                     has_metadata = ?,
                     metadata_source = ?,
@@ -400,6 +696,7 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                     int(data.get("file_size") or 0),
                     code_id,
                     title,
+                    series_title,
                     original_title,
                     year,
                     release_date,
@@ -410,6 +707,8 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                     content_category,
                     season_num,
                     episode_num,
+                    tmdb_id,
+                    anilist_id,
                     is_adult,
                     has_metadata,
                     metadata_source,
@@ -427,6 +726,7 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                     ex["id"],
                 ),
             )
+            consolidate_series_groups(conn)
             if own_conn:
                 conn.commit()
             return int(ex["id"])
@@ -435,17 +735,20 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
         if cat_insert not in VALID_CATEGORIES:
             cat_insert = "uncategorized"
 
+        title_ins = data.get("title") or data["file_name"]
+        series_title_ins = data.get("series_title") or derive_series_title(title_ins)
+
         cur = conn.execute(
             """
             INSERT INTO media_items (
                 unique_key, source_type, torbox_kind, torbox_item_id, torbox_file_id,
-                parent_name, file_name, file_path, stream_url, file_size, code_id, title, original_title,
+                parent_name, file_name, file_path, stream_url, file_size, code_id, title, series_title, original_title,
                 year, release_date, runtime, studio, director, plot, content_category,
-                season_num, episode_num, is_adult, has_metadata, metadata_source,
+                season_num, episode_num, tmdb_id, anilist_id, is_adult, has_metadata, metadata_source,
                 poster_url, local_poster_path, samples_json, actresses_json, genres_json,
                 rating, rating_star, is_watched, has_subtitle, subtitle_path, subtitle_lang,
                 subtitle_source, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
             """,
             (
                 unique_key,
@@ -459,7 +762,8 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 data.get("stream_url"),
                 int(data.get("file_size") or 0),
                 data.get("code_id"),
-                data.get("title") or data["file_name"],
+                title_ins,
+                series_title_ins,
                 data.get("original_title"),
                 data.get("year"),
                 data.get("release_date"),
@@ -470,6 +774,8 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 cat_insert,
                 data.get("season_num"),
                 data.get("episode_num"),
+                data.get("tmdb_id"),
+                data.get("anilist_id"),
                 int(data.get("is_adult", 0)),
                 int(data.get("has_metadata", 0)),
                 data.get("metadata_source", "none"),
@@ -487,9 +793,11 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 now,
             ),
         )
+        new_id = int(cur.lastrowid)
+        consolidate_series_groups(conn)
         if own_conn:
             conn.commit()
-        return int(cur.lastrowid)
+        return new_id
     finally:
         if own_conn:
             conn.close()
@@ -558,9 +866,9 @@ def query_media_items(
     if search:
         like = f"%{search.strip()}%"
         clauses.append(
-            "(title LIKE ? OR original_title LIKE ? OR code_id LIKE ? OR file_name LIKE ? OR parent_name LIKE ? OR actresses_json LIKE ? OR studio LIKE ? OR genres_json LIKE ?)"
+            "(title LIKE ? OR series_title LIKE ? OR original_title LIKE ? OR code_id LIKE ? OR file_name LIKE ? OR parent_name LIKE ? OR actresses_json LIKE ? OR studio LIKE ? OR genres_json LIKE ?)"
         )
-        params.extend([like, like, like, like, like, like, like, like])
+        params.extend([like, like, like, like, like, like, like, like, like])
 
     if genre and genre.strip():
         clauses.append("genres_json LIKE ?")
@@ -591,7 +899,7 @@ def query_media_items(
 
     sort_map = {
         "newest": "updated_at DESC, id DESC",
-        "title_asc": "title COLLATE NOCASE ASC, season_num ASC, episode_num ASC",
+        "title_asc": "COALESCE(series_title, title) COLLATE NOCASE ASC, COALESCE(season_num, 1) ASC, COALESCE(episode_num, 0) ASC, title COLLATE NOCASE ASC",
         "year_desc": "COALESCE(year, 0) DESC, title COLLATE NOCASE ASC",
         "rating_desc": "COALESCE(rating, 0) DESC, title COLLATE NOCASE ASC",
         "star_desc": "COALESCE(rating_star, 0) DESC, COALESCE(rating, 0) DESC",
@@ -631,14 +939,24 @@ def update_media_manual(media_id: int, payload: Dict[str, Any]) -> Optional[Dict
     year_val = int(payload["year"]) if str(payload.get("year") or "").strip().isdigit() else None
     runtime_raw = str(payload.get("runtime") or "").strip()
     runtime_val = int(runtime_raw) if runtime_raw.isdigit() else 0
+    title_val = (payload.get("title") or "").strip() or "Untitled"
+    series_title_val = (payload.get("series_title") or "").strip() or derive_series_title(title_val)
+
+    season_raw = str(payload.get("season_num") if payload.get("season_num") is not None else "").strip()
+    season_val = int(season_raw) if season_raw.isdigit() else None
+    ep_raw = str(payload.get("episode_num") if payload.get("episode_num") is not None else "").strip()
+    ep_val = int(ep_raw) if ep_raw.isdigit() else None
 
     with get_connection() as conn:
         conn.execute(
             """
             UPDATE media_items SET
                 title = ?,
+                series_title = ?,
                 code_id = ?,
                 content_category = ?,
+                season_num = COALESCE(?, season_num),
+                episode_num = COALESCE(?, episode_num),
                 is_adult = ?,
                 year = ?,
                 runtime = ?,
@@ -650,9 +968,12 @@ def update_media_manual(media_id: int, payload: Dict[str, Any]) -> Optional[Dict
             WHERE id = ?
             """,
             (
-                (payload.get("title") or "").strip() or "Untitled",
+                title_val,
+                series_title_val,
                 (payload.get("code_id") or "").strip() or None,
                 cat,
+                season_val,
+                ep_val,
                 is_adult,
                 year_val,
                 runtime_val,
@@ -900,10 +1221,15 @@ def run_db_maintenance() -> Dict[str, Any]:
                 conn.execute("DELETE FROM media_items WHERE id = ?", (r["id"],))
                 removed_local += 1
         conn.execute("DELETE FROM playlist_items WHERE media_id NOT IN (SELECT id FROM media_items)")
+        consolidated = consolidate_series_groups(conn)
         conn.commit()
 
     _run_vacuum_standalone()
-    return {"removed_missing_local_files": removed_local, "cleared_missing_subtitles": cleared_subs}
+    return {
+        "removed_missing_local_files": removed_local,
+        "cleared_missing_subtitles": cleared_subs,
+        "consolidated_series_items": consolidated,
+    }
 
 
 def _clear_cache_folders(clear_subtitles: bool = False) -> int:
@@ -933,6 +1259,7 @@ def reset_all_metadata() -> Dict[str, Any]:
             """
             UPDATE media_items SET
                 title = file_name,
+                series_title = NULL,
                 code_id = NULL,
                 original_title = NULL,
                 year = NULL,
@@ -944,6 +1271,8 @@ def reset_all_metadata() -> Dict[str, Any]:
                 content_category = 'uncategorized',
                 season_num = NULL,
                 episode_num = NULL,
+                tmdb_id = NULL,
+                anilist_id = NULL,
                 is_adult = 0,
                 poster_url = NULL,
                 local_poster_path = NULL,
@@ -958,6 +1287,7 @@ def reset_all_metadata() -> Dict[str, Any]:
             (now,),
         )
         affected = cur.rowcount
+        conn.execute("DELETE FROM series_season_cache")
         conn.commit()
     cleared_cache = _clear_cache_folders(clear_subtitles=False)
     verify_subtitle_files()
@@ -968,6 +1298,7 @@ def erase_all_media_data() -> Dict[str, Any]:
     with get_connection() as conn:
         deleted_media = conn.execute("DELETE FROM media_items").rowcount
         deleted_playlists = conn.execute("DELETE FROM playlists").rowcount
+        conn.execute("DELETE FROM series_season_cache")
         conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('media_items', 'playlists', 'playlist_items')")
         conn.commit()
 
@@ -987,3 +1318,39 @@ def erase_all_media_data() -> Dict[str, Any]:
         "deleted_playlists": deleted_playlists,
         "cleared_cache_files": cleared_cache,
     }
+
+def delete_media_record_and_cache(media_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Menghapus record media dari database (beserta relasi playlist_items via ON DELETE CASCADE)
+    serta membersihkan file cache poster dan subtitle terkait.
+    Mengembalikan dict data item sebelum dihapus agar caller (app.py) bisa menghapus file fisiknya.
+    """
+    item = get_media_item(media_id)
+    if not item:
+        return None
+
+    # 1. Hapus cache poster lokal jika ada
+    poster_path = item.get("local_poster_path")
+    if poster_path and os.path.isfile(poster_path):
+        try:
+            os.remove(poster_path)
+        except OSError:
+            pass
+
+    # 2. Hapus cache subtitle lokal (hanya jika berada di dalam folder CACHE_DIR/subtitles)
+    sub_path = item.get("subtitle_path") or ""
+    sub_cache_dir = os.path.abspath(os.path.join(CACHE_DIR, "subtitles"))
+    if sub_path and not sub_path.startswith("embedded://"):
+        abs_sub = os.path.abspath(sub_path)
+        if abs_sub.startswith(sub_cache_dir) and os.path.isfile(abs_sub):
+            try:
+                os.remove(abs_sub)
+            except OSError:
+                pass
+
+    # 3. Hapus dari SQLite (playlist_items otomatis terhapus karena ON DELETE CASCADE)
+    with get_connection() as conn:
+        conn.execute("DELETE FROM media_items WHERE id = ?", (media_id,))
+        conn.commit()
+
+    return item
