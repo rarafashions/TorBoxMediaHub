@@ -169,6 +169,16 @@
             <p class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Belum ada download TorBox aktif.</p>
           </div>
         </section>
+
+        <section class="mt-4 space-y-2.5 rounded-xl border border-white/10 bg-white/[0.03] p-4">
+          <div>
+            <h3 class="text-xs font-bold text-white">Tambah WebDL dari Link</h3>
+            <p id="webdl-hint" class="mt-0.5 text-[11px] leading-relaxed text-slate-400">Memuat daftar hoster TorBox…</p>
+          </div>
+          <input id="webdl-url" type="url" autocomplete="off" placeholder="https://www.terabox.com/s/... atau link hoster lain" class="w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2 text-xs text-white outline-none focus:border-emerald-500">
+          <input id="webdl-title" maxlength="200" autocomplete="off" placeholder="Judul (opsional)" class="w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2 text-xs text-white outline-none focus:border-emerald-500">
+          <button onclick="submitWebdlUrl()" class="w-full rounded-xl bg-emerald-500 py-2 text-xs font-bold text-slate-950 transition hover:bg-emerald-400">☁ Kirim Link ke TorBox</button>
+        </section>
       </div>
     </div>
   </aside>
@@ -221,6 +231,7 @@
             <h2 id="detail-title" class="text-xl font-black leading-snug text-white sm:text-2xl"></h2>
             <p id="detail-description" class="text-xs leading-relaxed text-slate-300 sm:text-sm line-clamp-3"></p>
             <div id="detail-meta" class="grid grid-cols-2 gap-x-4 gap-y-2 pt-2 text-xs sm:grid-cols-3"></div>
+            <div id="detail-cloud-action" class="pt-1"></div>
           </div>
         </div>
       </div>
@@ -691,6 +702,90 @@ function renderMeta(m) {
       <div class="font-semibold text-slate-100 truncate">${esc(x[1])}</div>
     </div>
   `).join('');
+  refreshDetailCloudAction();
+}
+
+function webdlProvider(type) {
+  const key = String(type || '').toLowerCase();
+  return (window._webdlProviders || {})[key] || null;
+}
+
+function refreshDetailCloudAction() {
+  const host = $('detail-cloud-action');
+  if (!host) return;
+  const type = selectedMeta?._roxxyType || selectedMeta?.type || '';
+  const provider = webdlProvider(type);
+  if (!selectedMeta || !provider) { host.innerHTML = ''; return; }
+  host.innerHTML = `<button id="detail-cloud-btn" onclick="sendMetaToTorBoxWebdl()" class="rounded-lg bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 transition hover:bg-emerald-400">☁ Simpan ke TorBox Cloud (WebDL)</button>
+    <p class="mt-1.5 text-[11px] text-slate-400">${esc(provider.label)} didukung WebDL: TorBox mengunduh halaman provider dengan kualitas terbaik, tanpa file lokal.</p>`;
+}
+
+async function sendMetaToTorBoxWebdl() {
+  if (!selectedMeta) return;
+  const type = selectedMeta._roxxyType || selectedMeta.type || '';
+  const btn = $('detail-cloud-btn');
+  const title = selectedMeta.name || selectedMeta.jav_code || 'Video Feeds';
+  try {
+    if (btn) { btn.disabled = true; btn.textContent = 'Mengirim…'; }
+    $('roxxy-torbox-state').textContent = 'SUBMITTING';
+    $('roxxy-torbox-status').textContent = 'Mengirim halaman provider ke TorBox WebDL…';
+    const r = await fetch('/api/torbox/webdl/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: type, provider_id: selectedMeta.id, title, poster_url: selectedMeta.poster || selectedMeta.background || '', metadata: selectedMeta || null, subtitles: window._roxxySubtitles || [], category: '' }) });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
+    setStatus(j.message || 'Halaman dikirim ke TorBox.');
+    $('roxxy-torbox-state').textContent = 'QUEUED';
+    $('roxxy-torbox-status').textContent = j.message || 'Halaman dikirim. Memantau TorBox…';
+    closeDetail();
+    openDownloadDrawer();
+    showDownloadTab('torbox');
+    await refreshRoxxyTorboxStatus();
+  } catch (e) {
+    $('roxxy-torbox-state').textContent = 'FAILED';
+    $('roxxy-torbox-status').textContent = 'Gagal: ' + e.message;
+    setStatus('WebDL gagal: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '☁ Simpan ke TorBox Cloud (WebDL)'; }
+  }
+}
+
+async function loadWebdlInfo() {
+  try {
+    const j = await api('/api/torbox/webdl/info');
+    window._webdlProviders = {};
+    (j.providers || []).forEach(p => { window._webdlProviders[String(p.id || '').toLowerCase()] = p; });
+    const count = Number(j.hoster_count) || 0;
+    const names = (j.hosters || []).filter(n => /terabox|pikpak|mega|1fichier|mediafire|bunkr|cyberdrop|pixeldrain/i.test(n)).slice(0, 6);
+    $('webdl-hint').textContent = count
+      ? `${count} hoster didukung TorBox${names.length ? ` (${names.join(', ')}…)` : ''}. Tempel halaman video atau link hoster; TorBox mengunduh ke cloud.`
+      : 'Daftar hoster TorBox belum tersedia; link halaman provider yang didukung tetap bisa dikirim.';
+    if (j.warning) $('webdl-hint').textContent += ' ' + j.warning;
+    refreshDetailCloudAction();
+  } catch (e) {
+    $('webdl-hint').textContent = 'Info hoster tidak tersedia: ' + e.message;
+  }
+}
+
+async function submitWebdlUrl() {
+  const url = ($('webdl-url').value || '').trim();
+  const title = ($('webdl-title').value || '').trim();
+  if (!url) { setStatus('Tempel link WebDL terlebih dahulu.'); return; }
+  try {
+    $('roxxy-torbox-state').textContent = 'SUBMITTING';
+    $('roxxy-torbox-status').textContent = 'Mengirim link ke TorBox WebDL…';
+    const r = await fetch('/api/torbox/webdl/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, title, category: '' }) });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
+    $('webdl-url').value = '';
+    $('webdl-title').value = '';
+    $('roxxy-torbox-state').textContent = 'QUEUED';
+    $('roxxy-torbox-status').textContent = j.message || 'Link dikirim.';
+    setStatus(j.message || 'Link dikirim ke TorBox.');
+    await refreshRoxxyTorboxStatus();
+  } catch (e) {
+    $('roxxy-torbox-state').textContent = 'FAILED';
+    $('roxxy-torbox-status').textContent = 'Gagal: ' + e.message;
+    setStatus('WebDL gagal: ' + e.message);
+  }
 }
 
 function fmtBytes(n) {
@@ -1010,6 +1105,7 @@ $('genre-select').addEventListener('change', applyCatalogSearchFilter);
 setInterval(refreshRoxxyTorboxStatus, 5000);
 refreshRoxxyTorboxStatus();
 loadConfig();
+loadWebdlInfo();
 </script>
 </body>
 </html>

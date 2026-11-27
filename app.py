@@ -27,9 +27,10 @@ import subtitle_engine as sub_eng
 import dual_subtitle_engine as dual_subs
 import subtitle_quality_audit as subtitle_audit
 import platform_support as platform_env
+import webdl_resolver as webdl
 from roxxy_module import roxxy_bp
 
-APP_VERSION = "v1.3D3"  # single source of truth; templates render this
+APP_VERSION = "v1.3D4"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -2821,6 +2822,257 @@ def api_torbox_add_cached():
         return jsonify({"ok": False, "error": err_detail}), 400
     except Exception as exc:
         return jsonify({"ok": False, "error": f"Failed to add to TorBox: {exc}"}), 500
+
+
+_WEB_DL_HOSTERS_TTL = 86400  # 24 hours
+_WEB_DL_HOSTERS_CACHE: Dict[str, Any] = {"names": [], "fetched_at": 0.0, "error": ""}
+_WEB_DL_HOSTERS_LOCK = threading.Lock()
+_WEB_DL_SUBMIT_PER_HOUR = 60
+_WEB_DL_SUBMIT_TIMES: List[float] = []
+_WEB_DL_RECENT_LINKS: Dict[str, float] = {}
+_WEB_DL_SUBMIT_LOCK = threading.Lock()
+_WEB_DL_DEDUPE_SECONDS = 900
+
+
+def _torbox_webdl_hosters(force: bool = False) -> Dict[str, Any]:
+    """Return a 24-hour cached TorBox WebDL hoster list; never raise on API hiccups."""
+    now = time.time()
+    with _WEB_DL_HOSTERS_LOCK:
+        snapshot = dict(_WEB_DL_HOSTERS_CACHE)
+    if not force and snapshot["names"] and now - snapshot["fetched_at"] < _WEB_DL_HOSTERS_TTL:
+        return snapshot
+
+    settings = db.get_settings()
+    api_key = (settings.get("torbox_api_key") or "").strip()
+    if not api_key:
+        snapshot["error"] = "TorBox API Key is not configured."
+        return snapshot
+
+    try:
+        resp = meta_eng.HTTP_SESSION.get(
+            f"{TORBOX_API_BASE}/webdl/hosters",
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+            timeout=25,
+        )
+        body: Any = {}
+        if resp.content:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {}
+        rows = body.get("data") if isinstance(body, dict) else body
+        if isinstance(rows, dict):
+            rows = rows.get("hosters") or []
+        names: List[str] = []
+        for row in rows or []:
+            name = row.get("name") if isinstance(row, dict) else row
+            name = str(name or "").strip()
+            if name:
+                names.append(name)
+        if resp.status_code not in (200, 201):
+            raise RuntimeError(f"HTTP {resp.status_code}")
+
+        fresh = {
+            "names": sorted(set(names), key=str.lower),
+            "fetched_at": now,
+            "error": "" if names else "TorBox returned an empty hoster list.",
+        }
+        with _WEB_DL_HOSTERS_LOCK:
+            _WEB_DL_HOSTERS_CACHE.update(fresh)
+        return fresh
+    except Exception as exc:
+        snapshot["error"] = f"Daftar hoster TorBox gagal dimuat: {exc}"
+        return snapshot
+
+
+def _webdl_submit_guard(url: str) -> Optional[str]:
+    """Enforce 60 successful submissions/hour and reject duplicate links."""
+    now = time.time()
+    cutoff = now - 3600
+    with _WEB_DL_SUBMIT_LOCK:
+        while _WEB_DL_SUBMIT_TIMES and _WEB_DL_SUBMIT_TIMES[0] < cutoff:
+            _WEB_DL_SUBMIT_TIMES.pop(0)
+        if len(_WEB_DL_SUBMIT_TIMES) >= _WEB_DL_SUBMIT_PER_HOUR:
+            return "Batas 60 pengiriman WebDL per jam tercapai. Coba lagi nanti."
+        for old_url, added_at in list(_WEB_DL_RECENT_LINKS.items()):
+            if now - added_at > _WEB_DL_DEDUPE_SECONDS:
+                del _WEB_DL_RECENT_LINKS[old_url]
+        if url in _WEB_DL_RECENT_LINKS:
+            return "Link ini baru saja dikirim ke TorBox. Tunggu sekitar 15 menit sebelum mengulang."
+    return None
+
+
+def _record_webdl_submit(url: str) -> None:
+    now = time.time()
+    with _WEB_DL_SUBMIT_LOCK:
+        _WEB_DL_SUBMIT_TIMES.append(now)
+        _WEB_DL_RECENT_LINKS[url] = now
+        while len(_WEB_DL_RECENT_LINKS) > 200:
+            _WEB_DL_RECENT_LINKS.pop(next(iter(_WEB_DL_RECENT_LINKS)))
+
+
+def _webdl_api_error(detail: Any, status_code: int) -> str:
+    text = str(detail or "").strip()
+    lower = text.lower()
+    if "not supported" in lower:
+        return (
+            "TorBox tidak mendukung link ini sebagai WebDL. Gunakan halaman resmi "
+            "hoster/video, atau unduh lewat Local Engine."
+        )
+    if "paid" in lower and ("plan" in lower or "subscription" in lower):
+        return "WebDL TorBox hanya tersedia untuk plan berbayar."
+    if "100" in lower and "gb" in lower:
+        return "Ukuran download melebihi batas 100 GB per item TorBox WebDL."
+    if "limit" in lower and "download" in lower:
+        return "Batas download TorBox tercapai. Coba lagi nanti atau hapus item lama."
+    return text or f"TorBox API HTTP {status_code}"
+
+
+@app.route("/api/torbox/webdl/info", methods=["GET"])
+def api_torbox_webdl_info():
+    """Expose cached hoster coverage and the provider types Roxxy can submit."""
+    info = _torbox_webdl_hosters()
+    return jsonify(
+        {
+            "ok": True,
+            "hoster_count": len(info["names"]),
+            "hosters": info["names"],
+            "providers": webdl.supported_providers(),
+            "cached_at": int(info["fetched_at"] or 0),
+            "warning": info["error"] or "",
+            "limits": {
+                "submit_per_hour": _WEB_DL_SUBMIT_PER_HOUR,
+                "max_download_gb": 100,
+            },
+        }
+    )
+
+
+@app.route("/api/torbox/webdl/add", methods=["POST"])
+def api_torbox_webdl_add():
+    """Submit a public page/hoster link to TorBox WebDL and auto-monitor it."""
+    payload = request.get_json(silent=True) or {}
+    provider = str(payload.get("provider") or "").strip()
+    provider_id = str(payload.get("provider_id") or payload.get("id") or "").strip()
+    raw_url = str(payload.get("url") or "").strip()
+    title = str(payload.get("title") or "").strip()[:200]
+    series_title = str(payload.get("series_title") or "").strip()[:200]
+    category = str(payload.get("category") or "").strip().lower()
+    try:
+        season = max(1, int(payload.get("season") or 1))
+    except (TypeError, ValueError):
+        season = 1
+    hint_metadata = _sanitize_import_metadata(payload.get("metadata"))
+    hint_subtitles = _sanitize_import_subtitles(payload.get("subtitles"))
+    expected_filename = os.path.basename(
+        str(payload.get("expected_filename") or "").strip()
+    )[:200]
+    poster_url = str(
+        payload.get("poster_url") or hint_metadata.get("poster") or ""
+    ).strip()[:2048]
+    if poster_url and not poster_url.lower().startswith(("http://", "https://")):
+        poster_url = ""
+
+    url = webdl.resolve_page_url(provider, provider_id) if provider else ""
+    if not url:
+        url = raw_url
+    if provider and not url and not raw_url:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": (
+                        f"Provider '{provider}' belum punya pola URL WebDL yang terverifikasi. "
+                        "Tempel link halaman secara manual."
+                    ),
+                }
+            ),
+            400,
+        )
+
+    safe, url_error = webdl.validate_webdl_url(url)
+    if not safe:
+        return jsonify({"ok": False, "error": url_error}), 400
+
+    if not title:
+        title = str(hint_metadata.get("name") or "").strip()[:200]
+    if not title:
+        title = f"WebDL {urlparse(url).hostname or 'link'}"[:200]
+
+    if hint_metadata:
+        detected_category = _classify_import_hint(hint_metadata, expected_filename)
+        if detected_category:
+            category = detected_category
+    if category not in db.VALID_CATEGORIES:
+        category = "uncategorized"
+
+    settings = db.get_settings()
+    api_key = (settings.get("torbox_api_key") or "").strip()
+    if not api_key:
+        return jsonify({"ok": False, "error": "TorBox API Key is not configured."}), 400
+
+    guard_error = _webdl_submit_guard(url)
+    if guard_error:
+        return jsonify({"ok": False, "error": guard_error}), 429
+
+    try:
+        resp = meta_eng.HTTP_SESSION.post(
+            f"{TORBOX_API_BASE}/webdl/createwebdownload",
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={
+                "link": (None, url),
+                "name": (None, title),
+                "as_queued": (None, "false"),
+                "add_only_if_cached": (None, "false"),
+            },
+            timeout=60,
+        )
+        body: Dict[str, Any] = {}
+        if resp.content:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"detail": resp.text[:250].strip()}
+
+        if resp.status_code in (200, 201) and body.get("success", True):
+            data_obj = body.get("data") or {}
+            created_id = str(
+                data_obj.get("webdownload_id")
+                or data_obj.get("webdl_id")
+                or data_obj.get("id")
+                or ""
+            )
+            if created_id:
+                TORBOX_MONITOR.track(
+                    kind="webdl",
+                    item_id=created_id,
+                    title=title,
+                    series_title=series_title,
+                    category=category,
+                    season=season,
+                    poster_url=poster_url,
+                    metadata=hint_metadata or None,
+                    subtitles=hint_subtitles or None,
+                    expected_filename=expected_filename,
+                )
+                _record_webdl_submit(url)
+
+            detail_msg = str(body.get("detail") or "").strip() or "Link dikirim ke TorBox WebDL."
+            return jsonify(
+                {
+                    "ok": True,
+                    "tracked_id": created_id,
+                    "message": f"{detail_msg} — Auto-monitoring aktif.",
+                }
+            )
+
+        err_detail = body.get("detail") or body.get("error")
+        return (
+            jsonify({"ok": False, "error": _webdl_api_error(err_detail, resp.status_code)}),
+            400,
+        )
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Failed to add WebDL to TorBox: {exc}"}), 500
 
 
 @app.route("/api/torbox/watch-status", methods=["GET"])
