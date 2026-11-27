@@ -23,6 +23,7 @@ VALID_CATEGORIES = {
     "jav",
     "english_adult",
     "indo",
+    "indo_movie",
     "general_movie",
     "tv_show",
     "anime",

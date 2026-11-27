@@ -18,6 +18,7 @@ VALID_CATEGORIES = {
     "jav",
     "english_adult",
     "indo",
+    "indo_movie",
     "anime",
     "donghua",
     "tv_show",

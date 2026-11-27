@@ -190,7 +190,7 @@
             <option value="donghua">Donghua</option>
             <option value="jav">JAV</option>
             <option value="english_adult">English Adult</option>
-            <option value="indo">Indo</option>
+            <option value="indo">Indo</option><option value="indo_movie">Indonesia Movies</option>
             <option value="uncategorized">Uncategorized</option>
           </select>
 
@@ -501,7 +501,7 @@
                 <option value="donghua">Donghua</option>
                 <option value="jav">JAV</option>
                 <option value="english_adult">English Adult</option>
-                <option value="indo">Indo</option>
+                <option value="indo">Indo</option><option value="indo_movie">Indonesia Movies</option>
                 <option value="uncategorized">Uncategorized</option>
               </select>
             </div>
@@ -569,7 +569,7 @@
               <div>
                 <label class="text-slate-400 block mb-1">Confirm Category</label>
                 <select id="classification-confirm-category" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
-                  <option value="general_movie">General Movie</option><option value="tv_show">TV Show</option><option value="anime">Anime</option><option value="donghua">Donghua</option><option value="jav">JAV</option><option value="english_adult">English Adult</option><option value="indo">Indo</option>
+                  <option value="general_movie">General Movie</option><option value="tv_show">TV Show</option><option value="anime">Anime</option><option value="donghua">Donghua</option><option value="jav">JAV</option><option value="english_adult">English Adult</option><option value="indo">Indo</option><option value="indo_movie">Indonesia Movies</option>
                 </select>
               </div>
               <label class="flex items-center gap-2 text-[11px] text-slate-300 pb-2"><input id="classification-lock" type="checkbox" checked class="accent-violet-500" /> Lock manual decision</label>
@@ -1804,6 +1804,7 @@
         tv_show: ["SERIES", "bg-indigo-600/80 text-white"],
         anime: ["ANIME", "bg-purple-600/80 text-white"],
         donghua: ["DONGHUA", "bg-fuchsia-600/80 text-white"],
+        indo_movie: ["INDO MOVIE", "bg-teal-600/80 text-white"],
         uncategorized: ["UNCAT", "bg-slate-700 text-slate-300"],
       };
       return map[cat] || map.uncategorized;
@@ -2995,7 +2996,7 @@
       document.getElementById("edit-studio").value = item.studio || "";
       document.getElementById("edit-plot").value = item.plot || "";
       document.getElementById("classification-normalized-title").value = item.normalized_title || item.file_name || "";
-      document.getElementById("classification-confirm-category").value = ["general_movie", "tv_show", "anime", "donghua", "jav", "english_adult"].includes(item.content_category) ? item.content_category : "general_movie";
+      document.getElementById("classification-confirm-category").value = ["general_movie", "tv_show", "anime", "donghua", "jav", "english_adult", "indo", "indo_movie"].includes(item.content_category) ? item.content_category : "general_movie";
       document.getElementById("classification-lock").checked = item.classification_locked !== 0;
       document.getElementById("classification-preview-result").classList.add("hidden");
       document.getElementById("classification-history").classList.add("hidden");

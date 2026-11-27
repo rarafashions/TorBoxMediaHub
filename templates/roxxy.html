@@ -49,6 +49,9 @@
 
       <!-- Integrated Search & Filter Pill -->
       <div class="order-3 flex w-full flex-wrap items-center gap-2 lg:order-2 lg:w-auto lg:flex-1 lg:max-w-3xl lg:px-6">
+        <select id="source-select" title="Manifest addon" class="min-w-[132px] rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-semibold text-slate-200 outline-none transition focus:border-sky-500 focus:bg-slate-900">
+          <option value="">Load manifest dulu</option>
+        </select>
         <select id="catalog-select" class="min-w-[165px] rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-200 outline-none transition focus:border-sky-500 focus:bg-slate-900">
           <option value="">Load manifest dulu</option>
         </select>
@@ -63,7 +66,7 @@
         </div>
         <label class="flex items-center gap-1.5 whitespace-nowrap text-[11px] text-slate-300 select-none">
           <input id="search-all-catalogs" type="checkbox" class="h-3.5 w-3.5 accent-sky-500">
-          Cari semua katalog
+          Cari semua katalog addon ini
         </label>
         <div id="catalog-search-progress" class="hidden basis-full mt-1 rounded-lg border border-white/10 bg-black/40 px-3 py-2">
           <div class="mb-1.5 flex items-center justify-between gap-3 text-[10px]">
@@ -200,15 +203,36 @@
       <button onclick="closeSettings()" class="flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-slate-400 hover:bg-white/15 hover:text-white">✕</button>
     </div>
     <div class="space-y-4">
-      <label class="block text-xs font-semibold text-slate-300">
-        Manifest URL <span class="font-normal text-slate-500">(tersimpan aman di server)</span>
-        <input id="manifest-url" type="password" autocomplete="off" placeholder="https://hub.roxxy-tech.com/.../manifest.json" class="mt-1.5 w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-sm text-white outline-none focus:border-sky-500">
-      </label>
-      <label class="block text-xs font-semibold text-slate-300">
-        Manifest Addon Kedua <span class="font-normal text-slate-500">(opsional, mis. Donghua)</span>
-        <input id="extra-manifest-url" type="password" autocomplete="off" placeholder="https://hub.roxxy-tech.com/.../manifest.json" class="mt-1.5 w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-sm text-white outline-none focus:border-sky-500">
-        <span id="extra-config-state" class="mt-1 block text-[11px] font-normal text-slate-500">Belum diatur.</span>
-      </label>
+      <div class="rounded-xl border border-white/10 bg-white/[0.02] p-3.5">
+        <div class="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Manifest per Addon</div>
+        <div class="space-y-3">
+          <label class="block text-xs font-semibold text-slate-300">
+            JAV <span class="font-normal text-slate-500">(token disimpan di server)</span>
+            <input id="manifest-url-jav" type="password" autocomplete="off" placeholder="https://hub.roxxy-tech.com/.../manifest.json" class="mt-1.5 w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-sm text-white outline-none focus:border-sky-500">
+            <span id="manifest-state-jav" data-manifest-state="jav" class="mt-1 block text-[11px] font-normal text-slate-500">Belum diatur.</span>
+          </label>
+          <label class="block text-xs font-semibold text-slate-300">
+            English Adult <span class="font-normal text-slate-500">(hoster pack)</span>
+            <input id="manifest-url-english_adult" type="password" autocomplete="off" placeholder="https://hub.roxxy-tech.com/.../manifest.json" class="mt-1.5 w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-sm text-white outline-none focus:border-sky-500">
+            <span id="manifest-state-english_adult" data-manifest-state="english_adult" class="mt-1 block text-[11px] font-normal text-slate-500">Belum diatur.</span>
+          </label>
+          <label class="block text-xs font-semibold text-slate-300">
+            OnlyFans <span class="font-normal text-slate-500">(kategori English Adult)</span>
+            <input id="manifest-url-onlyfans" type="password" autocomplete="off" placeholder="https://hub.roxxy-tech.com/.../manifest.json" class="mt-1.5 w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-sm text-white outline-none focus:border-sky-500">
+            <span id="manifest-state-onlyfans" data-manifest-state="onlyfans" class="mt-1 block text-[11px] font-normal text-slate-500">Belum diatur.</span>
+          </label>
+          <label class="block text-xs font-semibold text-slate-300">
+            IndonesiaMovies <span class="font-normal text-slate-500">(kategori Indonesia Movies)</span>
+            <input id="manifest-url-indo_movie" type="password" autocomplete="off" placeholder="https://hub.roxxy-tech.com/.../manifest.json" class="mt-1.5 w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-sm text-white outline-none focus:border-sky-500">
+            <span id="manifest-state-indo_movie" data-manifest-state="indo_movie" class="mt-1 block text-[11px] font-normal text-slate-500">Belum diatur.</span>
+          </label>
+          <label class="block text-xs font-semibold text-slate-300">
+            Donghua <span class="font-normal text-slate-500">(serial + season/episode)</span>
+            <input id="manifest-url-donghua" type="password" autocomplete="off" placeholder="https://hub.roxxy-tech.com/.../manifest.json" class="mt-1.5 w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-sm text-white outline-none focus:border-sky-500">
+            <span id="manifest-state-donghua" data-manifest-state="donghua" class="mt-1 block text-[11px] font-normal text-slate-500">Belum diatur.</span>
+          </label>
+        </div>
+      </div>
       <label class="block text-xs font-semibold text-slate-300">
         Local Download Folder
         <input id="download-path" value="{{ download_path }}" class="mt-1.5 w-full rounded-xl border border-white/10 bg-black/50 px-3.5 py-2.5 text-sm text-white outline-none focus:border-sky-500">
@@ -282,7 +306,7 @@
           <div class="mb-3 flex items-center justify-between">
             <h3 class="text-sm font-extrabold uppercase tracking-wider text-slate-200">Pilihan Sumber Stream</h3>
             <div class="flex items-center gap-2">
-              <button onclick="analyzeAllStreams()" class="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white" title="Analisis semua sumber sekaligus">Analisis semua</button>
+              <button onclick="analyzeAllStreams()" class="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white" title="Semua sumber dianalisis otomatis; tombol ini mengulang analisis">Analisis ulang</button>
               <span id="subtitles-list" class="text-[11px] text-slate-400"></span>
             </div>
           </div>
@@ -293,6 +317,16 @@
   </section>
 
 <script>
+const ROXXY_SOURCE_DEFS = [
+  { key: 'jav', label: 'JAV' },
+  { key: 'english_adult', label: 'English Adult' },
+  { key: 'onlyfans', label: 'OnlyFans' },
+  { key: 'indo_movie', label: 'Indonesia Movies' },
+  { key: 'donghua', label: 'Donghua' },
+];
+const ROXXY_SOURCE_LABELS = Object.fromEntries(ROXXY_SOURCE_DEFS.map(s => [s.key, s.label]));
+let manifestSources = ROXXY_SOURCE_DEFS.map(s => ({ ...s, configured: false, catalog_count: 0, error: '' }));
+let selectedSource = 'english_adult';
 let catalogs = [], selectedCatalog = null, selectedMeta = null, selectedEpisode = null;
 const $ = id => document.getElementById(id);
 
@@ -342,22 +376,62 @@ async function loadConfig() {
     const j = await api('/api/roxxy/config');
     $('config-state').textContent = j.configured ? `Connected` : 'Belum dikonfigurasi';
     $('download-path').value = j.download_path || $('download-path').value;
-    $('extra-config-state').textContent = j.extra_configured
-      ? `Tersambung: ${j.extra_manifest_display || 'addon kedua'}`
-      : 'Belum diatur.';
+    for (const source of ROXXY_SOURCE_DEFS) {
+      const state = $(`manifest-state-${source.key}`);
+      const info = (j.manifests || {})[source.key] || {};
+      if (state) state.textContent = info.configured ? `Tersambung: ${info.display || 'manifest'}` : 'Belum diatur.';
+      const known = manifestSources.find(s => s.key === source.key);
+      if (known) known.configured = !!info.configured;
+    }
+    // Reflect the saved slots in the Sumber dropdown before catalogs are loaded.
+    renderSourceOptions();
   } catch (e) { $('config-state').textContent = e.message; }
 }
 
 async function saveConfig() {
   try {
-    const r = await fetch('/api/roxxy/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ manifest_url: $('manifest-url').value, extra_manifest_url: $('extra-manifest-url').value, download_path: $('download-path').value }) });
+    const manifests = {};
+    for (const source of ROXXY_SOURCE_DEFS) {
+      const value = ($(`manifest-url-${source.key}`)?.value || '').trim();
+      if (value) manifests[source.key] = value;
+    }
+    const r = await fetch('/api/roxxy/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ manifests, download_path: $('download-path').value }) });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error);
-    $('manifest-url').value = '';
-    $('extra-manifest-url').value = '';
+    for (const source of ROXXY_SOURCE_DEFS) {
+      const input = $(`manifest-url-${source.key}`);
+      if (input) input.value = '';
+    }
     $('config-message').textContent = j.message;
     await loadConfig();
   } catch (e) { $('config-message').textContent = e.message; }
+}
+
+function sourceInfo(key) {
+  return manifestSources.find(s => s.key === key) || { key, label: ROXXY_SOURCE_LABELS[key] || key, configured: false };
+}
+
+function activeCatalogs() {
+  return catalogs.filter(c => (c.source || 'english_adult') === selectedSource);
+}
+
+function renderSourceOptions() {
+  const select = $('source-select');
+  if (!select) return;
+  select.innerHTML = manifestSources.map(s => {
+    const suffix = s.configured
+      ? ` (${s.catalog_count || 0} katalog)`
+      : ' — belum diatur';
+    return `<option value="${esc(s.key)}"${s.key === selectedSource ? ' selected' : ''}>${esc(s.label)}${suffix}</option>`;
+  }).join('');
+}
+
+function populateCatalogOptions() {
+  const list = activeCatalogs();
+  const select = $('catalog-select');
+  select.innerHTML = list.length
+    ? list.map(c => `<option value="${catalogs.indexOf(c)}">${esc(c.type)} · ${esc(c.name)}</option>`).join('')
+    : '<option value="">Tidak ada katalog</option>';
 }
 
 async function loadManifest() {
@@ -365,17 +439,51 @@ async function loadManifest() {
     setStatus('Mengambil manifest Video Feeds…');
     const j = await api('/api/roxxy/manifest');
     catalogs = j.catalogs || [];
-    $('catalog-select').innerHTML = catalogs.map((c, i) => `<option value="${i}">${esc(c.type)} · ${esc(c.name)}</option>`).join('');
-    setStatus(j.extra_error
-      ? `Manifest utama dimuat (${catalogs.length} katalog). Addon kedua gagal: ${j.extra_error}`
-      : `Manifest Video Feeds dimuat (${catalogs.length} katalog).`);
+    manifestSources = (j.sources && j.sources.length ? j.sources : manifestSources).map(s => ({
+      ...s,
+      label: s.label || ROXXY_SOURCE_LABELS[s.key] || s.key,
+    }));
+    if (!manifestSources.some(s => s.key === selectedSource && s.configured)) {
+      const first = manifestSources.find(s => s.configured);
+      selectedSource = first ? first.key : (manifestSources[0]?.key || 'english_adult');
+    }
+    renderSourceOptions();
+    populateCatalogOptions();
+    const errors = Object.entries(j.source_errors || {});
+    const configureCount = manifestSources.filter(s => s.configured).length;
+    setStatus(
+      `Manifest dimuat: ${catalogs.length} katalog dari ${configureCount} addon.`
+      + (errors.length ? ` Gagal: ${errors.map(([k, v]) => `${ROXXY_SOURCE_LABELS[k] || k} (${v})`).join('; ')}` : '')
+    );
     selectCatalog();
   } catch (e) { setStatus(e.message); }
 }
 
+function selectSource(value) {
+  const next = String(value || '');
+  if (manifestSources.some(s => s.key === next)) selectedSource = next;
+  renderSourceOptions();
+  populateCatalogOptions();
+  const info = sourceInfo(selectedSource);
+  if (!info.configured) {
+    setStatus(`Manifest ${info.label} belum diatur di Settings.`);
+    selectedCatalog = null;
+    $('catalog-results').innerHTML = `<div class="col-span-full flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.02] py-20 text-center"><div class="mb-3 text-3xl">🗂️</div><p class="text-sm font-semibold text-slate-300">Manifest ${esc(info.label)} belum diatur</p><p class="mt-1 text-xs text-slate-500">Buka Settings, tempel Manifest URL ${esc(info.label)}, lalu Load Catalogs.</p></div>`;
+    $('result-count').textContent = '0 judul';
+    $('load-more-wrap').classList.add('hidden');
+    return;
+  }
+  selectCatalog();
+}
+
 function selectCatalog() {
-  const c = catalogs[Number($('catalog-select').value)];
-  selectedCatalog = c || null;
+  // An empty option value means "no catalog for this addon yet"; Number("")
+  // would otherwise silently pick catalogs[0] from another source.
+  const raw = $('catalog-select').value;
+  const index = raw === '' ? -1 : Number(raw);
+  const candidate = Number.isInteger(index) && index >= 0 ? catalogs[index] : null;
+  const c = candidate && (candidate.source || 'english_adult') === selectedSource ? candidate : null;
+  selectedCatalog = c;
   roxxyCatalogRequest += 1;
   roxxyPageLoading = false;
   roxxyNextSkip = 0;
@@ -389,6 +497,7 @@ function selectCatalog() {
   if (selectedCatalog) loadCatalog();
 }
 $('catalog-select').addEventListener('change', selectCatalog);
+$('source-select').addEventListener('change', e => selectSource(e.target.value));
 
 
 let _catalogProgressHideTimer = null;
@@ -420,7 +529,7 @@ let roxxyNextSkip = 0, roxxyHasMore = false, roxxyPageLoading = false, roxxyCata
 // so every catalog can render its own results as soon as it responds.
 let roxxySearchAllState = null;
 
-function catalogKey(c) { return `${c.type}:${c.id}`; }
+function catalogKey(c) { return `${c.source || 'english_adult'}:${c.type}:${c.id}`; }
 
 // The per-catalog search summary lives inside the Genre dropdown: one compact
 // combo box instead of a chip row that eats grid space. Only catalogs that
@@ -430,13 +539,14 @@ function renderCatalogSearchSummary(state) {
   if (!select || !state) return;
   const current = select.value || '';
   const total = (window._roxxyItems || []).length;
-  const pending = catalogs.some(c => {
+  const active = activeCatalogs();
+  const pending = active.some(c => {
     const st = state.status[catalogKey(c)] || {};
     return !st.state || st.state === 'pending';
   });
   const options = [`<option value="">Semua: ${total}${pending ? ' …' : ''}</option>`];
   const perCatalog = [];
-  for (const c of catalogs) {
+  for (const c of active) {
     const key = catalogKey(c);
     const st = state.status[key] || {};
     if (st.state !== 'ok' || !st.count) continue;
@@ -505,13 +615,13 @@ async function fetchOneCatalog(catalog, skip, query, genre) {
   if (query) p.set('search', query);
   if (genre) p.set('genre', genre);
   // Each addon has its own token manifest, so the request must say which one.
-  if ((catalog.source || 'main') !== 'main') p.set('source', catalog.source);
+  p.set('source', catalog.source || 'english_adult');
   const url = `/api/roxxy/catalog/${encodeURIComponent(catalog.type)}/${encodeURIComponent(catalog.id)}?${p}`;
   const result = await api(url);
   return (result.metas || []).map(item => ({
     ...item,
     _roxxyType: catalog.type,
-    _roxxySource: catalog.source || 'main',
+    _roxxySource: catalog.source || 'english_adult',
     _roxxyCatalogId: String(catalog.id),
     _roxxyCatalogName: catalog.name,
   }));
@@ -537,13 +647,14 @@ function appendAllSearchItems(state, fresh) {
 }
 
 async function fetchAllCatalogsProgressive(state) {
-  if (!catalogs.length) {
+  const list = activeCatalogs();
+  const total = list.length;
+  if (!list.length) {
     setCatalogSearchProgress(100, 'Manifest belum dimuat.');
     return;
   }
-  const total = catalogs.length;
   state.done = 0;
-  catalogs.forEach(c => {
+  list.forEach(c => {
     const key = catalogKey(c);
     const st = state.status[key] || (state.status[key] = {
       key, type: c.type, id: String(c.id), name: c.name, count: 0, skip: 0, exhausted: false,
@@ -555,7 +666,7 @@ async function fetchAllCatalogsProgressive(state) {
   setCatalogSearchProgress(2, `Mencari di ${total} katalog secara paralel…`);
   // No artificial batch limit: every catalog is requested at once, and each
   // response is appended immediately so fast providers are visible right away.
-  const tasks = catalogs.map(async c => {
+  const tasks = list.map(async c => {
     const st = state.status[catalogKey(c)];
     try {
       const items = await fetchOneCatalog(c, st.skip, state.query, '');
@@ -593,7 +704,8 @@ async function fetchAllCatalogsProgressive(state) {
 }
 
 async function fetchCatalogPage(reset = false) {
-  if (!catalogs.length) { setStatus('Manifest belum dimuat. Klik ↻ Catalogs.'); return; }
+  const active = activeCatalogs();
+  if (!active.length) { setStatus('Manifest belum dimuat. Klik ↻ Catalogs.'); return; }
   if (roxxyPageLoading && !reset) return;
   const wantsAllCatalogs = !!$('search-all-catalogs')?.checked;
   const query = $('search-query').value.trim();
@@ -622,7 +734,7 @@ async function fetchCatalogPage(reset = false) {
         // as it arrives, so slow providers never block fast ones.
         roxxySearchAllState = newAllSearchState(query);
         renderCatalogSearchSummary(roxxySearchAllState);
-        setStatus(`Mencari "${query}" di ${catalogs.length} katalog secara paralel…`);
+        setStatus(`Mencari "${query}" di ${active.length} katalog secara paralel…`);
         await fetchAllCatalogsProgressive(roxxySearchAllState);
       } else {
         // Load more: request the next page from every catalog that still has results.
@@ -636,7 +748,7 @@ async function fetchCatalogPage(reset = false) {
       if (!window._roxxyItems.length) {
         $('catalog-results').innerHTML = '<div class="col-span-full py-12 text-center text-sm text-slate-500">Tidak ada hasil katalog ditemukan.</div>';
       }
-      const failed = catalogs.filter(c => (roxxySearchAllState.status[catalogKey(c)] || {}).state === 'error').length;
+      const failed = active.filter(c => (roxxySearchAllState.status[catalogKey(c)] || {}).state === 'error').length;
       const label = `Selesai — ${window._roxxyItems.length} hasil` + (failed ? `, ${failed} katalog gagal` : '');
       finishCatalogSearchProgress(label);
       setStatus(label + '. Filter katalog ada di dropdown genre, tanpa mencari ulang.');
@@ -689,7 +801,7 @@ async function fetchCatalogPage(reset = false) {
 async function loadCatalog() { return fetchCatalogPage(true); }
 async function loadMoreCatalog() { return fetchCatalogPage(false); }
 function roxxyQuery(source) {
-  return source && source !== 'main' ? `?source=${encodeURIComponent(source)}` : '';
+  return source ? `?source=${encodeURIComponent(source)}` : '';
 }
 
 function isSeriesMeta(m) {
@@ -702,7 +814,7 @@ async function openMeta(i) {
   try {
     setStatus('Mengambil metadata & daftar episode…');
     const type = item._roxxyType || selectedCatalog?.type;
-    const source = item._roxxySource || selectedCatalog?.source || 'main';
+    const source = item._roxxySource || selectedCatalog?.source || selectedSource || 'english_adult';
     const m = await api(`/api/roxxy/meta/${encodeURIComponent(type)}/${encodeURIComponent(item.id)}${roxxyQuery(source)}`);
     selectedMeta = { ...m.meta, _roxxyType: type, _roxxySource: source, _roxxyCatalogId: item._roxxyCatalogId || '' };
     selectedEpisode = null;
@@ -888,6 +1000,12 @@ function downloadMeta() {
   };
 }
 
+function roxxyCategory(meta) {
+  const source = String(meta?._roxxySource || '').toLowerCase();
+  const map = { english_adult: 'english_adult', onlyfans: 'english_adult', indo_movie: 'indo_movie', donghua: 'donghua' };
+  return map[source] || '';
+}
+
 function openDetail() {
   $('detail-panel').classList.remove('hidden');
   $('detail-panel').classList.add('flex');
@@ -960,7 +1078,7 @@ async function sendMetaToTorBoxWebdl() {
     if (btn) { btn.disabled = true; btn.textContent = 'Mengirim…'; }
     $('roxxy-torbox-state').textContent = 'SUBMITTING';
     $('roxxy-torbox-status').textContent = 'Mengirim halaman provider ke TorBox WebDL…';
-    const r = await fetch('/api/torbox/webdl/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: type, provider_id: meta.id, title, poster_url: meta.poster || meta.background || '', metadata: meta, subtitles: window._roxxySubtitles || [], category: '' }) });
+    const r = await fetch('/api/torbox/webdl/add', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider: type, provider_id: meta.id, title, poster_url: meta.poster || meta.background || '', metadata: meta, subtitles: window._roxxySubtitles || [], category: roxxyCategory(meta) }) });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
     setStatus(j.message || 'Halaman dikirim ke TorBox.');
@@ -1031,6 +1149,7 @@ function fmtBytes(n) {
 function labelRoute(s) {
   const map = {
     torbox_magnet: 'TorBox',
+    torbox_usenet: 'NZB',
     yt_dlp_candidate: 'yt-dlp',
     aria2_candidate: 'aria2c',
     inspect_http_before_engine: 'HTTP',
@@ -1049,7 +1168,7 @@ function renderStreams(streams, subs) {
         <div class="text-sm font-bold text-white">${esc(s.name || s.title || s.description || `Stream ${i + 1}`)}</div>
         <span class="inline-flex items-center gap-1.5">
           ${s.quality ? `<span class="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-300">${esc(s.quality)}</span>` : ''}
-          <span class="rounded-md bg-sky-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase text-sky-300">${esc(labelRoute(s))}</span>
+          <span id="stream-route-${i}" class="rounded-md bg-sky-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase text-sky-300">${esc(labelRoute(s))}</span>
         </span>
       </div>
       <div class="mt-1 text-xs text-slate-400 truncate">${esc(s.behaviorHints?.filename || s.filename || 'Nama file mengikuti server / kode JAV')}</div>
@@ -1057,82 +1176,97 @@ function renderStreams(streams, subs) {
         <span class="text-xs font-medium ${s.playable === false ? 'text-amber-400' : 'text-emerald-400'}">
           ${s.playable === false ? '⚠ Tidak ditandai playable' : '● Tersedia untuk dianalisis'}
         </span>
-        ${i === 0
-          ? `<span class="inline-flex items-center gap-2 text-xs text-sky-300" data-analysis-status>
+        <span class="inline-flex items-center gap-2 text-xs text-sky-300" data-analysis-status>
           <span class="h-3 w-3 animate-spin rounded-full border-2 border-sky-300/30 border-t-sky-300"></span>
-          Mencari sumber download…
-        </span>`
-          : `<button id="stream-trigger-${i}" onclick="analyzeStream(${i})" class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-[11px] font-semibold text-sky-300 transition hover:bg-sky-500 hover:text-slate-950">Analisis sumber ini</button>`}
+          Menunggu analisis…
+        </span>
       </div>
       <div id="stream-analysis-${i}" class="mt-2.5 text-xs text-slate-400"></div>
     </div>
   `).join('') || '<div class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Tidak ada stream tersedia untuk judul ini.</div>';
   
   $('subtitles-list').textContent = subs.length ? `Subtitle: ${subs.map(x => x.lang || x.langName || 'unknown').join(', ')}` : 'Tanpa subtitle eksternal';
-  // Hanya sumber teratas yang dianalisis otomatis: setiap analisis melakukan
-  // probe jaringan ke hoster. Sumber lain dianalisis saat dipilih, atau lewat
-  // tombol "Analisis semua".
+  // Every source is analysed automatically so the user only has to choose a
+  // route (yt-dlp, aria2c, cached/uncached TorBox, NZB) instead of pressing one
+  // button per stream. Three probes run at a time to stay friendly to hosters.
   window._roxxyAnalyses = {};
-  if (streams.length) analyzeStream(0);
+  if (streams.length) analyzeAllStreams();
 }
 
 function analyzeAllStreams() {
-  const streams = window._roxxyStreams || [];
-  streams.forEach((_, i) => {
-    if (!(window._roxxyAnalyses || {})[i]) analyzeStream(i);
+  const streamsRef = window._roxxyStreams || [];
+  const queue = streamsRef.map((_, i) => i);
+  window._roxxyAnalyses = {};
+  const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+    while (queue.length) {
+      const i = queue.shift();
+      await analyzeStream(i);
+    }
   });
+  return Promise.allSettled(workers);
+}
+
+function analysisActions(a, i) {
+  const options = Array.isArray(a.options) ? a.options : [];
+  if (!options.length) return '';
+  const buttons = options.map(option => {
+    const recommended = option.recommended ? ' ring-1 ring-sky-400/60' : '';
+    if (option.engine === 'torbox' && option.kind === 'torrent') {
+      const cached = option.mode === 'cached';
+      return `<button class="rounded-lg px-3.5 py-1.5 text-xs font-bold transition ${cached ? 'bg-emerald-500 text-slate-950 hover:bg-emerald-400' : 'bg-slate-700 text-white hover:bg-slate-600'}${recommended}" onclick="sendMagnetToTorBox(${i}, '${option.mode}')">${cached ? '⚡' : '⇪'} ${esc(option.label)}</button>`;
+    }
+    if (option.engine === 'torbox' && option.kind === 'usenet') {
+      return `<button class="rounded-lg bg-emerald-500 px-3.5 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-emerald-400${recommended}" onclick="sendNzbToTorBox(${i})">NZB ke TorBox</button>`;
+    }
+    return `<button class="rounded-lg bg-sky-500 px-3.5 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-sky-400${recommended}" onclick="startLocalDownload(${i}, '${option.engine}')">⬇ ${esc(option.label)}</button>`;
+  }).join('');
+  return `<div class="mt-2.5 flex flex-wrap items-center gap-2">${buttons}</div>`;
 }
 
 async function analyzeStream(i) {
   const streamsRef = window._roxxyStreams || [];
   const s = streamsRef[i];
   if (!s) return;
-  const trigger = $(`stream-trigger-${i}`);
-  if (trigger) { trigger.disabled = true; trigger.textContent = 'Menganalisis…'; }
   const out = $(`stream-analysis-${i}`);
-  out.innerHTML = '<div class="animate-pulse text-sky-300">Menganalisis URL dan tipe stream…</div>';
+  if (out) out.innerHTML = '<div class="animate-pulse text-sky-300">Menganalisis URL dan tipe stream…</div>';
   try {
     const r = await fetch('/api/roxxy/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stream: s }) });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
-    // Meta lain dibuka selama analisis berjalan: hasil ini sudah tidak relevan.
+    // Another title/episode opened while analysis was running: drop the result.
     if (window._roxxyStreams !== streamsRef) return;
     const a = j.analysis;
     window._roxxyAnalyses = window._roxxyAnalyses || {};
     window._roxxyAnalyses[i] = a;
-    let action = '';
-    if (a.engine === 'torbox') {
-      action = `<div data-cache-state class="mt-2 text-xs text-slate-400">Memeriksa cache TorBox…</div><div data-torbox-action><button class="mt-2 rounded-lg bg-slate-700 px-3.5 py-1.5 text-xs font-semibold text-white" disabled>Checking cache…</button></div>`;
-    } else if (['yt-dlp', 'aria2c', 'pending_http_inspection'].includes(a.engine)) {
-      action = `<button class="mt-2.5 rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-bold text-slate-950 hover:bg-sky-400" onclick="startLocalDownload(${i})">⬇ Download ke Windows</button>`;
-    }
     const meta = [a.quality, fmtBytes(a.content_length)].filter(Boolean).join(' · ');
     const engineLabel = a.resolved
       ? `Engine: <span class="text-sky-400">${esc(a.engine)}</span>`
       : (a.engine === 'pending_http_inspection'
           ? 'Header server belum terbaca'
           : `Engine: <span class="text-sky-400">${esc(a.engine)}</span>`);
-    out.innerHTML = `<div class="rounded-lg border border-white/10 bg-black/50 p-3"><div class="font-bold text-white">${engineLabel}${meta ? ` · ${esc(meta)}` : ''}</div><div class="mt-0.5 text-slate-300">${esc(a.reason)}</div>${a.inspect_error ? `<div class="mt-1 text-amber-300">${esc(a.inspect_error)}</div>` : ''}${action}</div>`;
+    out.innerHTML = `<div class="rounded-lg border border-white/10 bg-black/50 p-3"><div class="font-bold text-white">${engineLabel}${meta ? ` · ${esc(meta)}` : ''}</div><div class="mt-0.5 text-slate-300">${esc(a.reason)}</div>${a.inspect_error ? `<div class="mt-1 text-amber-300">${esc(a.inspect_error)}</div>` : ''}${a.engine === 'torbox' && a.magnet ? '<div data-cache-state class="mt-1 text-slate-400">Memeriksa cache TorBox…</div>' : ''}${analysisActions(a, i)}</div>`;
+    const route = $(`stream-route-${i}`);
+    if (route) route.textContent = a.engine === 'torbox'
+      ? (a.nzb_url ? 'NZB' : 'TorBox')
+      : String(a.engine || 'manual').replace('pending_http_inspection', 'HTTP');
     const status = out.parentElement?.querySelector('[data-analysis-status]');
     if (status) status.innerHTML = a.resolved
       ? '<span class="h-2 w-2 rounded-full bg-emerald-400"></span> Sumber siap diunduh'
-      : '<span class="h-2 w-2 rounded-full bg-amber-400"></span> Perlu pemeriksaan header';
-    if (trigger) trigger.classList.add('hidden');
-    if (a.engine === 'torbox') checkTorboxCache(i);
+      : '<span class="h-2 w-2 rounded-full bg-amber-400"></span> Pilih sumber secara manual';
+    if (a.engine === 'torbox' && a.magnet) checkTorboxCache(i);
   } catch (e) {
-    out.textContent = 'Analisis gagal: ' + e.message;
-    if (trigger) { trigger.disabled = false; trigger.textContent = 'Analisis sumber ini'; }
-    const status = out.parentElement?.querySelector('[data-analysis-status]');
+    if (out) out.textContent = 'Analisis gagal: ' + e.message;
+    const status = out?.parentElement?.querySelector('[data-analysis-status]');
     if (status) status.innerHTML = '<span class="h-2 w-2 rounded-full bg-rose-400"></span> Gagal mencari sumber';
   }
 }
 
-async function startLocalDownload(i) {
+async function startLocalDownload(i, engine = '') {
   const s = (window._roxxyStreams || [])[i];
   if (!s) return;
-  if (!confirmIfInLibrary('Download lokal')) return;
+  if (!confirmIfInLibrary(engine === 'aria2c' ? 'Download lokal via aria2c' : 'Download lokal via yt-dlp')) return;
   try {
-    const r = await fetch('/api/roxxy/local/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stream: s, meta: downloadMeta(), subtitles: window._roxxySubtitles || [], download_path: $('download-path').value }) });
+    const r = await fetch('/api/roxxy/local/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stream: s, meta: downloadMeta(), subtitles: window._roxxySubtitles || [], download_path: $('download-path').value, engine }) });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     setStatus(`Download lokal dimulai: ${j.job.title}`);
@@ -1345,7 +1479,7 @@ async function refreshSelectedMetaBadge() {
   if (!selectedMeta || $('detail-panel').classList.contains('hidden')) return;
   try {
     const type = selectedMeta._roxxyType || selectedMeta.type;
-    const source = selectedMeta._roxxySource || 'main';
+    const source = selectedMeta._roxxySource || 'english_adult';
     const catalogId = selectedMeta._roxxyCatalogId || '';
     const keepEpisodeId = selectedEpisode?.id || '';
     const m = await api(`/api/roxxy/meta/${encodeURIComponent(type)}/${encodeURIComponent(selectedMeta.id)}${roxxyQuery(source)}`);
@@ -1374,7 +1508,7 @@ function handleLibraryUpdated(imported) {
   }
 }
 
-async function sendMagnetToTorBox(i) {
+async function sendMagnetToTorBox(i, mode = 'cached') {
   const a = (window._roxxyAnalyses || {})[i];
   if (!a || a.engine !== 'torbox' || !a.magnet) { setStatus('Magnet tidak tersedia.'); return; }
   if (!confirmIfInLibrary('Kirim ke TorBox')) return;
@@ -1384,8 +1518,10 @@ async function sendMagnetToTorBox(i) {
   const expected = a.suggested_filename || stream.behaviorHints?.filename || stream.filename || '';
   try {
     $('roxxy-torbox-state').textContent = 'SUBMITTING';
-    $('roxxy-torbox-status').textContent = 'Mengirim Magnet ke TorBox…';
-    const r = await fetch('/api/torbox/add-cached', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'torrent', magnet: a.magnet, title, expected_filename: expected, poster_url: meta.poster || meta.background || '', metadata: meta, subtitles: window._roxxySubtitles || [], category: '' }) });
+    $('roxxy-torbox-status').textContent = mode === 'cached'
+      ? 'Mengirim Magnet cached ke TorBox…'
+      : 'Mengirim Torrent (uncached) ke TorBox…';
+    const r = await fetch('/api/torbox/add-cached', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'torrent', magnet: a.magnet, title, expected_filename: expected, poster_url: meta.poster || meta.background || '', metadata: meta, subtitles: window._roxxySubtitles || [], category: roxxyCategory(meta) }) });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
     setStatus(j.message || 'Magnet dikirim ke TorBox.');
@@ -1402,6 +1538,35 @@ async function sendMagnetToTorBox(i) {
   }
 }
 
+async function sendNzbToTorBox(i) {
+  const a = (window._roxxyAnalyses || {})[i];
+  const stream = (window._roxxyStreams || [])[i] || {};
+  const nzbUrl = a?.nzb_url || (String(stream.url || '').toLowerCase().includes('.nzb') ? stream.url : '');
+  if (!nzbUrl) { setStatus('Link NZB tidak tersedia.'); return; }
+  if (!confirmIfInLibrary('Kirim NZB ke TorBox')) return;
+  const meta = downloadMeta();
+  const title = meta.name || meta.jav_code || 'Video Feeds';
+  const expected = a?.suggested_filename || stream.behaviorHints?.filename || stream.filename || '';
+  try {
+    $('roxxy-torbox-state').textContent = 'SUBMITTING';
+    $('roxxy-torbox-status').textContent = 'Mengirim NZB ke TorBox Usenet…';
+    const r = await fetch('/api/torbox/add-cached', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'usenet', nzb_url: nzbUrl, title, expected_filename: expected, poster_url: meta.poster || meta.background || '', metadata: meta, subtitles: window._roxxySubtitles || [], category: roxxyCategory(meta) }) });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
+    setStatus(j.message || 'NZB dikirim ke TorBox.');
+    $('roxxy-torbox-state').textContent = 'QUEUED';
+    $('roxxy-torbox-status').textContent = j.message || 'NZB dikirim. Memantau TorBox…';
+    closeDetail();
+    openDownloadDrawer();
+    showDownloadTab('torbox');
+    await refreshRoxxyTorboxStatus();
+  } catch (e) {
+    $('roxxy-torbox-state').textContent = 'FAILED';
+    $('roxxy-torbox-status').textContent = 'Gagal: ' + e.message;
+    setStatus('Pengiriman NZB gagal: ' + e.message);
+  }
+}
+
 async function checkTorboxCache(i) {
   const a = (window._roxxyAnalyses || {})[i];
   if (!a || !a.magnet) return;
@@ -1412,16 +1577,12 @@ async function checkTorboxCache(i) {
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     const target = box.querySelector('[data-cache-state]');
     if (target) {
-      target.className = 'mt-2 text-xs font-medium ' + (j.cached ? 'text-emerald-400' : 'text-amber-400');
-      target.textContent = j.cached ? '✓ Instant Cached di TorBox. Siap dikirim.' : '⚠ Belum ter-cache. TorBox akan mengunduh torrent terlebih dahulu.';
+      target.className = 'mt-1 text-xs font-medium ' + (j.cached ? 'text-emerald-400' : 'text-amber-400');
+      target.textContent = j.cached ? '✓ Instant Cached di TorBox. Pilih Cached TorBox.' : '⚠ Belum ter-cache. TorBox akan mengunduh torrent terlebih dahulu.';
     }
-    const btn = box.querySelector('[data-torbox-action]');
-    if (btn) btn.innerHTML = `<button class="mt-2.5 rounded-lg bg-emerald-500 px-4 py-1.5 text-xs font-bold text-slate-950 hover:bg-emerald-400" onclick="sendMagnetToTorBox(${i})">⚡ Kirim ke TorBox</button>`;
   } catch (e) {
     const target = box.querySelector('[data-cache-state]');
-    if (target) { target.className = 'mt-2 text-xs text-amber-400'; target.textContent = 'Status cache tidak tersedia: ' + e.message; }
-    const btn = box.querySelector('[data-torbox-action]');
-    if (btn) btn.innerHTML = `<button class="mt-2.5 rounded-lg bg-emerald-500 px-4 py-1.5 text-xs font-bold text-slate-950 hover:bg-emerald-400" onclick="sendMagnetToTorBox(${i})">⚡ Kirim ke TorBox</button>`;
+    if (target) { target.className = 'mt-1 text-xs text-amber-400'; target.textContent = 'Status cache tidak tersedia: ' + e.message; }
   }
 }
 

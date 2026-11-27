@@ -187,16 +187,16 @@ class MultiAddonRoutingTests(unittest.TestCase):
             self.client.get("/api/roxxy/catalog/Pornhub/1:newest?source=evil")
         self.assertEqual(fetch.call_args.kwargs["source"], "main")
 
-    def test_manifest_merges_catalogs_from_both_addons(self):
+    def test_manifest_merges_catalogs_from_the_configured_addons(self):
         settings = {
             "roxxy_manifest_url": MAIN_MANIFEST,
             "roxxy_extra_manifest_url": EXTRA_MANIFEST,
         }
         manifests = {
-            "main": {"name": "Video Feeds", "types": ["Pornhub"], "catalogs": [
+            "english_adult": {"name": "Video Feeds", "types": ["Pornhub"], "catalogs": [
                 {"type": "Pornhub", "id": "1:newest", "name": "Newest"}
             ]},
-            "extra": {"name": "Donghua", "types": ["Donghuastream"], "catalogs": [
+            "donghua": {"name": "Donghua", "types": ["Donghuastream"], "catalogs": [
                 {"type": "Donghuastream", "id": "427357:latest", "name": "Latest"}
             ]},
         }
@@ -210,18 +210,21 @@ class MultiAddonRoutingTests(unittest.TestCase):
             response = self.client.get("/api/roxxy/manifest")
 
         payload = response.get_json()
-        self.assertEqual([c["source"] for c in payload["catalogs"]], ["main", "extra"])
+        # Legacy "main"/"extra" settings now map to the English Adult and
+        # Donghua addon slots.
+        self.assertEqual([c["source"] for c in payload["catalogs"]], ["english_adult", "donghua"])
         self.assertEqual(payload["types"], ["Pornhub", "Donghuastream"])
+        self.assertTrue(payload["sources"][1]["configured"])
 
-    def test_extra_manifest_failure_keeps_the_main_catalog(self):
+    def test_extra_manifest_failure_keeps_the_other_catalogs(self):
         settings = {
             "roxxy_manifest_url": MAIN_MANIFEST,
             "roxxy_extra_manifest_url": EXTRA_MANIFEST,
         }
 
         def fake_get(path, params=None, source="main"):
-            if source == "extra":
-                raise ValueError("addon kedua mati")
+            if source == "donghua":
+                raise ValueError("addon Donghua mati")
             return {"types": ["Pornhub"], "catalogs": [{"type": "Pornhub", "id": "1", "name": "A"}]}
 
         with patch.object(rm, "_settings", return_value=settings), patch.object(

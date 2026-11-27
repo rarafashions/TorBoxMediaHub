@@ -1600,11 +1600,11 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
         if confirmed_category == "indo" or indo_verdict.get("is_indo"):
             pre_cat = "indo"
             parsed["indo_match"] = indo_verdict
-        elif confirmed_category in ("anime", "donghua", "tv_show", "general_movie"):
+        elif confirmed_category in ("anime", "donghua", "tv_show", "general_movie", "indo_movie"):
             pre_cat = confirmed_category
         else:
             pre_cat = parsed["pre_category"]
-    if pre_cat in ("anime", "donghua", "tv_show", "general_movie") and confirmed_title:
+    if pre_cat in ("anime", "donghua", "tv_show", "general_movie", "indo_movie") and confirmed_title:
         # Classification is authoritative once saved; filename heuristics must not override it.
         parsed["clean_series_title"] = clean_title
     if pre_cat == "jav":
@@ -1744,6 +1744,26 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
 
     # 3. Indonesian Adult / Indo category. No external metadata provider is
     # queried here; the local keyword verdict is persisted through normal upsert.
+    if pre_cat == "indo_movie":
+        # IndonesiaMovies keeps the Roxxy-supplied meta, cover and subtitles.
+        # No external provider is allowed to replace them automatically.
+        return _finalize({
+            "title": clean_title,
+            "series_title": clean_title,
+            "year": year_hint,
+            "poster_url": item.get("poster_url"),
+            "content_category": "indo_movie",
+            "is_adult": 0,
+            "has_metadata": 1 if (item.get("plot") or item.get("poster_url")) else 0,
+            "metadata_source": item.get("metadata_source") or "roxxy",
+            "_lookup": {
+                "provider": "roxxy",
+                "status": "kept",
+                "message": "IndonesiaMovies metadata is kept from Roxxy; missing fields are filled manually.",
+            },
+            "genres": item.get("genres") or ["Indonesia"],
+        })
+
     if pre_cat == "indo":
         indo_match = parsed.get("indo_match") or indo_eng.classify_indo({
             "title": fname,

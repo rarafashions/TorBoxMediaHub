@@ -32,7 +32,7 @@ import platform_support as platform_env
 import webdl_resolver as webdl
 from roxxy_module import invalidate_library_index, roxxy_bp
 
-APP_VERSION = "v1.3D8"  # single source of truth; templates render this
+APP_VERSION = "v1.3D9"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -777,7 +777,11 @@ def _resolve_import_category(
 
 
 _ADULT_CATEGORIES = {"jav", "english_adult", "indo"}
-_NON_ADULT_CATEGORIES = {"general_movie", "tv_show", "anime", "donghua"}
+_NON_ADULT_CATEGORIES = {"general_movie", "tv_show", "anime", "donghua", "indo_movie"}
+# Categories fixed by the Roxxy addon a download came from. The hint classifier
+# must not override them, otherwise an IndonesiaMovies title could land in Indo
+# and a Donghua episode could become a plain TV show.
+_MANIFEST_LOCKED_CATEGORIES = {"english_adult", "indo_movie", "donghua"}
 
 
 def _guard_adult_reclassification(item: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
@@ -794,7 +798,10 @@ def _guard_adult_reclassification(item: Dict[str, Any], result: Dict[str, Any]) 
         return result
     demoted_indo = old_category == "indo" and new_category != "indo"
     demoted_adult = old_category in _ADULT_CATEGORIES and new_category in _NON_ADULT_CATEGORIES
-    if demoted_indo or demoted_adult:
+    # IndonesiaMovies downloads are always filed under that category, even when
+    # a filename-only reclassification suggests something else.
+    demoted_roxxy_movie = old_category == "indo_movie" and new_category != "indo_movie"
+    if demoted_indo or demoted_adult or demoted_roxxy_movie:
         guarded = dict(result)
         guarded["classification_status"] = "needs_review"
         guarded["detected_category"] = None
@@ -1401,6 +1408,10 @@ def _enrich_ids_internal(media_ids: List[int], force: bool = False) -> int:
         item = db.get_media_item(mid)
         if not item:
             continue
+        # IndonesiaMovies metadata comes from Roxxy; missing covers/subtitles are
+        # filled manually on the media card, never by an automatic provider.
+        if not force and (item.get("content_category") or "").lower() == "indo_movie":
+            continue
         if (
             not force
             and item.get("has_metadata") == 1
@@ -1488,12 +1499,21 @@ def _batch_subtitle_worker() -> None:
 
     # Indo videos intentionally do not enter any subtitle workflow: no subtitle
     # inventory scan, FFprobe, provider lookup, or download is performed.
-    indo_skipped = sum(1 for item in all_targets if (item.get("content_category") or "").lower() == "indo")
-    targets = [item for item in all_targets if (item.get("content_category") or "").lower() != "indo"]
+    # IndonesiaMovies subtitles come from Roxxy; when missing, the user fetches
+    # them manually from the media card instead of an automatic provider.
+    skip_categories = {"indo", "indo_movie"}
+    indo_skipped = sum(
+        1 for item in all_targets
+        if (item.get("content_category") or "").lower() in skip_categories
+    )
+    targets = [
+        item for item in all_targets
+        if (item.get("content_category") or "").lower() not in skip_categories
+    ]
     if not targets:
         TASK_MGR.finish(
-            f"Subtitle processing skipped: all {indo_skipped} media items are category Indo; "
-            "subtitle search is disabled for this category."
+            f"Subtitle processing skipped: all {indo_skipped} media items are category Indo/IndonesiaMovies; "
+            "subtitle search is disabled for these categories."
         )
         return
 
@@ -1501,7 +1521,7 @@ def _batch_subtitle_worker() -> None:
     total = len(targets)
     TASK_MGR.update(
         total=total, current=0,
-        message=f"Checking subtitles for {total} eligible items; skipped {indo_skipped} Indo items..."
+        message=f"Checking subtitles for {total} eligible items; skipped {indo_skipped} Indo/IndonesiaMovies items..."
     )
     torbox_key = (settings.get("torbox_api_key") or "").strip()
     processed = found_count = downloaded_count = 0
@@ -2963,7 +2983,10 @@ def api_torbox_add_cached():
     poster_url = str(
         payload.get("poster_url") or hint_metadata.get("poster") or ""
     ).strip()[:2048]
-    if hint_metadata:
+    # Addon-sourced downloads keep the category their manifest defines
+    # (English Adult/OnlyFans, IndonesiaMovies, Donghua); only unspecific
+    # submissions are re-classified from the hint.
+    if hint_metadata and category not in _MANIFEST_LOCKED_CATEGORIES:
         category = _resolve_import_category(
             category,
             hint_metadata,
@@ -3236,7 +3259,10 @@ def api_torbox_webdl_add():
     if not title:
         title = f"WebDL {urlparse(url).hostname or 'link'}"[:200]
 
-    if hint_metadata:
+    # Addon-sourced downloads keep the category their manifest defines
+    # (English Adult/OnlyFans, IndonesiaMovies, Donghua); only unspecific
+    # submissions are re-classified from the hint.
+    if hint_metadata and category not in _MANIFEST_LOCKED_CATEGORIES:
         category = _resolve_import_category(
             category,
             hint_metadata,

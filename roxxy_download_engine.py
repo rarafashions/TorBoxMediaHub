@@ -381,10 +381,10 @@ def _refresh_stream_url(meta: Dict[str, Any], stream_snapshot: Dict[str, Any]) -
     meta_id = str(meta.get("id") or "").strip()
     if not meta_type or not meta_id:
         return ""
-    source = str(meta.get("_roxxySource") or "main").strip().lower()
-    if source not in ("main", "extra"):
-        source = "main"
     import roxxy_module  # local import: keeps module startup free of a cycle
+    source = str(meta.get("_roxxySource") or "main").strip().lower()
+    if source not in roxxy_module.ROXXY_ALL_SOURCES:
+        source = "main"
     data = roxxy_module._roxxy_get(
         f"stream/{quote(meta_type, safe='')}/{quote(meta_id, safe=':')}.json",
         source=source,
@@ -442,6 +442,17 @@ def _validate_completed_file(path: str) -> Dict[str, Any]:
     return {"valid": True, "extension": ext, "size": second, "mtime": os.path.getmtime(path)}
 
 
+# Downloads from a dedicated addon keep that addon's category even when the
+# title alone would classify differently (e.g. IndonesiaMovies is always
+# "indo_movie"). JAV still requires a verified production code.
+ROXXY_SOURCE_CATEGORIES = {
+    "english_adult": "english_adult",
+    "onlyfans": "english_adult",
+    "indo_movie": "indo_movie",
+    "donghua": "donghua",
+}
+
+
 def _identify_roxxy_media(task: Dict[str, Any], validation: Dict[str, Any]) -> Dict[str, Any]:
     """D2: classify the downloaded title and detect a verified JAV duplicate."""
     metadata = task.get("metadata") or {}
@@ -456,6 +467,15 @@ def _identify_roxxy_media(task: Dict[str, Any], validation: Dict[str, Any]) -> D
         normalized_title=title or os.path.splitext(filename)[0],
         metadata=metadata,
     )
+    source = str(metadata.get("_roxxySource") or "").strip().lower()
+    forced_category = ROXXY_SOURCE_CATEGORIES.get(source)
+    if forced_category:
+        classification = dict(classification)
+        classification["detected_category"] = forced_category
+        classification["classification_status"] = "classified"
+        classification["classification_method"] = f"roxxy_source_{source}"
+        classification["category_confidence"] = 100
+        classification["signals"] = list(classification.get("signals") or []) + [f"roxxy_source:{source}"]
     category = classification.get("detected_category")
     code = str(metadata.get("jav_code") or classification.get("detected_code") or "").strip().upper()
     if category != "jav":
@@ -492,7 +512,11 @@ def _identify_roxxy_media(task: Dict[str, Any], validation: Dict[str, Any]) -> D
         "attributes": classification.get("attributes") or [],
         "code_id": code or None,
         "duplicate": duplicate,
-        "subtitle_policy": "skip" if category == "indo" else "eligible_if_needed",
+        "subtitle_policy": (
+            "skip" if category == "indo"
+            else "roxxy_only" if category == "indo_movie"
+            else "eligible_if_needed"
+        ),
     }
     return {"status": status, "file_size": int(validation.get("size") or task.get("file_size") or 0),
             "validation": result, "code_id": code, "category": category}
@@ -657,8 +681,12 @@ def _roxxy_registration_worker() -> None:
                 if attached_langs:
                     subtitle_note = "roxxy_" + "+".join(sorted(set(attached_langs)))
                 else:
-                    subtitle_note = "skipped_indonesian" if category == "indo" else "not_found"
-                    if category != "indo":
+                    subtitle_note = (
+                        "skipped_indonesian" if category == "indo"
+                        else "roxxy_only" if category == "indo_movie"
+                        else "not_found"
+                    )
+                    if category not in ("indo", "indo_movie"):
                         try:
                             settings = db.get_settings()
                             subtitle_result = subtitle_engine.fetch_subtitle_for_item(
@@ -902,6 +930,12 @@ def api_local_start():
         info = _inspect(url)
         if info["engine"] not in {"yt-dlp", "aria2c"}:
             return jsonify({"ok": False, "error": "URL belum teridentifikasi sebagai media/file yang dapat diunduh."}), 400
+        requested_engine = str(data.get("engine") or "").strip().lower()
+        engine_name = (
+            requested_engine
+            if requested_engine in {"yt-dlp", "aria2c"}
+            else info["engine"]
+        )
         outdir = _safe_download_dir(data.get("download_path") or DEFAULT_PATH)
         supplied_name = info.get("filename")
         if supplied_name:
@@ -909,7 +943,7 @@ def api_local_start():
         else:
             ext = info.get("extension") or CONTENT_TYPE_EXTS.get(info.get("content_type") or "")
             if not ext:
-                ext = ".mp4" if info["engine"] == "yt-dlp" else ".bin"
+                ext = ".mp4" if engine_name == "yt-dlp" else ".bin"
             filename = _fallback_name({**data, "name": stream.get("name"), "meta": data.get("meta")}, ext)
         job_id = uuid.uuid4().hex[:12]
         stream_snapshot = dict(stream)
@@ -917,7 +951,7 @@ def api_local_start():
         if isinstance(provided_subs, list) and provided_subs:
             stream_snapshot["_subtitles"] = provided_subs[:20]
         job = {"id": job_id, "title": str((data.get("meta") or {}).get("name") or stream.get("name") or filename),
-               "filename": filename, "engine": info["engine"], "engine_active": info["engine"],
+               "filename": filename, "engine": engine_name, "engine_active": engine_name,
                "status": "queued", "progress": 0.0,
                "message": "Menunggu slot downloader.", "output_dir": outdir,
                "created_at": datetime.now().isoformat(timespec="seconds"), "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -929,7 +963,7 @@ def api_local_start():
         with _lock:
             _jobs[job_id] = job
             _prune_job_history_locked()
-        thread = threading.Thread(target=_run_job, args=(job_id, info["engine"], info["url"], outdir, filename), daemon=True)
+        thread = threading.Thread(target=_run_job, args=(job_id, engine_name, info["url"], outdir, filename), daemon=True)
         thread.start()
         return jsonify({"ok": True, "job": {k:v for k,v in job.items() if k not in {"output_dir","pid","url","started_ts"}}, "inspection": {k:v for k,v in info.items() if k not in {"url"}}})
     except Exception as exc:

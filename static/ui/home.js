@@ -28,6 +28,7 @@
     jav: "JAV",
     english_adult: "Adult",
     indo: "Indonesia",
+    indo_movie: "Indonesia Movies",
     uncategorized: "Belum Dikategorikan",
   };
 
@@ -928,7 +929,7 @@
       const cat = entryCategory(entry) || "uncategorized";
       (byCat[cat] = byCat[cat] || []).push(entry);
     }
-    const catOrder = ["general_movie", "tv_show", "anime", "donghua", "jav", "english_adult", "indo"];
+    const catOrder = ["general_movie", "tv_show", "anime", "donghua", "jav", "english_adult", "indo", "indo_movie"];
     const catKeys = [...catOrder.filter((c) => byCat[c]), ...Object.keys(byCat).filter((c) => !catOrder.includes(c))];
     for (const cat of catKeys) {
       // Semua kategori yang punya isi ditampilkan; rail bisa digeser horizontal.

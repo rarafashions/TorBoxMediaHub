@@ -36,7 +36,16 @@ def _settings() -> Dict[str, str]:
 def _save_private_settings(values: Dict[str, str]) -> None:
     # Separate Roxxy keys are stored in the existing settings table. They are
     # deliberately not added to DEFAULT_SETTINGS, so V1.2 settings UI ignores them.
-    allowed = {"roxxy_manifest_url", "roxxy_extra_manifest_url", "roxxy_download_path"}
+    allowed = {
+        "roxxy_manifest_url",
+        "roxxy_extra_manifest_url",
+        "roxxy_manifest_url_jav",
+        "roxxy_manifest_url_english_adult",
+        "roxxy_manifest_url_onlyfans",
+        "roxxy_manifest_url_indo_movie",
+        "roxxy_manifest_url_donghua",
+        "roxxy_download_path",
+    }
     with db.get_connection() as conn:
         for key, value in values.items():
             if key not in allowed:
@@ -49,21 +58,83 @@ def _save_private_settings(values: Dict[str, str]) -> None:
         conn.commit()
 
 
-# One Roxxy installation can hold more than one addon: the hoster pack and, for
-# example, the Donghua catalogue. Every addon has its own token-protected
-# manifest, so catalog/meta/stream requests carry a `source` selector.
-ROXXY_SOURCES = ("main", "extra")
-_MANIFEST_SETTINGS = {"main": "roxxy_manifest_url", "extra": "roxxy_extra_manifest_url"}
-_MANIFEST_ENV = {"main": "ROXXY_MANIFEST_URL", "extra": "ROXXY_EXTRA_MANIFEST_URL"}
+# One Roxxy installation can hold several addons. Each addon has its own
+# token-protected manifest, so catalog/meta/stream requests carry a `source`
+# selector and the UI groups catalogs under these five sources.
+ROXXY_SOURCES = ("jav", "english_adult", "onlyfans", "indo_movie", "donghua")
+ROXXY_SOURCE_LABELS = {
+    "jav": "JAV",
+    "english_adult": "English Adult",
+    "onlyfans": "OnlyFans",
+    "indo_movie": "Indonesia Movies",
+    "donghua": "Donghua",
+}
+# Category enforced for downloads that come from a dedicated addon. The
+# IndonesiaMovies addon always lands in "indo_movie"; the adult and Donghua
+# addons reuse the existing categories.
+ROXXY_SOURCE_CATEGORIES = {
+    "english_adult": "english_adult",
+    "onlyfans": "english_adult",
+    "indo_movie": "indo_movie",
+    "donghua": "donghua",
+}
+# Older installs used one hoster manifest ("main") and one optional second
+# addon ("extra"). Both selectors keep working as aliases.
+ROXXY_SOURCE_ALIASES = {"main": "english_adult", "extra": "donghua"}
+ROXXY_ALL_SOURCES = ROXXY_SOURCES + tuple(ROXXY_SOURCE_ALIASES)
+_MANIFEST_SETTINGS = {
+    "jav": "roxxy_manifest_url_jav",
+    "english_adult": "roxxy_manifest_url_english_adult",
+    "onlyfans": "roxxy_manifest_url_onlyfans",
+    "indo_movie": "roxxy_manifest_url_indo_movie",
+    "donghua": "roxxy_manifest_url_donghua",
+}
+_MANIFEST_LEGACY_SETTINGS = {
+    "english_adult": ("roxxy_manifest_url",),
+    "donghua": ("roxxy_extra_manifest_url",),
+}
+_MANIFEST_ENV = {
+    "jav": "ROXXY_JAV_MANIFEST_URL",
+    "english_adult": "ROXXY_ENGLISH_ADULT_MANIFEST_URL",
+    "onlyfans": "ROXXY_ONLYFANS_MANIFEST_URL",
+    "indo_movie": "ROXXY_INDO_MOVIE_MANIFEST_URL",
+    "donghua": "ROXXY_DONGHUA_MANIFEST_URL",
+}
+_MANIFEST_LEGACY_ENV = {
+    "english_adult": ("ROXXY_MANIFEST_URL",),
+    "donghua": ("ROXXY_EXTRA_MANIFEST_URL",),
+}
 _MANIFEST_ERROR = (
     "Manifest URL harus HTTPS dari hub.roxxy-tech.com dan diakhiri /manifest.json."
 )
 
 
+def _canonical_source(source: str) -> str:
+    """Map legacy selectors to the five canonical addon sources."""
+    value = str(source or "").strip().lower()
+    value = ROXXY_SOURCE_ALIASES.get(value, value)
+    return value if value in ROXXY_SOURCES else "english_adult"
+
+
 def _manifest_url(source: str = "main") -> str:
-    key = _MANIFEST_SETTINGS.get(source, _MANIFEST_SETTINGS["main"])
+    canonical = _canonical_source(source)
     s = _settings()
-    return (s.get(key) or os.environ.get(_MANIFEST_ENV.get(source, "")) or "").strip()
+    value = (
+        s.get(_MANIFEST_SETTINGS[canonical])
+        or os.environ.get(_MANIFEST_ENV.get(canonical, ""))
+        or ""
+    ).strip()
+    if value:
+        return value
+    for key in _MANIFEST_LEGACY_SETTINGS.get(canonical, ()):
+        value = (s.get(key) or "").strip()
+        if value:
+            return value
+    for env_key in _MANIFEST_LEGACY_ENV.get(canonical, ()):
+        value = (os.environ.get(env_key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _validate_manifest_url(raw: str) -> None:
@@ -73,9 +144,11 @@ def _validate_manifest_url(raw: str) -> None:
 
 
 def _base_url(source: str = "main") -> str:
-    raw = _manifest_url(source)
+    canonical = _canonical_source(source)
+    raw = _manifest_url(canonical)
     if not raw:
-        raise ValueError("Manifest sumber ini belum diatur di Settings.")
+        label = ROXXY_SOURCE_LABELS.get(canonical, canonical)
+        raise ValueError(f"Manifest {label} belum diatur di Settings.")
     _validate_manifest_url(raw)
     p = urlparse(raw)
     path = p.path
@@ -92,9 +165,9 @@ def _masked_manifest(source: str = "main") -> str:
 
 
 def _source_arg() -> str:
-    """Read the addon selector; unknown values fall back to the main addon."""
+    """Read the addon selector; unknown values fall back to the legacy main addon."""
     value = (request.args.get("source") or "main").strip().lower()
-    return value if value in ROXXY_SOURCES else "main"
+    return value if value in ROXXY_ALL_SOURCES else "main"
 
 
 def _roxxy_get(
@@ -420,13 +493,22 @@ def page():
 @roxxy_bp.get("/api/roxxy/config")
 def api_config():
     s = _settings()
-    extra_raw = s.get("roxxy_extra_manifest_url") or os.environ.get("ROXXY_EXTRA_MANIFEST_URL") or ""
+    manifests = {}
+    for source in ROXXY_SOURCES:
+        manifests[source] = {
+            "label": ROXXY_SOURCE_LABELS[source],
+            "configured": bool(_manifest_url(source)),
+            "display": _masked_manifest(source),
+        }
+    donghua = manifests["donghua"]
     return jsonify({
         "ok": True,
-        "configured": bool(s.get("roxxy_manifest_url") or os.environ.get("ROXXY_MANIFEST_URL")),
-        "manifest_display": _masked_manifest("main"),
-        "extra_configured": bool(extra_raw.strip()),
-        "extra_manifest_display": _masked_manifest("extra"),
+        "configured": any(item["configured"] for item in manifests.values()),
+        # Legacy keys keep older clients working.
+        "manifest_display": manifests["english_adult"]["display"],
+        "extra_configured": donghua["configured"],
+        "extra_manifest_display": donghua["display"],
+        "manifests": manifests,
         "download_path": s.get("roxxy_download_path") or DEFAULT_DOWNLOAD_PATH,
     })
 
@@ -437,63 +519,104 @@ def api_save_config():
     manifest = (payload.get("manifest_url") or "").strip()
     extra = (payload.get("extra_manifest_url") or "").strip()
     folder = (payload.get("download_path") or DEFAULT_DOWNLOAD_PATH).strip()
+    incoming = payload.get("manifests")
+    candidates: Dict[str, str] = {}
+    if isinstance(incoming, dict):
+        for source, raw in incoming.items():
+            if raw is None or isinstance(raw, bool):
+                continue
+            text = str(raw).strip()
+            if text:
+                candidates[_canonical_source(source)] = text
+    if manifest:
+        candidates["english_adult"] = manifest
+    if extra:
+        candidates["donghua"] = extra
     try:
-        if manifest:
-            _validate_manifest_url(manifest)
-        if extra:
-            _validate_manifest_url(extra)
+        for source, raw in candidates.items():
+            _validate_manifest_url(raw)
     except ValueError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     if not folder:
         return jsonify({"ok": False, "error": "Folder download tidak boleh kosong."}), 400
-    values: Dict[str, str] = {"roxxy_download_path": folder}
-    # The settings form leaves the token field empty unless it is replaced; an
+    # The settings form leaves a token field empty unless it is replaced; an
     # empty value must not wipe an already configured manifest.
-    if manifest:
-        values["roxxy_manifest_url"] = manifest
-    if extra:
-        values["roxxy_extra_manifest_url"] = extra
+    values: Dict[str, str] = {"roxxy_download_path": folder}
+    for source, raw in candidates.items():
+        values[_MANIFEST_SETTINGS[source]] = raw
+    # Legacy columns are still written because older jobs/UI read them directly.
+    if "english_adult" in candidates:
+        values["roxxy_manifest_url"] = candidates["english_adult"]
+    if "donghua" in candidates:
+        values["roxxy_extra_manifest_url"] = candidates["donghua"]
     _save_private_settings(values)
-    return jsonify({"ok": True, "message": "Konfigurasi Video Feeds disimpan. Token tidak ditampilkan kembali."})
+    changed = len(candidates)
+    return jsonify({
+        "ok": True,
+        "changed": changed,
+        "message": (
+            f"Konfigurasi Video Feeds disimpan ({changed} manifest diperbarui). "
+            "Token tidak ditampilkan kembali."
+        ),
+    })
 
 
 @roxxy_bp.get("/api/roxxy/manifest")
 def api_manifest():
-    """Merge every configured addon so Donghua sits next to the hoster pack."""
+    """Merge every configured addon into one catalog list tagged by source."""
     try:
-        sources = ["main"]
-        if _manifest_url("extra"):
-            sources.append("extra")
+        configured = [source for source in ROXXY_SOURCES if _manifest_url(source)]
+        if not configured:
+            raise ValueError("Belum ada Manifest URL yang diatur di Settings.")
         catalogs: list = []
         types: list = []
         name = "Video Feeds"
         version = None
-        extra_error = ""
-        for position, source in enumerate(sources):
+        source_errors: Dict[str, str] = {}
+        source_counts: Dict[str, int] = {}
+        for position, source in enumerate(configured):
             try:
                 data = _roxxy_get("manifest.json", source=source)
             except Exception as exc:
-                if position == 0:
-                    raise
-                extra_error = _safe_error(exc)
+                source_errors[source] = _safe_error(exc)
                 continue
-            if position == 0:
+            if position == 0 or name == "Video Feeds":
                 name = data.get("name", name)
-                version = data.get("version")
+                if version is None:
+                    version = data.get("version")
+            count = 0
             for item in data.get("catalogs") or []:
                 if not isinstance(item, dict):
                     continue
                 catalogs.append({**item, "source": source})
+                count += 1
+            source_counts[source] = count
             for item_type in data.get("types") or []:
                 if item_type not in types:
                     types.append(item_type)
+        if not catalogs and source_errors:
+            raise ValueError("Semua manifest gagal dimuat: " + "; ".join(
+                f"{ROXXY_SOURCE_LABELS[src]}: {err}" for src, err in source_errors.items()
+            ))
+        sources = [
+            {
+                "key": source,
+                "label": ROXXY_SOURCE_LABELS[source],
+                "configured": bool(_manifest_url(source)),
+                "catalog_count": source_counts.get(source, 0),
+                "error": source_errors.get(source, ""),
+            }
+            for source in ROXXY_SOURCES
+        ]
         return jsonify({
             "ok": True,
             "name": name,
             "version": version,
             "types": types,
             "catalogs": catalogs,
-            "extra_error": extra_error,
+            "sources": sources,
+            "source_errors": source_errors,
+            "extra_error": source_errors.get("donghua", ""),
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": _safe_error(exc)}), 502
@@ -562,6 +685,8 @@ def api_streams(stream_type: str, stream_id: str):
             lower = url.lower()
             if lower.startswith("magnet:"):
                 stream["route_hint"] = "torbox_magnet"
+            elif _looks_like_nzb_url(url):
+                stream["route_hint"] = "torbox_usenet"
             elif ".m3u8" in lower or ".mpd" in lower:
                 stream["route_hint"] = "yt_dlp_candidate"
             elif ".mkv" in lower or "hevc" in (stream.get("name") or "").lower():
@@ -604,6 +729,44 @@ def _decode_forwarded_magnet(raw_url: str) -> Optional[str]:
     except Exception:
         return None
     return None
+
+
+def _decode_forwarded_nzb(raw_url: str) -> Optional[str]:
+    """Extract an NZB link from Roxxy's usenet forwarding payload.
+
+    The hoster addon wraps NZB downloads in a signed ``/nzb/dl?d=<base64>``
+    URL. TorBox needs the real NZB URL, not the forwarder.
+    """
+    parsed = urlparse(raw_url)
+    if parsed.scheme not in ("http", "https"):
+        return None
+    if parsed.hostname not in {"rt-openclaw.roxxy-tech.com"}:
+        return None
+    if "/nzb/" not in parsed.path and not parsed.path.endswith(".nzb"):
+        return None
+    encoded = (parse_qs(parsed.query).get("d") or [""])[0]
+    if not encoded:
+        return None
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    for key in ("n", "nzb", "u", "url", "link"):
+        value = unquote(str(payload.get(key) or "")).strip()
+        if value.startswith(("http://", "https://")):
+            return value
+    return None
+
+
+def _looks_like_nzb_url(raw_url: str) -> bool:
+    lower = str(raw_url or "").lower()
+    if lower.endswith(".nzb"):
+        return True
+    parsed = urlparse(lower)
+    return "/nzb/" in parsed.path or parsed.path.endswith(".nzb")
 
 
 _QUALITY_RE = re.compile(r"\b(2160|1440|1080|720|480|360)\s?p\b", re.I)
@@ -679,10 +842,25 @@ def _classify_stream(stream: Dict[str, Any]) -> Dict[str, Any]:
     url = str(stream.get("url") or "").strip()
     name = str(stream.get("name") or stream.get("title") or stream.get("description") or "")
     lower = url.lower()
-    result = {"engine": "manual", "route": "manual_inspection", "reason": "URL belum dapat diklasifikasikan secara aman.", "magnet": None}
+    result = {
+        "engine": "manual",
+        "route": "manual_inspection",
+        "reason": "URL belum dapat diklasifikasikan secara aman.",
+        "magnet": None,
+        "nzb_url": None,
+    }
     magnet = url if lower.startswith("magnet:?") else _decode_forwarded_magnet(url)
     if magnet:
         result.update(engine="torbox", route="torbox_magnet", reason="Magnet URI terdeteksi dari URL stream atau payload forwarding Video Feeds.", magnet=magnet)
+        return result
+    nzb = _decode_forwarded_nzb(url)
+    if nzb or _looks_like_nzb_url(url):
+        result.update(
+            engine="torbox",
+            route="torbox_usenet",
+            reason="Link NZB terdeteksi; diarahkan ke Usenet TorBox.",
+            nzb_url=nzb or url,
+        )
         return result
     path = urlparse(url).path.lower() if lower.startswith(("http://", "https://")) else ""
     if path.endswith((".m3u8", ".mpd")):
@@ -694,6 +872,32 @@ def _classify_stream(stream: Dict[str, Any]) -> Dict[str, Any]:
     elif lower.startswith(("http://", "https://")):
         result.update(engine="pending_http_inspection", route="inspect_http", reason="HTTP/HTTPS belum menunjukkan ekstensi. Perlu pemeriksaan header sebelum memilih aria2c atau yt-dlp.")
     return result
+
+
+def _stream_download_options(analysis: Dict[str, Any], url: str) -> list:
+    """Every route the user may choose for one analysed stream.
+
+    Torrents can go to TorBox cached or uncached, NZBs go to TorBox Usenet, and
+    plain HTTP media can be fetched locally by either yt-dlp or aria2c.
+    """
+    if analysis.get("magnet"):
+        return [
+            {"engine": "torbox", "kind": "torrent", "mode": "cached", "label": "Cached TorBox"},
+            {"engine": "torbox", "kind": "torrent", "mode": "uncached", "label": "Torrent ke TorBox"},
+        ]
+    if analysis.get("nzb_url"):
+        return [{"engine": "torbox", "kind": "usenet", "mode": "nzb", "label": "NZB ke TorBox"}]
+    lower = str(url or "").lower()
+    if not lower.startswith(("http://", "https://")):
+        return []
+    preferred = analysis.get("engine")
+    options = [
+        {"engine": "yt-dlp", "mode": "local", "label": "yt-dlp (lokal)"},
+        {"engine": "aria2c", "mode": "local", "label": "aria2c (lokal)"},
+    ]
+    for option in options:
+        option["recommended"] = option["engine"] == preferred
+    return options
 
 
 @roxxy_bp.post("/api/roxxy/analyze")
@@ -732,6 +936,8 @@ def api_analyze_stream():
         except Exception as exc:
             analysis["resolved"] = False
             analysis["inspect_error"] = str(exc)[:200]
+
+    analysis["options"] = _stream_download_options(analysis, url)
 
     # Never echo signed/forwarding URLs. The extracted magnet is returned only
     # to the authenticated local UI for explicit TorBox submission.
