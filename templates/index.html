@@ -621,23 +621,7 @@
             <button onclick="setDiscoveryCategory('tv_show')" id="disc-cat-tv_show" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">TV Shows</button>
             <button onclick="setDiscoveryCategory('anime')" id="disc-cat-anime" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">Anime</button>
             <button onclick="setDiscoveryCategory('donghua')" id="disc-cat-donghua" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">Donghua</button>
-            <button onclick="setDiscoveryCategory('jav')" id="disc-cat-jav" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">JAV</button>
-            <button onclick="setDiscoveryCategory('english_adult')" id="disc-cat-english_adult" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">English Adult</button>
-            <button onclick="setDiscoveryCategory('indo')" id="disc-cat-indo" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">Indo</button>
           </div>
-
-          <!-- English Adult provider selector; each provider keeps the same four feed modes -->
-          <div id="disc-adult-provider-wrap" class="hidden w-full flex-wrap items-center gap-2 rounded-lg border border-indigo-500/30 bg-slate-950/70 px-3 py-2">
-            <label for="disc-adult-provider" class="text-[11px] uppercase tracking-wide text-slate-400 font-bold">English Adult Website</label>
-            <select id="disc-adult-provider" onchange="setAdultProvider(this.value)" class="bg-slate-800 border border-slate-700 rounded-md px-3 py-1.5 text-xs text-white min-w-[190px]">
-              <option value="all">All Providers (ThePornDB + Eporner + XHamster)</option>
-              <option value="eporner">Eporner</option>
-              <option value="theporndb">ThePornDB</option>
-              <option value="xhamster">XHamster</option>
-            </select>
-            <button onclick="loadTorboxWebdlHosters()" class="px-2.5 py-1.5 rounded-md text-[11px] font-semibold bg-emerald-950 border border-emerald-700 text-emerald-200">TorBox Supported Hosters</button>
-          </div>
-          <div id="disc-webdl-hosters-panel" class="hidden w-full rounded-lg border border-emerald-800/70 bg-slate-950 px-3 py-2 text-[10px] text-slate-300"></div>
 
           <!-- Sub-Tabs: Trending / Popular / Top Rated / Search -->
           <div class="inline-flex bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
@@ -656,7 +640,7 @@
               type="text"
               oninput="onDiscoverySearchInput()"
               onkeydown="if(event.key==='Enter') executeDiscoverySearch()"
-              placeholder="Search title, JAV code (e.g. SSIS-001), anime, or actress..."
+              placeholder="Search movie, TV show, anime, or donghua title..."
               class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-3.5 pr-8 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
             />
             <button
@@ -734,18 +718,6 @@
           <div id="disc-cache-results" class="space-y-2"></div>
         </div>
 
-        <!-- Multi-select TorBox Web Download action bar -->
-        <div id="disc-webdl-selection-bar" class="hidden sticky top-0 z-20 bg-emerald-950/95 border border-emerald-500/50 rounded-xl px-3.5 py-3 flex flex-wrap items-center justify-between gap-2 shadow-xl">
-          <div class="text-xs text-emerald-100"><b id="disc-webdl-selected-count">0/10</b> selected for TorBox Web Downloads <span class="text-[10px] text-emerald-300/70">(max 10 per batch)</span></div>
-          <div class="flex items-center gap-2">
-            <button onclick="selectAllDiscoveryWebdlItems()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-white">Select All (Page)</button>
-            <button onclick="clearDiscoveryWebdlSelection()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-white">Clear</button>
-            <button id="disc-webdl-submit-btn" onclick="submitDiscoveryWebdlSelection()" class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-[11px] font-bold text-white">&#10148; Send Selected to TorBox</button>
-          </div>
-        </div>
-        <div id="disc-webdl-rate-limit" class="hidden rounded-xl border border-amber-600/50 bg-amber-950/50 p-3 text-xs text-amber-100"></div>
-        <div id="disc-webdl-results" class="hidden rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs space-y-1.5"></div>
-
         <!-- Client-side Discovery filters: applied only after results have loaded -->
         <div class="flex flex-wrap items-center justify-between gap-2 py-1">
           <label for="disc-hide-in-library" class="flex items-center gap-2 text-[10px] text-slate-300 cursor-pointer select-none">
@@ -754,17 +726,6 @@
             Hide In Library Items
           </label>
           <span id="disc-visible-count" class="text-[10px] text-slate-500"></span>
-        </div>
-
-        <!-- Discovery duration sorting (shown for Eporner when applicable) -->
-        <div id="disc-duration-sort-wrap" class="hidden flex items-center justify-end gap-2 py-1">
-          <label for="disc-duration-sort" class="text-[10px] text-slate-400">Sort by duration</label>
-          <select id="disc-duration-sort" onchange="setDiscoveryDurationSort(this.value)"
-            class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[10px] text-white">
-            <option value="none">Default</option>
-            <option value="asc">Shortest first</option>
-            <option value="desc">Longest first</option>
-          </select>
         </div>
 
         <!-- Discovery Items Grid: compact cards; 50 results per progressive-load batch -->
@@ -830,10 +791,6 @@
     let discItems = [];
     // Optional client-side filter. Never sent to the Discovery API or applied during feed loading.
     let discHideInLibraryItems = false;
-    let discAdultProvider = "all";
-    let discDurationSort = "none";
-    let discWebdlSelected = new Set();
-    let discWebdlCardStatus = {};
     const DISC_PAGE_SIZE = 50;
     let discRequestedCount = DISC_PAGE_SIZE;
     const DISC_SESSION_MAX = 300;
@@ -877,7 +834,6 @@
       if (scrollArea) scrollArea.scrollTop = 0;
       updateDiscoveryBackToTop();
       updateDiscoveryClearButtons();
-      updateAdultProviderVisibility();
       if (!discItems.length) {
         loadDiscoveryFeed();
       }
@@ -932,46 +888,9 @@
       loadDiscoveryFeed();
     }
 
-    function updateAdultProviderVisibility() {
-      const wrap = document.getElementById("disc-adult-provider-wrap");
-      if (wrap) {
-        wrap.classList.toggle("hidden", discCategory !== "english_adult");
-        wrap.classList.toggle("flex", discCategory === "english_adult");
-      }
-      const select = document.getElementById("disc-adult-provider");
-      if (select) select.value = discAdultProvider;
-    }
-
-    function updateAdultProviderButtons() {
-      const select = document.getElementById("disc-adult-provider");
-      if (select) select.value = discAdultProvider;
-
-      // Supported English Adult providers expose the standard Discovery feed modes.
-      const trendingBtn = document.getElementById("disc-mode-trending");
-      if (trendingBtn) {
-        trendingBtn.textContent = "🔥 Trending";
-        trendingBtn.title = "";
-      }
-    }
-
-    function setAdultProvider(provider) {
-      discAdultProvider = ["all", "eporner", "theporndb", "xhamster"].includes(provider) ? provider : "all";
-      discDurationSort = "none";
-      updateAdultProviderButtons();
-      discWebdlSelected.clear();
-      updateDiscoveryWebdlSelectionUI();
-      closeDiscoveryCacheDrawer();
-      loadDiscoveryFeed();
-    }
-
     function setDiscoveryCategory(cat) {
       discRequestedCount = DISC_PAGE_SIZE;
       discCategory = cat;
-      if (cat === "english_adult") discAdultProvider = "all";
-      updateAdultProviderButtons();
-      discWebdlSelected.clear();
-      updateDiscoveryWebdlSelectionUI();
-      updateAdultProviderVisibility();
       document.querySelectorAll(".disc-cat-btn").forEach(btn => {
         const isAct = btn.id === `disc-cat-${cat}`;
         btn.className = isAct
@@ -1033,14 +952,12 @@
     async function directSearchTorboxCacheFromInput() {
       const q = document.getElementById("disc-search-input").value.trim();
       if (!q) {
-        showToast("Enter a title or JAV code in the search box first.", true);
+        showToast("Enter a title in the search box first.", true);
         return;
       }
-      const codeMatch = q.match(/\b([A-Za-z]{2,6}-\d{2,5})\b/);
       const syntheticItem = {
         id: "direct:query",
         title: q,
-        code_id: codeMatch ? codeMatch[1].toUpperCase() : "",
         year: null,
         rating: 0,
         poster_url: "",
@@ -1053,31 +970,6 @@
       await openCacheDrawerForItem(syntheticItem);
     }
 
-    function parseDiscoveryDurationSeconds(value) {
-      const raw = String(value || "").trim();
-      if (!raw) return null;
-      if (/^\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
-      const parts = raw.split(":").map(x => Number(x));
-      if (!parts.length || parts.some(x => !Number.isFinite(x))) return null;
-      return parts.reduce((total, part) => total * 60 + part, 0);
-    }
-
-    function setDiscoveryDurationSort(direction) {
-      discDurationSort = ["asc", "desc"].includes(direction) ? direction : "none";
-      if (discDurationSort !== "none") {
-        const sign = discDurationSort === "asc" ? 1 : -1;
-        discItems.sort((a, b) => {
-          const da = parseDiscoveryDurationSeconds(a.duration);
-          const db = parseDiscoveryDurationSeconds(b.duration);
-          if (da == null && db == null) return 0;
-          if (da == null) return 1;
-          if (db == null) return -1;
-          return (da - db) * sign;
-        });
-      }
-      renderDiscoveryGrid();
-    }
-
     async function loadDiscoveryFeed(append = false) {
       const grid = document.getElementById("disc-grid");
       const empty = document.getElementById("disc-empty");
@@ -1087,10 +979,6 @@
       const loadNote = document.getElementById("disc-load-more-note");
 
       if (!append) {
-        discWebdlSelected.clear();
-        updateDiscoveryWebdlSelectionUI();
-        const batchResults = document.getElementById("disc-webdl-results");
-        if (batchResults) { batchResults.classList.add("hidden"); batchResults.innerHTML = ""; }
         discRequestedCount = DISC_PAGE_SIZE;
         empty.classList.add("hidden");
         grid.innerHTML = `
@@ -1107,7 +995,6 @@
       const params = new URLSearchParams({
         category: discCategory,
         feed: requestFeed,
-        provider: discCategory === "english_adult" ? discAdultProvider : "all",
         query: query,
         limit: String(discRequestedCount),
       });
@@ -1142,28 +1029,6 @@
           }
         } else {
           discItems = incoming;
-          if (discDurationSort !== "none") {
-            const sign = discDurationSort === "asc" ? 1 : -1;
-            discItems.sort((a, b) => {
-              const da = parseDiscoveryDurationSeconds(a.duration);
-              const db = parseDiscoveryDurationSeconds(b.duration);
-              if (da == null && db == null) return 0;
-              if (da == null) return 1;
-              if (db == null) return -1;
-              return (da - db) * sign;
-            });
-          }
-        }
-        if (append && discDurationSort !== "none") {
-          const sign = discDurationSort === "asc" ? 1 : -1;
-          discItems.sort((a, b) => {
-            const da = parseDiscoveryDurationSeconds(a.duration);
-            const db = parseDiscoveryDurationSeconds(b.duration);
-            if (da == null && db == null) return 0;
-            if (da == null) return 1;
-            if (db == null) return -1;
-            return (da - db) * sign;
-          });
         }
         renderDiscoveryGrid();
         const canLoadMore = discItems.length < DISC_SESSION_MAX && incoming.length >= discRequestedCount;
@@ -1212,10 +1077,7 @@
         movie: "general_movie",
         tv_show: "tv_show",
         anime: "anime",
-        donghua: "donghua",
-        jav: "jav",
-        english_adult: "english_adult",
-        indo: "indo"
+        donghua: "donghua"
       };
       return aliases[String(discCategory || "").toLowerCase()] || "";
     }
@@ -1234,29 +1096,18 @@
       const category = getDiscoveryLibraryCategory();
       if (!category) return [];
 
-      const targetCode = normalizeLibraryMatchText(discItem.code_id);
       const targetTitle = getFirstNormalizedValue(discItem, ["title", "original_title"]);
       const targetYear = String(discItem.year || discItem.release_year || "").trim();
-      const targetStudio = normalizeLibraryMatchText(discItem.studio || discItem.production);
       const targetTmdbId = String(discItem.tmdb_id || discItem.tmdbId || "").trim();
       const targetAnilistId = String(discItem.anilist_id || discItem.anilistId || "").trim();
-      const targetProviderId = String(discItem.provider_id || discItem.external_id || "").trim();
       const targetSeason = discItem.season_num ?? discItem.season_number ?? discItem.season ?? null;
       const targetEpisode = discItem.episode_num ?? discItem.episode_number ?? discItem.episode ?? null;
 
-      if (category === "jav" && !targetCode) return [];
-      if (category !== "jav" && !targetTitle && !targetTmdbId && !targetAnilistId && !targetProviderId) return [];
+      if (!targetTitle && !targetTmdbId && !targetAnilistId) return [];
 
       return allItems.filter(localIt => {
         // Category equality is mandatory for every Discovery category.
         if (String(localIt.content_category || "").toLowerCase() !== category) return false;
-
-        const localCode = normalizeLibraryMatchText(localIt.code_id);
-
-        // JAV identity is the catalogue code only. Never fall back to title.
-        if (category === "jav") {
-          return Boolean(localCode && targetCode && localCode === targetCode);
-        }
 
         const localTmdbId = String(localIt.tmdb_id || "").trim();
         const localAnilistId = String(localIt.anilist_id || "").trim();
@@ -1265,20 +1116,9 @@
         if (targetTmdbId && localTmdbId) return targetTmdbId === localTmdbId;
         if (targetAnilistId && localAnilistId) return targetAnilistId === localAnilistId;
 
-        // Adult catalogue entries require exact title AND studio evidence.
-        // A title-only match is not sufficient for English Adult or Indo.
-        const localTitle = getFirstNormalizedValue(localIt, ["title", "original_title", "normalized_title"]);
-        if (category === "english_adult") {
-          const localStudio = normalizeLibraryMatchText(localIt.studio);
-          return Boolean(targetTitle && localTitle === targetTitle &&
-            targetStudio && localStudio && targetStudio === localStudio);
-        }
-        if (category === "indo") {
-          return Boolean(targetTitle && localTitle === targetTitle);
-        }
-
         // TV/Movie/Anime/Donghua: if canonical IDs are unavailable,
         // require exact title + year. Never use search_query or series_title.
+        const localTitle = getFirstNormalizedValue(localIt, ["title", "original_title", "normalized_title"]);
         if (!targetTitle || !localTitle || localTitle !== targetTitle) return false;
 
         const localYear = String(localIt.year || "").trim();
@@ -1297,19 +1137,9 @@
       });
     }
 
+    // Discovery posters come from TMDb and AniList CDNs, which allow direct hotlinking.
     function getDiscoveryPosterSrc(item) {
-      const rawUrl = (item.poster_url || item.cover_url || item.image || "").trim();
-      if (!rawUrl) return "";
-      if (rawUrl.startsWith("/")) return rawUrl;
-      const needsProxy =
-        discCategory === "jav" ||
-        discCategory === "english_adult" ||
-        discCategory === "indo" ||
-        /missav|fourhoi|surrit|dmm\.co\.jp|javdatabase|javtrailers|mgstage|prestige-av|theporndb/i.test(rawUrl);
-      if (needsProxy) {
-        return `/api/discover/poster-proxy?url=${encodeURIComponent(rawUrl)}`;
-      }
-      return rawUrl;
+      return (item.poster_url || item.cover_url || item.image || "").trim();
     }
 
     function setHideInLibraryItems(checked) {
@@ -1337,14 +1167,6 @@
         return;
       }
 
-      const sortWrap = document.getElementById("disc-duration-sort-wrap");
-      const sortSelect = document.getElementById("disc-duration-sort");
-      const canSortDuration = discCategory === "english_adult" &&
-        discAdultProvider === "eporner" &&
-        discItems.some(item => item && item.duration);
-      if (sortWrap) sortWrap.classList.toggle("hidden", !canSortDuration);
-      if (sortSelect && sortSelect.value !== discDurationSort) sortSelect.value = discDurationSort;
-
       const posterAspectClass = "aspect-video";
       const evaluatedItems = discItems.map((item, idx) => {
         const matches = findMatchingLibraryItems(item);
@@ -1367,11 +1189,8 @@
 
       grid.innerHTML = visibleItems.map(({ item, idx, matches, inLib }) => {
         const posterSrc = getDiscoveryPosterSrc(item);
-        const fallbackLabel = escapeHtml(item.code_id || item.title);
-        const hasWebdlUrl = Boolean(item.original_url && /^https:\/\//i.test(item.original_url));
-        const isWebdlSelected = discWebdlSelected.has(String(item.id));
-        const durationText = String(item.duration || "").trim();
-        const overviewText = String(item.overview || "").replace(/Duration:\s*[^•|]+[•|]?/i, "").trim();
+        const fallbackLabel = escapeHtml(item.title);
+        const overviewText = String(item.overview || "").trim();
 
         const posterHtml = posterSrc
           ? `<img
@@ -1403,210 +1222,19 @@
                   <span class="px-2 py-0.5 rounded bg-emerald-600/95 text-white text-[10px] font-bold shadow">&#10003; IN LIBRARY (${matches.length})</span>
                 </div>
               ` : ""}
-              ${hasWebdlUrl ? `<label class="absolute top-2 right-2 flex items-center gap-1 rounded-md bg-slate-950/90 border border-emerald-500/60 px-2 py-1 text-[10px] font-bold text-emerald-200 cursor-pointer shadow"><input type="checkbox" ${isWebdlSelected ? "checked" : ""} onchange="toggleDiscoveryWebdlSelection(${idx}, this.checked)" class="accent-emerald-500 w-3.5 h-3.5" /> Select</label>` : ""}
             </div>
 
             <div class="p-2 flex-1 flex flex-col justify-between gap-1.5 min-h-[112px]">
               <div class="min-w-0">
-                ${item.code_id ? `<div class="text-[9px] font-mono text-rose-400 font-bold truncate">${escapeHtml(item.code_id)}</div>` : ""}
                 <h4 class="text-[11px] font-bold text-white line-clamp-2 leading-snug" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h4>
-                ${durationText ? `<div class="text-[10px] text-cyan-300 font-semibold mt-1">Duration: ${escapeHtml(durationText)}</div>` : ""}
                 ${overviewText ? `<p class="text-[9px] text-slate-400 line-clamp-1 mt-0.5">${escapeHtml(overviewText)}</p>` : ""}
               </div>
 
-              ${item.original_url && /^https:\/\//i.test(item.original_url) ? `<a href="${escapeHtml(item.original_url)}" target="_blank" rel="noopener noreferrer" class="block w-full text-center py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-sky-300 transition">Open Original ${escapeHtml(item.source_provider || "Website")} Page ↗</a><button onclick="sendDiscoveryItemToTorBox(${idx})" class="w-full py-1.5 px-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-[11px] font-bold text-white transition">Send to TorBox</button>${discWebdlCardStatus[String(item.id)] ? `<div class="text-[9px] ${discWebdlCardStatus[String(item.id)].ok ? "text-emerald-300" : discWebdlCardStatus[String(item.id)].pending ? "text-sky-300" : "text-rose-300"}">${escapeHtml(discWebdlCardStatus[String(item.id)].message || "")}</div>` : ""}` : ""}
-              ${item.source_provider === "Eporner" ? "" : `<button onclick="openDiscoveryCacheCheck(${idx})" class="w-full py-1.5 px-2 rounded-lg ${inLib ? "bg-amber-600 hover:bg-amber-500" : "bg-indigo-600 hover:bg-indigo-500"} text-[11px] font-semibold text-white transition">${inLib ? "&#9889; Check Cache / Upgrade" : "&#128269; Check TorBox Cache"}</button>`}
+              <button onclick="openDiscoveryCacheCheck(${idx})" class="w-full py-1.5 px-2 rounded-lg ${inLib ? "bg-amber-600 hover:bg-amber-500" : "bg-indigo-600 hover:bg-indigo-500"} text-[11px] font-semibold text-white transition">${inLib ? "&#9889; Check Cache / Upgrade" : "&#128269; Check TorBox Cache"}</button>
             </div>
           </div>
         `;
       }).join("");
-    }
-
-    async function loadTorboxWebdlHosters() {
-      const panel = document.getElementById("disc-webdl-hosters-panel");
-      if (!panel) return;
-      panel.classList.remove("hidden");
-      panel.textContent = "Loading live TorBox WebDL hoster list...";
-      try {
-        const res = await fetch("/api/torbox/webdl/hosters");
-        const data = await res.json();
-        if (!data.ok) {
-          panel.textContent = data.error || "Could not load TorBox hosters.";
-          return;
-        }
-        const raw = data.hosters;
-        const rows = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.entries(raw).map(([key, value]) => ({name:key, value})) : []);
-        const labels = rows.map(row => {
-          if (typeof row === "string") return row;
-          return row.name || row.host || row.domain || row.hoster || row.value?.name || "";
-        }).filter(Boolean);
-        panel.innerHTML = labels.length
-          ? `<div class="font-bold text-emerald-300 mb-1">TorBox reports ${labels.length} supported hoster entries:</div><div class="flex flex-wrap gap-1">${labels.slice(0, 120).map(x => `<span class="rounded bg-slate-800 px-1.5 py-0.5">${escapeHtml(x)}</span>`).join("")}</div><div class="mt-1 text-slate-500">Final acceptance is determined by TorBox for each submitted URL.</div>`
-          : `<div class="text-amber-200">TorBox returned a hoster response, but its format was not recognized. Check server log/API response.</div>`;
-      } catch (e) {
-        panel.textContent = `Hoster lookup failed: ${e}`;
-      }
-    }
-
-    function updateDiscoveryWebdlSelectionUI() {
-      const bar = document.getElementById("disc-webdl-selection-bar");
-      const count = document.getElementById("disc-webdl-selected-count");
-      const submit = document.getElementById("disc-webdl-submit-btn");
-      if (count) count.textContent = `${discWebdlSelected.size}/10`;
-      // Keep the toolbar visible throughout English Adult browsing so Select All
-      // is available before the first checkbox is selected.
-      if (bar) bar.classList.toggle("hidden", discCategory !== "english_adult");
-      if (submit) submit.disabled = discWebdlSelected.size === 0;
-    }
-
-    function toggleDiscoveryWebdlSelection(idx, checked) {
-      const item = discItems[idx];
-      if (!item || !item.original_url) return;
-      const key = String(item.id);
-      if (checked) {
-        if (discWebdlSelected.size >= 10) {
-          showToast("Maximum 10 links per TorBox Web Download batch.", true);
-          renderDiscoveryGrid();
-          return;
-        }
-        discWebdlSelected.add(key);
-      } else {
-        discWebdlSelected.delete(key);
-      }
-      updateDiscoveryWebdlSelectionUI();
-    }
-
-    function clearDiscoveryWebdlSelection() {
-      discWebdlSelected.clear();
-      updateDiscoveryWebdlSelectionUI();
-      renderDiscoveryGrid();
-    }
-
-    function selectAllDiscoveryWebdlItems() {
-      const eligible = discItems.filter(item =>
-        item && item.id != null && item.original_url && /^https:\/\//i.test(item.original_url)
-      );
-      const remaining = Math.max(0, 10 - discWebdlSelected.size);
-      const additions = eligible.filter(item => !discWebdlSelected.has(String(item.id))).slice(0, remaining);
-      additions.forEach(item => discWebdlSelected.add(String(item.id)));
-      updateDiscoveryWebdlSelectionUI();
-      renderDiscoveryGrid();
-      if (remaining === 0) {
-        showToast("Selection limit reached: maximum 10 links per batch.", true);
-      } else if (additions.length === 0) {
-        showToast("No additional eligible links on this page.", true);
-      } else {
-        showToast(`${additions.length} link(s) selected. ${discWebdlSelected.size}/10 selected.`);
-      }
-    }
-
-    async function sendDiscoveryItemToTorBox(idx) {
-      const item = discItems[idx];
-      if (!item || !item.original_url) return;
-      const key = String(item.id);
-      discWebdlCardStatus[key] = { ok: false, pending: true, message: "Submitting to TorBox..." };
-      renderDiscoveryGrid();
-      setGlobalActionBusy(true, "TORBOX WEB DOWNLOAD", `Submitting ${item.title || "selected link"}...`);
-      try {
-        const data = await submitDiscoveryWebdlItems([item]);
-        const result = (data.results || [])[0] || {};
-        const accepted = Boolean(result.ok || Number(data.submitted) > 0);
-        discWebdlCardStatus[key] = {
-          ok: accepted,
-          pending: false,
-          message: accepted ? "✓ Submitted to TorBox Web Downloads" : `✕ ${result.error || result.message || "TorBox rejected this link"}`,
-        };
-        renderDiscoveryGrid();
-        const box = document.getElementById("disc-webdl-results");
-        if (box) {
-          box.classList.remove("hidden");
-          box.innerHTML = `<div class="font-bold ${accepted ? "text-emerald-300" : "text-rose-300"}">${accepted ? "✓ Single link submitted" : "✕ Single link failed"}</div><div class="border-t border-slate-800 pt-1.5 text-slate-200">${escapeHtml(item.title || "Selected link")}</div><div class="text-slate-400">${escapeHtml(result.message || result.error || (accepted ? "TorBox accepted the Web Download request." : "TorBox did not accept this link."))}</div>`;
-        }
-        if (accepted) showToast(`TorBox accepted: ${item.title || "Selected link"}`);
-        else showToast(result.rate_limited ? "TorBox WebDL limit reached. Check the countdown before retrying." : `TorBox rejected: ${result.error || item.title || "Selected link"}`, true);
-      } catch (e) {
-        discWebdlCardStatus[key] = { ok: false, pending: false, message: `✕ Submission error: ${e}` };
-        renderDiscoveryGrid();
-        showToast(`TorBox WebDL failed for ${item.title || "selected link"}: ${e}`, true);
-      } finally {
-        setGlobalActionBusy(false);
-      }
-    }
-
-    async function submitDiscoveryWebdlItems(items) {
-      const res = await fetch("/api/torbox/webdl/batch", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({items: items.map(item => ({url:item.original_url, name:item.title, provider:item.source_provider || (discCategory === "indo" ? "Indo" : discAdultProvider || "English Adult"), category:discCategory, poster_url:item.poster_url || item.cover_url || item.image || ""}))})
-      });
-      const data = await res.json();
-      const box = document.getElementById("disc-webdl-results");
-      if (box) {
-        box.classList.remove("hidden");
-        box.innerHTML = (data.results || []).map(row => `<div class="${row.ok ? "text-emerald-300" : "text-rose-300"}">${row.ok ? "✓" : "✕"} ${escapeHtml(row.name || "Link")}: ${escapeHtml(row.message || row.error || "")}</div>`).join("");
-      }
-      if (data.rate_limited || res.status === 429) {
-        startDiscoveryWebdlCountdown(data.retry_after_seconds || 3600);
-      }
-      if (!res.ok && !data.results) throw new Error(data.error || "TorBox WebDL request failed");
-      return data;
-    }
-
-    function startDiscoveryWebdlCountdown(seconds) {
-      const panel = document.getElementById("disc-webdl-rate-limit");
-      if (!panel) return;
-      let remaining = Math.max(1, Number(seconds) || 3600);
-      panel.classList.remove("hidden");
-      if (window.__discWebdlCountdown) clearInterval(window.__discWebdlCountdown);
-      const tick = () => {
-        const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
-        const ss = String(remaining % 60).padStart(2, "0");
-        panel.textContent = `TorBox WebDL rate limit reached. Please wait ${mm}:${ss} before retrying the pending links.`;
-        if (remaining <= 0) {
-          clearInterval(window.__discWebdlCountdown);
-          panel.textContent = "Cooldown finished. You can retry the pending links.";
-        }
-        remaining -= 1;
-      };
-      tick();
-      window.__discWebdlCountdown = setInterval(tick, 1000);
-    }
-
-    async function submitDiscoveryWebdlSelection() {
-      const selected = discItems.filter(item => discWebdlSelected.has(String(item.id)));
-      if (!selected.length) return;
-      if (selected.length > 10) {
-        showToast("Maximum 10 links per batch.", true);
-        return;
-      }
-      const confirmSend = confirm(`Send ${selected.length} selected page link(s) to TorBox Web Downloads?\n\nTorBox will validate each URL and may reject unsupported or inaccessible pages.`);
-      if (!confirmSend) return;
-      const btn = document.getElementById("disc-webdl-submit-btn");
-      if (btn) { btn.disabled = true; btn.textContent = "Submitting..."; }
-      setGlobalActionBusy(true, "TORBOX WEB DOWNLOAD", `Submitting ${selected.length} selected link(s)...`);
-      try {
-        const data = await submitDiscoveryWebdlItems(selected);
-        const res = {ok: !data.rate_limited};
-        const box = document.getElementById("disc-webdl-results");
-        if (box) {
-          box.classList.remove("hidden");
-          box.innerHTML = `<div class="font-bold ${data.ok ? "text-emerald-300" : "text-rose-300"}">TorBox WebDL: ${Number(data.submitted || 0)} submitted · ${Number(data.failed || 0)} failed</div>` +
-            (data.results || []).map(row => `<div class="flex flex-wrap items-start gap-2 border-t border-slate-800 pt-1.5"><span class="${row.ok ? "text-emerald-300" : "text-rose-300"}">${row.ok ? "&#10003;" : "&#10007;"}</span><span class="flex-1 min-w-0 text-slate-200">${escapeHtml(row.name || "Link")}</span><span class="text-slate-400">${escapeHtml(row.message || row.error || "No response")}</span></div>`).join("");
-        }
-        if (data.ok) {
-          showToast(`${data.submitted} link(s) submitted to TorBox Web Downloads${data.failed ? `; ${data.failed} failed` : ""}.`);
-          discWebdlSelected.clear();
-          updateDiscoveryWebdlSelectionUI();
-          renderDiscoveryGrid();
-        } else {
-          showToast(data.error || "TorBox Web Download submission failed.", true);
-        }
-      } catch (e) {
-        showToast(`Web Download request failed: ${e}`, true);
-      } finally {
-        setGlobalActionBusy(false);
-        if (btn) { btn.disabled = false; btn.textContent = "➤ Send Selected to TorBox"; }
-      }
     }
 
     function closeDiscoveryCacheDrawer() {
@@ -1635,7 +1263,7 @@
       drawer.classList.remove("hidden");
       drawer.scrollIntoView({ behavior: "smooth", block: "nearest" });
 
-      document.getElementById("disc-cache-title").textContent = item.code_id ? `[${item.code_id}] ${item.title}` : item.title;
+      document.getElementById("disc-cache-title").textContent = item.title;
       document.getElementById("disc-cache-subtitle").textContent = `Category: ${discCategory.toUpperCase()} • Checking TorBox Instant Cache (Torrents & Pro Usenet NZB)...`;
 
       const isSeries = SERIES_CATEGORIES.has(discCategory);
@@ -1688,7 +1316,7 @@
       const epRaw = isSeries ? document.getElementById("disc-episode-num").value.trim() : "";
       const epVal = epRaw ? parseInt(epRaw, 10) : null;
 
-      const effectiveQuery = discSelectedItem.code_id || discSelectedItem.search_query || discSelectedItem.title;
+      const effectiveQuery = discSelectedItem.search_query || discSelectedItem.title;
 
       try {
         const res = await fetch("/api/discover/search-cache", {

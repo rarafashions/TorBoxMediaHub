@@ -30,7 +30,7 @@ Managing dozens of cached torrents, Usenet downloads, and local video files from
 
 * **Zero Local Disk Downloads for Cloud Media:** Your cloud videos stay 100% in the TorBox Cloud while appearing locally as a rich, Netflix-style poster catalog—saving massive amounts of disk space.
 * **Instant Buffering-Free Streaming — Never Expires:** Streams videos directly from TorBox's high-speed CDN via on-demand API stream links (`requestdl`) generated right when you click Play or build a playlist—eliminating dead links from expired URLs.
-* **6-Category Discovery & Instant Cache Verification:** Browse trending/popular releases or search across **General Movies**, **TV Shows**, **Anime**, **Donghua**, **JAV**, and **English Adult**, check TorBox instant-cache availability across 7+ indexers, and queue magnets/NZBs directly to TorBox Cloud.
+* **4-Category Discovery & Instant Cache Verification:** Browse trending/popular releases or search across **General Movies**, **TV Shows**, **Anime**, and **Donghua**, check TorBox instant-cache availability across 7+ indexers, and queue magnets/NZBs directly to TorBox Cloud. JAV, English Adult, and Indo discovery stay in Roxxy.
 * **Automated Download Monitor & Quality Upgrades:** Tracks newly queued TorBox downloads in the background, automatically imports and enriches them upon completion, and supports one-click **Quality Upgrades** (automatically cleaning up the older low-resolution file after the upgrade completes).
 * **Series & Episode Completeness Tracking:** Groups TV Shows, Anime, and Donghua by season, compares your library against official episode counts, and flags missing episodes so you can find and add cached replacements immediately.
 * **Zero-Hassle Subtitles for Direct Streams:** Automatically inspects embedded tracks (`ffprobe`), extracts sidecar `.srt`/`.ass` files bundled inside your TorBox torrents/Usenet archives, or downloads matching subtitles from OpenSubtitles & SubtitleCat—then injects them directly into your media player.
@@ -44,7 +44,7 @@ Managing dozens of cached torrents, Usenet downloads, and local video files from
 | :--- | :---: | :---: | :---: |
 | **Setup Time** | **2 Minutes** (Pure Python, no FUSE/mounts) | Complex (Docker, WebDAV, Rclone config) | Fast, but relies on external addons |
 | **Local Disk Usage** | **Zero** for cloud videos (posters/`.srt` only) | Zero (requires virtual mount stability) | Zero |
-| **Built-In Discovery & Cache Check** | **6 Categories** + 7 Torrent/NZB Indexers | Requires Radarr/Sonarr/Prowlarr | Addon-dependent |
+| **Built-In Discovery & Cache Check** | **4 Categories** + 7 Torrent/NZB Indexers | Requires Radarr/Sonarr/Prowlarr | Addon-dependent |
 | **Isolated Niche Metadata** | **Yes** (TMDb, AniList, JAVDb, TPDB separated) | Often pollutes main movie library | Limited |
 | **4-Tier Auto-Subtitle Injection** | **Local + Cloud Archive + `ffprobe` + OpenSubtitles** | Basic / manual plugin setup | External player subtitles often break |
 | **Native Android + Desktop Players** | **VLC, MPV, IINA, PotPlayer, Android Intents** | Dedicated client apps required | Built-in player |
@@ -66,7 +66,7 @@ TorBox Media Hub is built to adapt automatically to the operating system and net
 ## 🚀 Core Features
 
 ### 1. Multi-Category Discovery & Instant Cache Search (`v1.1`)
-* **6 Dedicated Discovery Feeds:** Explore Trending, Popular, Top Rated, or Search across **Movies** (TMDb), **TV Shows** (TMDb), **Anime** (AniList JP), **Donghua** (AniList CN), **JAV** (MissAV + JAVDatabase + TPDB + Sukebei), and **English Adult** (ThePornDB + Sukebei).
+* **4 Dedicated Discovery Feeds:** Explore Trending, Popular, Top Rated, or Search across **Movies** (TMDb), **TV Shows** (TMDb), **Anime** (AniList JP), and **Donghua** (AniList CN). JAV, English Adult, and Indo discovery/search are handled in **Roxxy** instead, so the Discovery modal exposes only those four tabs.
 * **Multi-Indexer Cache Checker:** Queries **Torrentio**, **YTS**, **EZTV**, **ThePirateBay**, **Nyaa**, **Sukebei**, and **NZBIndex** (for **TorBox Pro** Usenet users — [unlock Usenet caching with 7 bonus days free](https://torbox.app/subscription?referral=d8962fcc-d39e-43f6-9a8a-f565bab5f809)) and verifies live cache status via TorBox's `/checkcached` API.
 * **Background Auto-Import (`TorboxDownloadMonitor`):** Monitors queued downloads every few seconds, imports finished videos into SQLite, runs metadata enrichment, and handles physical cleanup during **Quality Upgrades**.
 
@@ -273,14 +273,14 @@ You can customize how TorBox Media Hub runs by setting environment variables bef
 
 1. Open the **Settings & DB** tab in the web interface.
 2. Enter your **TorBox API Key** from [TorBox Settings](https://torbox.app/settings) *(Don't have an account yet? [Sign up via our referral link](https://torbox.app/subscription?referral=d8962fcc-d39e-43f6-9a8a-f565bab5f809) to get **7 free bonus days**!)*.
-3. Enter your free **TMDb API Key** (and optional **ThePornDB API Key** for English Adult metadata & discovery).
+3. Enter your free **TMDb API Key** (and optional **ThePornDB API Key** for English Adult metadata in Roxxy).
 4. Click **Auto-Detect Players** (or browse/enter your player executable path) and optionally add **Local Scan Folders**.
 
 ---
 
 ## 🔄 Typical Workflow
 
-1. **Discover & Queue New Media (Optional):** Open the **Discover** tab to browse trending Movies, TV Shows, Anime, Donghua, JAV, or English Adult titles, verify instant TorBox cache status, and add magnets/NZBs directly to TorBox Cloud with automatic background import.
+1. **Discover & Queue New Media (Optional):** Open the **Discover** tab to browse trending Movies, TV Shows, Anime, or Donghua titles, verify instant TorBox cache status, and add magnets/NZBs directly to TorBox Cloud with automatic background import. For JAV, English Adult, and Indo, use **Roxxy**.
 2. **Sync Cloud Catalog:** Click **Sync Cloud** to index your TorBox torrents/Usenet library into your visual catalog without downloading video files (and optionally click **Scan Local** for existing local folders).
 3. **Enrich Metadata & Runtimes:** Click **Enrich Meta** to classify titles, group series/seasons, probe video durations, and cache cover posters.
 4. **Fetch Subtitles:** Click **Find Subtitles** to detect embedded tracks, extract TorBox archive subtitles, or download matching `.srt` files.
@@ -308,7 +308,7 @@ When viewing an existing movie or episode in your library, you can search for a 
 
 * [x] **Zero-Download Rich Catalog & Direct API Streaming (`v1.0`):** Visual poster catalog with on-demand `requestdl` stream URLs and zero local video storage overhead.
 * [x] **Multi-Platform Player Support (`v1.1`):** Auto-detection for Windows, Linux, macOS, and Android Intents, plus LAN HTTP streaming and remote `.m3u` downloads.
-* [x] **6-Category Discovery & Instant Cache Checker (`v1.1`):** Multi-indexer torrent/NZB cache verification, one-click cloud addition, background auto-import, and Quality Upgrades.
+* [x] **Multi-Category Discovery & Instant Cache Checker (`v1.1`):** TMDb/AniList feeds for Movies, TV Shows, Anime, and Donghua, multi-indexer torrent/NZB cache verification, one-click cloud addition, background auto-import, and Quality Upgrades.
 * [x] **Series & Season Completeness Tracking (`v1.1`):** Automatic season grouping with missing-episode detection.
 * [ ] **Live HTTP M3U Redirect Endpoint (`/stream/<unique_key>`):** Serve permanent local M3U URLs that dynamically `302 Redirect` to fresh `requestdl` links at playback time.
 * [ ] **Docker & Docker Compose Support:** Ready-to-use `Dockerfile` for Unraid, Synology NAS, and home-server deployments.

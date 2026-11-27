@@ -1,5 +1,4 @@
 import hashlib
-import html as html_lib
 import json
 import os
 import platform
@@ -28,7 +27,6 @@ import subtitle_engine as sub_eng
 import dual_subtitle_engine as dual_subs
 import subtitle_quality_audit as subtitle_audit
 import platform_support as platform_env
-import indo_keyword_engine as indo_eng
 from roxxy_module import roxxy_bp
 
 APP_VERSION = "v1.3D3"  # single source of truth; templates render this
@@ -77,785 +75,6 @@ M3U_FRESH_TTL_SECONDS = 1800  # 30 minutes cache for freshly generated playlist 
 DISCOVER_CACHE_TTL = 600  # 10 minutes cache for Discovery feeds
 _DISCOVER_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _DISCOVER_CACHE_LOCK = threading.Lock()
-
-# TorBox WebDL rolling-window guard: 60 API submissions per hour per app process.
-_WEB_DL_WINDOW_SECONDS = 3600
-_WEB_DL_MAX_REQUESTS = 60
-_WEB_DL_REQUEST_TIMES: List[float] = []
-_WEB_DL_LOCK = threading.Lock()
-
-def _webdl_rate_state(now: Optional[float] = None) -> Tuple[int, int]:
-    current = now if now is not None else time.time()
-    with _WEB_DL_LOCK:
-        cutoff = current - _WEB_DL_WINDOW_SECONDS
-        while _WEB_DL_REQUEST_TIMES and _WEB_DL_REQUEST_TIMES[0] <= cutoff:
-            _WEB_DL_REQUEST_TIMES.pop(0)
-        used = len(_WEB_DL_REQUEST_TIMES)
-        wait = max(0, int(_WEB_DL_WINDOW_SECONDS - (current - _WEB_DL_REQUEST_TIMES[0]))) if used >= _WEB_DL_MAX_REQUESTS else 0
-        return used, wait
-
-def _webdl_record_request(now: Optional[float] = None) -> None:
-    current = now if now is not None else time.time()
-    with _WEB_DL_LOCK:
-        cutoff = current - _WEB_DL_WINDOW_SECONDS
-        while _WEB_DL_REQUEST_TIMES and _WEB_DL_REQUEST_TIMES[0] <= cutoff:
-            _WEB_DL_REQUEST_TIMES.pop(0)
-        _WEB_DL_REQUEST_TIMES.append(current)
-
-
-MISSAV_DOMAINS = [
-    "https://missav.ws",
-    "https://missav.ai",
-    "https://missav.live",
-    "https://missav123.com",
-]
-
-JAV_SCRAPE_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-JAV_CODE_PATTERN = re.compile(r"\b(FC2-PPV-\d{5,8}|[A-Z]{2,6}-\d{2,5})\b", re.IGNORECASE)
-
-
-def _extract_jav_code_id(text: str) -> str:
-    m = JAV_CODE_PATTERN.search((text or "").upper())
-    return m.group(1).upper() if m else ""
-
-
-def _scrape_missav_multi_page(feed: str = "trending", query: str = "", limit: int = 50) -> List[Dict[str, Any]]:
-    """
-    Mengambil daftar JAV dari MissAV secara multi-halaman (page 1..4) agar bisa mencapai hingga 50 item.
-    """
-    q = (query or "").strip()
-    if feed == "search" and q:
-        base_rel = f"/en/search/{quote_plus(q)}"
-    elif feed == "popular":
-        base_rel = "/en/today-hot"
-    elif feed == "top_rated":
-        base_rel = "/en/monthly-hot"
-    else:
-        base_rel = "/en/release"
-
-    active_base = ""
-    first_html = ""
-    headers = {**JAV_SCRAPE_HEADERS, "Referer": "https://missav.ws/"}
-
-    for domain in MISSAV_DOMAINS:
-        try:
-            resp = meta_eng.HTTP_SESSION.get(f"{domain}{base_rel}", headers=headers, timeout=(6, 12))
-            if resp.status_code == 200 and len(resp.text) > 1500:
-                active_base = domain
-                first_html = resp.text
-                break
-        except Exception:
-            continue
-
-    if not active_base or not first_html:
-        return []
-
-    results: List[Dict[str, Any]] = []
-    seen_keys = set()
-    max_pages = max(2, (limit // 12) + 1)
-
-    for page in range(1, max_pages + 1):
-        if len(results) >= limit:
-            break
-
-        if page == 1:
-            html = first_html
-        else:
-            sep = "&" if "?" in base_rel else "?"
-            page_url = f"{active_base}{base_rel}{sep}page={page}"
-            try:
-                resp = meta_eng.HTTP_SESSION.get(
-                    page_url,
-                    headers={**headers, "Referer": f"{active_base}/"},
-                    timeout=(6, 12),
-                )
-                if resp.status_code != 200 or len(resp.text) <= 1500:
-                    break
-                html = resp.text
-            except Exception:
-                break
-
-        soup = BeautifulSoup(html, "html.parser")
-        cards = soup.select("div.thumbnail, div.group, article")
-        if not cards:
-            break
-
-        added_in_page = 0
-        for card in cards:
-            link_el = card.select_one("a[href*='/en/'], a[href]")
-            img_el = card.select_one("img")
-            if not link_el or not img_el:
-                continue
-
-            href = (link_el.get("href") or "").strip()
-            if not href or any(skip in href for skip in ["/actresses", "/makers", "/genres", "/tags", "/search"]):
-                continue
-
-            poster = (
-                img_el.get("data-src")
-                or img_el.get("data-original")
-                or img_el.get("data-lazy-src")
-                or img_el.get("src")
-                or ""
-            ).strip()
-
-            if not poster or poster.startswith("data:"):
-                continue
-            if poster.startswith("//"):
-                poster = f"https:{poster}"
-            elif poster.startswith("/"):
-                poster = f"{active_base}{poster}"
-
-            raw_title = (
-                img_el.get("alt")
-                or link_el.get("title")
-                or card.get_text(" ", strip=True)
-                or ""
-            ).strip()
-            raw_title = re.sub(r"\s+", " ", raw_title)
-            if not raw_title or len(raw_title) < 3:
-                continue
-
-            code_id = _extract_jav_code_id(f"{href} {raw_title}")
-            dedup_key = code_id or href
-            if dedup_key in seen_keys:
-                continue
-            seen_keys.add(dedup_key)
-
-            clean_title = raw_title
-            if code_id and clean_title.upper().startswith(code_id):
-                clean_title = clean_title[len(code_id):].lstrip(" -:_") or code_id
-
-            results.append(
-                {
-                    "id": f"missav:{dedup_key}",
-                    "title": clean_title,
-                    "code_id": code_id,
-                    "year": None,
-                    "rating": 0.0,
-                    "poster_url": poster,
-                    "overview": f"Source: MissAV ({active_base.replace('https://', '')})",
-                    "category": "jav",
-                    "search_query": code_id or clean_title,
-                }
-            )
-            added_in_page += 1
-            if len(results) >= limit:
-                break
-
-        if added_in_page == 0:
-            break
-
-    return results
-
-
-def _scrape_javdatabase_multi_page(feed: str = "trending", query: str = "", limit: int = 50) -> List[Dict[str, Any]]:
-    """
-    Provider kedua untuk JAV Discovery (JAVDatabase multi-page) sebagai kombinasi dengan MissAV.
-    """
-    q = (query or "").strip()
-    results: List[Dict[str, Any]] = []
-    seen_keys = set()
-    headers = {**JAV_SCRAPE_HEADERS, "Referer": "https://www.javdatabase.com/"}
-    max_pages = max(2, (limit // 15) + 1)
-
-    for page in range(1, max_pages + 1):
-        if len(results) >= limit:
-            break
-
-        if feed == "search" and q:
-            url = (
-                f"https://www.javdatabase.com/?s={quote_plus(q)}"
-                if page == 1
-                else f"https://www.javdatabase.com/page/{page}/?s={quote_plus(q)}"
-            )
-        elif feed == "popular":
-            url = (
-                "https://www.javdatabase.com/movies/?orderby=views"
-                if page == 1
-                else f"https://www.javdatabase.com/movies/page/{page}/?orderby=views"
-            )
-        elif feed == "top_rated":
-            url = (
-                "https://www.javdatabase.com/movies/?orderby=rating"
-                if page == 1
-                else f"https://www.javdatabase.com/movies/page/{page}/?orderby=rating"
-            )
-        else:
-            url = (
-                "https://www.javdatabase.com/movies/"
-                if page == 1
-                else f"https://www.javdatabase.com/movies/page/{page}/"
-            )
-
-        try:
-            resp = meta_eng.HTTP_SESSION.get(url, headers=headers, timeout=(6, 12))
-            if resp.status_code != 200 or len(resp.text) < 1500:
-                break
-        except Exception:
-            break
-
-        soup = BeautifulSoup(resp.text, "html.parser")
-        cards = soup.select("div.card, article, div.movie-item, div.post")
-        if not cards:
-            break
-
-        added_in_page = 0
-        for card in cards:
-            link_el = card.select_one("a[href*='/movies/'], a[title], a[href]")
-            img_el = card.select_one("img")
-            if not link_el or not img_el:
-                continue
-
-            href = (link_el.get("href") or "").strip()
-            if not href or any(skip in href for skip in ["/idols/", "/studios/", "/genres/", "/tags/", "/category/"]):
-                continue
-
-            poster = (
-                img_el.get("data-src")
-                or img_el.get("data-lazy-src")
-                or img_el.get("src")
-                or ""
-            ).strip()
-            if not poster or poster.startswith("data:"):
-                continue
-            if poster.startswith("//"):
-                poster = f"https:{poster}"
-            elif poster.startswith("/"):
-                poster = f"https://www.javdatabase.com{poster}"
-
-            raw_title = (
-                link_el.get("title")
-                or img_el.get("alt")
-                or link_el.get_text(" ", strip=True)
-                or ""
-            ).strip()
-            raw_title = re.sub(r"\s+", " ", raw_title)
-            if not raw_title or len(raw_title) < 3:
-                continue
-
-            code_id = _extract_jav_code_id(f"{href} {raw_title}")
-            dedup_key = code_id or href
-            if dedup_key in seen_keys:
-                continue
-            seen_keys.add(dedup_key)
-
-            clean_title = raw_title
-            if code_id and clean_title.upper().startswith(code_id):
-                clean_title = clean_title[len(code_id):].lstrip(" -:_") or code_id
-
-            results.append(
-                {
-                    "id": f"javdb:{dedup_key}",
-                    "title": clean_title,
-                    "code_id": code_id,
-                    "year": None,
-                    "rating": 0.0,
-                    "poster_url": poster,
-                    "overview": "Source: JAVDatabase",
-                    "category": "jav",
-                    "search_query": code_id or clean_title,
-                }
-            )
-            added_in_page += 1
-            if len(results) >= limit:
-                break
-
-        if added_in_page == 0:
-            break
-
-    return results
-
-
-def fetch_eporner_videos(query: str = "", feed: str = "trending", limit: int = 50) -> List[Dict[str, Any]]:
-    """Fetch public Eporner catalogue metadata through its documented API v2.
-
-    This adapter intentionally returns page URLs only; it does not scrape or
-    manufacture direct media URLs.
-    """
-    safe_limit = min(max(int(limit or 50), 1), 300)
-    order_map = {
-        "trending": "top-weekly",
-        "popular": "most-popular",
-        "top_rated": "top-rated",
-        "search": "latest",
-    }
-    params = {
-        "query": (query or "").strip() or "all",
-        "per_page": safe_limit,
-        "page": 1,
-        "thumbsize": "big",
-        "order": order_map.get(feed, "latest"),
-        "gay": 0,
-        "lq": 0,
-        "format": "json",
-    }
-    try:
-        response = meta_eng.HTTP_SESSION.get(
-            "https://www.eporner.com/api/v2/video/search/",
-            params=params,
-            headers={"User-Agent": f"TorBoxMediaHub/{APP_VERSION}", "Accept": "application/json"},
-            timeout=(8, 20),
-        )
-        response.raise_for_status()
-        payload = response.json()
-    except (RequestException, ValueError) as exc:
-        print(f"[EPORNER] API request failed: {exc}")
-        return []
-
-    rows = payload.get("videos") if isinstance(payload, dict) else None
-    if not isinstance(rows, list) and isinstance(payload, dict):
-        rows = payload.get("data") or payload.get("results")
-    if not isinstance(rows, list):
-        print("[EPORNER] Unexpected API response schema")
-        return []
-
-    results: List[Dict[str, Any]] = []
-    seen = set()
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        video_id = str(row.get("id") or "").strip()
-        title = re.sub(r"\s+", " ", str(row.get("title") or "")).strip()
-        page_url = str(row.get("url") or row.get("link") or "").strip()
-        # Only accept canonical Eporner page URLs from the provider response.
-        parsed = urlparse(page_url) if page_url else None
-        if not video_id or not title or not parsed or parsed.scheme != "https" or (parsed.hostname or "").lower() != "eporner.com" and not (parsed.hostname or "").lower().endswith(".eporner.com"):
-            continue
-        if video_id in seen:
-            continue
-        seen.add(video_id)
-        thumb = row.get("default_thumb") or row.get("thumb") or row.get("image") or ""
-        if isinstance(thumb, dict):
-            thumb = thumb.get("src") or thumb.get("url") or ""
-        if not thumb:
-            thumbs = row.get("thumbs") or []
-            if isinstance(thumbs, list) and thumbs:
-                first = next((x for x in thumbs if isinstance(x, dict) and x.get("src")), {})
-                thumb = first.get("src") or ""
-        try:
-            rating = float(row.get("rate") or row.get("rating") or 0)
-        except (TypeError, ValueError):
-            rating = 0.0
-        added = str(row.get("added") or row.get("uploaded") or "")
-        year_val = int(added[:4]) if len(added) >= 4 and added[:4].isdigit() else None
-        views = row.get("views")
-        duration = row.get("length") or row.get("duration") or ""
-        overview_bits = []
-        if duration:
-            overview_bits.append(f"Duration: {duration}")
-        if views not in (None, ""):
-            overview_bits.append(f"Views: {views}")
-        results.append({
-            "id": f"eporner:{video_id}",
-            "provider_id": video_id,
-            "source_provider": "Eporner",
-            "original_url": page_url,
-            "title": title,
-            "year": year_val,
-            "rating": round(rating, 1),
-            "poster_url": str(thumb or ""),
-            "overview": " • ".join(overview_bits) or "Source: Eporner",
-            "category": "english_adult",
-            "search_query": title,
-            "duration": str(duration),
-            "views": views,
-        })
-        if len(results) >= safe_limit:
-            break
-    return results
-
-
-
-
-
-def _adult_catalog_search_url(home_url: str, soup: BeautifulSoup, query: str) -> str:
-    """Build a search URL from the site's own public search form when available."""
-    form = soup.find("form", attrs={"role": "search"}) or soup.find("form")
-    if form:
-        action = urljoin(home_url, str(form.get("action") or home_url))
-        params = {}
-        for field in form.find_all(["input", "select"]):
-            name = str(field.get("name") or "").strip()
-            if not name or field.get("type") in ("submit", "button", "hidden", "checkbox", "radio"):
-                continue
-            if field.name == "select":
-                option = field.find("option", selected=True) or field.find("option")
-                if option and option.get("value"):
-                    params[name] = option.get("value")
-            else:
-                params[name] = query if (field.get("type") in (None, "search", "text") or "search" in name.lower() or "query" in name.lower()) else str(field.get("value") or "")
-        search_key = next((k for k in params if any(t in k.lower() for t in ("search", "query", "q"))), None)
-        if search_key:
-            params[search_key] = query
-            from requests import Request
-            return Request("GET", action, params=params).prepare().url
-    # XHamster's public search form is GET /search.
-    parsed = urlparse(home_url)
-    if (parsed.hostname or "").lower().endswith("xhamster.com"):
-        from requests import Request
-        return Request("GET", urljoin(home_url, "/search"), params={"query": query}).prepare().url
-    return ""
-
-
-def _parse_public_adult_catalog(html_text: str, base_url: str, provider: str, limit: int) -> List[Dict[str, Any]]:
-    """Extract catalogue cards only. Never inspect player configs or media URLs."""
-    soup = BeautifulSoup(html_text or "", "html.parser")
-    host = (urlparse(base_url).hostname or "").lower()
-    allowed_host = "xhamster.com"
-    if not (host == allowed_host or host.endswith("." + allowed_host)):
-        return []
-
-    rows: List[Dict[str, Any]] = []
-    seen = set()
-
-    def add_item(page_url: str, title: str, poster: str = "", duration: str = "", views: Any = None, rating: Any = None, description: str = "") -> None:
-        parsed = urlparse(page_url)
-        item_host = (parsed.hostname or "").lower()
-        if parsed.scheme != "https" or not (item_host == allowed_host or item_host.endswith("." + allowed_host)):
-            return
-        if provider == "XHamster" and not re.search(r"/videos?/[^/?#]+", parsed.path, re.I):
-            return
-        canonical = f"https://{allowed_host}{parsed.path.rstrip('/') or '/'}"
-        if canonical in seen:
-            return
-        title = re.sub(r"\s+", " ", html_lib.unescape(str(title or ""))).strip()
-        if len(title) < 4:
-            return
-        seen.add(canonical)
-        poster = urljoin(base_url, str(poster or "")) if poster else ""
-        if poster and urlparse(poster).scheme not in ("http", "https"):
-            poster = ""
-        try:
-            rating_num = float(str(rating).replace("%", "").replace(",", "")) if rating not in (None, "") else 0.0
-        except (TypeError, ValueError):
-            rating_num = 0.0
-        try:
-            if views not in (None, ""):
-                raw_views = str(views).strip().upper().replace(",", "")
-                multiplier = 1_000_000_000 if raw_views.endswith("B") else 1_000_000 if raw_views.endswith("M") else 1_000 if raw_views.endswith("K") else 1
-                numeric = re.sub(r"[^0-9.]", "", raw_views)
-                views_num = int(float(numeric) * multiplier) if numeric else 0
-            else:
-                views_num = 0
-        except (TypeError, ValueError):
-            views_num = 0
-        slug_or_id = parsed.path.rstrip("/").split("/")[-1]
-        rows.append({
-            "id": f"{provider.lower()}:{slug_or_id}",
-            "provider_id": slug_or_id,
-            "source_provider": provider,
-            "original_url": canonical,
-            "title": title,
-            "year": None,
-            "rating": round(rating_num, 1),
-            "poster_url": poster,
-            "overview": (re.sub(r"\s+", " ", str(description or "")).strip()[:240] or f"Source: {provider}"),
-            "category": "english_adult",
-            "search_query": title,
-            "duration": str(duration or ""),
-            "views": views,
-            "_views_sort": views_num,
-        })
-
-    # Structured VideoObject data is metadata, not player/stream extraction.
-    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
-        try:
-            payload = json.loads(script.string or script.get_text() or "")
-        except (ValueError, TypeError):
-            continue
-        objects = payload if isinstance(payload, list) else [payload]
-        for obj in objects:
-            if isinstance(obj, dict) and isinstance(obj.get("@graph"), list):
-                objects.extend(x for x in obj["@graph"] if isinstance(x, dict))
-        for obj in objects:
-            if not isinstance(obj, dict) or str(obj.get("@type") or "").lower() not in ("videoobject", "video"):
-                continue
-            image = obj.get("thumbnailUrl") or obj.get("image") or ""
-            if isinstance(image, list): image = image[0] if image else ""
-            add_item(urljoin(base_url, str(obj.get("url") or obj.get("embedUrl") or "")), obj.get("name") or obj.get("headline") or "", image, obj.get("duration") or "", obj.get("interactionStatistic"), obj.get("aggregateRating", {}).get("ratingValue") if isinstance(obj.get("aggregateRating"), dict) else None, obj.get("description") or "")
-
-    # Catalogue links and their nearest card container; intentionally ignore video/embed/media URLs.
-    link_pattern = r"/videos?/[^/?#]+"
-    for anchor in soup.find_all("a", href=True):
-        href = str(anchor.get("href") or "")
-        if not re.search(link_pattern, href, re.I):
-            continue
-        page_url = urljoin(base_url, href)
-        title = anchor.get("title") or anchor.get("aria-label") or anchor.get_text(" ", strip=True)
-        card = anchor
-        for _ in range(4):
-            if not getattr(card, "parent", None): break
-            card = card.parent
-            if card.find("img") or card.get("class"):
-                break
-        img = card.find("img") if hasattr(card, "find") else None
-        poster = ""
-        if img:
-            poster = img.get("data-src") or img.get("data-original") or img.get("src") or ""
-            if not title or len(str(title).strip()) < 4:
-                title = img.get("alt") or title
-        card_text = card.get_text(" ", strip=True) if hasattr(card, "get_text") else ""
-        duration_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", card_text)
-        views_match = re.search(r"([\d,.]+\s*[KMB]?)\s*views?", card_text, re.I)
-        rating_match = re.search(r"(\d{1,3}(?:\.\d+)?)\s*%", card_text)
-        add_item(page_url, title, poster, duration_match.group(0) if duration_match else "", views_match.group(1) if views_match else None, rating_match.group(1) if rating_match else None)
-        if len(rows) >= limit:
-            break
-    return rows[:limit]
-
-
-def fetch_xhamster_videos(query: str = "", feed: str = "trending", limit: int = 50) -> List[Dict[str, Any]]:
-    """Read public XHamster catalogue cards; no embed or direct-media extraction."""
-    return _fetch_public_adult_site("XHamster", query, feed, limit)
-
-
-def _fetch_public_adult_site(provider: str, query: str, feed: str, limit: int) -> List[Dict[str, Any]]:
-    safe_limit = min(max(int(limit or 50), 1), 100)
-    domain = "https://xhamster.com/"
-    headers = {**JAV_SCRAPE_HEADERS, "Accept": "text/html,application/xhtml+xml", "Referer": domain}
-    try:
-        home = meta_eng.HTTP_SESSION.get(domain, headers=headers, timeout=(8, 18), allow_redirects=True)
-        home.raise_for_status()
-        final_home = home.url
-        if (urlparse(final_home).hostname or "").lower().split(":")[0] not in ("xhamster.com", "www.xhamster.com"):
-            return []
-        target_url = final_home
-        if query:
-            target_url = _adult_catalog_search_url(final_home, BeautifulSoup(home.text, "html.parser"), query)
-            if not target_url:
-                print(f"[{provider.upper()}] Search form not detected; refusing to guess search URL")
-                return []
-        response = meta_eng.HTTP_SESSION.get(target_url, headers=headers, timeout=(8, 20), allow_redirects=True)
-        response.raise_for_status()
-        final_host = (urlparse(response.url).hostname or "").lower()
-        allowed = "xhamster.com"
-        if not (final_host == allowed or final_host.endswith("." + allowed)):
-            return []
-        rows = _parse_public_adult_catalog(response.text, response.url, provider, safe_limit)
-        if feed == "popular":
-            rows.sort(key=lambda x: x.get("_views_sort", 0), reverse=True)
-        elif feed == "top_rated":
-            rows.sort(key=lambda x: x.get("rating", 0), reverse=True)
-        for item in rows:
-            item.pop("_views_sort", None)
-        return rows[:safe_limit]
-    except (RequestException, ValueError) as exc:
-        print(f"[{provider.upper()}] Public catalogue request failed: {exc}")
-        return []
-
-
-def fetch_tpdb_scenes(api_key: str, query: str = "", feed: str = "trending", limit: int = 50) -> List[Dict[str, Any]]:
-    """
-    Mengambil data scene dari ThePornDB (TPDB) menggunakan pagination per_page=25,
-    timeout=(8, 22), serta retry otomatis agar terhindar dari ReadTimeoutError pada limit 50.
-    """
-    if not api_key:
-        return []
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-        "User-Agent": f"TorBoxMediaHub/{APP_VERSION}",
-    }
-
-    per_page = min(limit, 25)
-    max_pages = (limit + per_page - 1) // per_page
-    results: List[Dict[str, Any]] = []
-    seen_ids = set()
-
-    for page in range(1, max_pages + 1):
-        params: Dict[str, Any] = {
-            "per_page": per_page,
-            "page": page,
-        }
-        if query:
-            params["q"] = query
-        elif feed == "popular":
-            # ThePornDB SearchOrderEnum supports most_relevant, not "views".
-            params["orderBy"] = "most_relevant"
-        elif feed == "top_rated":
-            # No server-side rating sort exists in SearchOrderEnum.
-            # Fetch a valid catalog page and sort the collected results locally below.
-            params["orderBy"] = "recently_released"
-        else:
-            # Valid ThePornDB enum value; "date" is not supported.
-            params["orderBy"] = "recently_released"
-
-        data = None
-        for attempt in range(2):
-            try:
-                resp = requests.get(
-                    "https://api.theporndb.net/scenes",
-                    headers=headers,
-                    params=params,
-                    timeout=(8, 22),
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                break
-            except Timeout:
-                if attempt == 1 and page == 1 and per_page > 15:
-                    params["per_page"] = 15
-                    try:
-                        resp = requests.get(
-                            "https://api.theporndb.net/scenes",
-                            headers=headers,
-                            params=params,
-                            timeout=(8, 25),
-                        )
-                        resp.raise_for_status()
-                        data = resp.json()
-                    except Exception:
-                        pass
-                time.sleep(0.4)
-            except RequestException as exc:
-                print(f"[TPDB] Request error on page {page}: {exc}")
-                break
-
-        if not data or not isinstance(data.get("data"), list):
-            break
-
-        items = data["data"]
-        if not items:
-            break
-
-        for item in items:
-            item_id = item.get("id") or item.get("slug")
-            if item_id and item_id in seen_ids:
-                continue
-            if item_id:
-                seen_ids.add(item_id)
-            results.append(item)
-            if len(results) >= limit:
-                return results
-
-        if len(items) < params["per_page"]:
-            break
-
-    if not query and feed == "top_rated":
-        # Page-local ranking only; ThePornDB does not expose a global rating sort.
-        results.sort(
-            key=lambda item: float(item.get("rating") or 0),
-            reverse=True,
-        )
-
-    return results[:limit]
-
-
-def fetch_jav_discover(
-    feed: str = "trending",
-    query: str = "",
-    limit: int = 50,
-    tpdb_key: str = "",
-) -> List[Dict[str, Any]]:
-    """
-    Mengombinasikan beberapa provider JAV secara paralel (MissAV multi-page + JAVDatabase multi-page),
-    lalu melengkapi sisa kuota hingga `limit` (50) via TPDB JAV dan Sukebei RSS jika diperlukan.
-    """
-    combined: List[Dict[str, Any]] = []
-    seen_keys = set()
-
-    def _merge_items(batch: List[Dict[str, Any]]) -> None:
-        for item in batch:
-            key = (item.get("code_id") or item.get("title") or "").strip().upper()
-            if not key or key in seen_keys:
-                continue
-            seen_keys.add(key)
-            combined.append(item)
-            if len(combined) >= limit:
-                return
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        fut_missav = pool.submit(_scrape_missav_multi_page, feed, query, limit)
-        fut_javdb = pool.submit(_scrape_javdatabase_multi_page, feed, query, limit)
-
-        missav_items: List[Dict[str, Any]] = []
-        javdb_items: List[Dict[str, Any]] = []
-        try:
-            missav_items = fut_missav.result()
-        except Exception:
-            pass
-        try:
-            javdb_items = fut_javdb.result()
-        except Exception:
-            pass
-
-        _merge_items(missav_items)
-        if len(combined) < limit:
-            _merge_items(javdb_items)
-
-    # Fallback 1: ThePornDB dengan kata kunci JAV jika hasil scraping masih < limit
-    if len(combined) < limit and tpdb_key:
-        tpdb_q = f"JAV {query}".strip() if query else "JAV"
-        remaining = limit - len(combined)
-        scenes = fetch_tpdb_scenes(tpdb_key, query=tpdb_q, feed=feed, limit=remaining)
-        tpdb_mapped: List[Dict[str, Any]] = []
-        for sc in scenes:
-            sc_title = sc.get("title") or ""
-            code_id = _extract_jav_code_id(sc_title)
-            date_str = sc.get("date") or ""
-            year_val = int(date_str[:4]) if len(date_str) >= 4 and date_str[:4].isdigit() else None
-            tpdb_mapped.append(
-                {
-                    "id": f"tpdb-jav:{sc.get('id')}",
-                    "title": sc_title,
-                    "code_id": code_id,
-                    "year": year_val,
-                    "rating": round(float(sc.get("rating") or 0), 1),
-                    "poster_url": sc.get("poster") or sc.get("image") or "",
-                    "overview": (sc.get("description") or "Source: ThePornDB JAV")[:240],
-                    "category": "jav",
-                    "search_query": code_id or sc_title,
-                }
-            )
-        _merge_items(tpdb_mapped)
-
-    # Fallback 2: Nyaa Sukebei RSS jika masih di bawah target limit
-    if len(combined) < limit:
-        remaining = limit - len(combined)
-        q_term = query if query else ("FHD" if feed == "top_rated" else ("Uncensored" if feed == "popular" else ""))
-        rss_url = f"https://sukebei.nyaa.si/?page=rss&c=2_2&q={quote_plus(q_term)}"
-        try:
-            r = meta_eng.HTTP_SESSION.get(rss_url, timeout=10)
-            if r.status_code == 200 and "<item>" in r.text:
-                soup = BeautifulSoup(r.text, "xml")
-                rss_mapped: List[Dict[str, Any]] = []
-                for idx, item in enumerate(soup.find_all("item")[: remaining + 15], start=1):
-                    t_txt = item.title.get_text(strip=True) if item.title else ""
-                    ih_tag = item.find("nyaa:infoHash")
-                    ih = ih_tag.get_text(strip=True) if ih_tag else ""
-                    size_tag = item.find("nyaa:size")
-                    size_txt = size_tag.get_text(strip=True) if size_tag else ""
-                    code_id = _extract_jav_code_id(t_txt)
-                    rss_mapped.append(
-                        {
-                            "id": f"jav:{ih or idx}",
-                            "title": t_txt,
-                            "code_id": code_id,
-                            "year": None,
-                            "rating": 0.0,
-                            "poster_url": "",
-                            "overview": f"Release Size: {size_txt}" if size_txt else "Nyaa Sukebei Release",
-                            "category": "jav",
-                            "search_query": code_id or t_txt[:45],
-                            "direct_hash": ih,
-                        }
-                    )
-                _merge_items(rss_mapped)
-        except Exception:
-            pass
-
-    return combined[:limit]
-
 
 class BackgroundTaskManager:
     def __init__(self) -> None:
@@ -2420,7 +1639,7 @@ def _search_universal_torrent_candidates(
     episode: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Universal multi-indexer search across all 6 video categories.
+    Multi-indexer cache search for the four Discovery categories plus library labels.
     """
     candidates: List[Dict[str, Any]] = []
     seen_hashes = set()
@@ -2534,32 +1753,6 @@ def _search_universal_torrent_candidates(
                             t_txt = row.get("name") or ""
                             _, ep_det = meta_eng._extract_season_episode(t_txt)
                             _add(ih, t_txt, "TPB", ep_num=ep_det)
-            except Exception:
-                pass
-
-    # C. JAV ONLY — English Adult providers are not torrent-indexer fallbacks.
-    elif category == "jav":
-        if clean_q:
-            try:
-                sukebei_url = f"https://sukebei.nyaa.si/?page=rss&c=2_2&q={quote_plus(clean_q)}"
-                r = meta_eng.HTTP_SESSION.get(sukebei_url, timeout=9)
-                if r.status_code == 200 and "<item>" in r.text:
-                    soup = BeautifulSoup(r.text, "xml")
-                    for item in soup.find_all("item")[:15]:
-                        t_txt = item.title.get_text(strip=True) if item.title else ""
-                        ih_tag = item.find("nyaa:infoHash")
-                        ih = ih_tag.get_text(strip=True) if ih_tag else ""
-                        _add(ih, t_txt, "Sukebei")
-            except Exception:
-                pass
-
-            try:
-                r = meta_eng.HTTP_SESSION.get("https://apibay.org/q.php", params={"q": clean_q, "cat": "500"}, timeout=8)
-                if r.status_code == 200 and isinstance(r.json(), list):
-                    for row in r.json()[:12]:
-                        ih = row.get("info_hash") or ""
-                        if ih != "0000000000000000000000000000000000000000":
-                            _add(ih, row.get("name") or "", "TPB-XXX")
             except Exception:
                 pass
 
@@ -2687,20 +1880,33 @@ def api_bootstrap():
 
 # ==================== UNIVERSAL DISCOVERY & SEARCH ROUTES ====================
 
+DISCOVERY_CATEGORIES = ("general_movie", "tv_show", "anime", "donghua")
+
+
 @app.route("/api/discover", methods=["GET"])
 def api_discover():
+    """Catalog feeds for the four categories Roxxy has no good feed for.
+
+    JAV, English Adult and Indo discovery/search deliberately live in Roxxy;
+    this endpoint rejects them instead of keeping a second implementation.
+    """
     category = (request.args.get("category") or "general_movie").strip().lower()
+    if category not in DISCOVERY_CATEGORIES:
+        return jsonify({
+            "ok": False,
+            "error": (
+                "Discovery hanya mendukung General Movie, TV Show, Anime, dan Donghua. "
+                "Gunakan Roxxy untuk JAV, English Adult, dan Indo."
+            ),
+        }), 400
     feed = (request.args.get("feed") or "trending").strip().lower()
     query = (request.args.get("query") or "").strip()
-    provider = (request.args.get("provider") or "all").strip().lower()
-    if provider not in ("all", "eporner", "theporndb", "xhamster"):
-        provider = "all"
     try:
         limit = min(max(int(request.args.get("limit") or 50), 1), 300)
     except ValueError:
         limit = 50
 
-    cache_key = f"{category}:{provider}:{feed}:{query.lower()}:{limit}"
+    cache_key = f"{category}:{feed}:{query.lower()}:{limit}"
     now_ts = time.time()
     with _DISCOVER_CACHE_LOCK:
         cached_entry = _DISCOVER_CACHE.get(cache_key)
@@ -2710,7 +1916,6 @@ def api_discover():
                 "ok": True,
                 "category": category,
                 "feed": feed,
-                "provider": provider,
                 "count": len(cached_results),
                 "results": cached_results,
                 "cached": True,
@@ -2718,18 +1923,9 @@ def api_discover():
 
     settings = db.get_settings()
     tmdb_key = (settings.get("tmdb_api_key") or "").strip()
-    tpdb_key = (settings.get("tpdb_api_key") or "").strip()
     results: List[Dict[str, Any]] = []
 
     try:
-        # Phase 8.4.0: Indo is a local keyword-classified catalog; provider adapters
-        # are added in subsequent phases. Never invoke metadata or subtitle services.
-        if category == "indo":
-            # Phase 8.4.1: provider results are classified locally using only
-            # title/tags/description/original URL. No metadata or subtitle calls.
-            # The provider adapter is introduced in Phase 8.4.2.
-            results = indo_eng.filter_indo_items([])
-
         # 1. GENERAL MOVIE & TV SHOW (TMDb paginated, capped at 300 items)
         if category in ("general_movie", "tv_show"):
             if not tmdb_key:
@@ -2863,60 +2059,6 @@ def api_discover():
                 if len(results) >= limit or not (page_data.get("pageInfo") or {}).get("hasNextPage"):
                     break
 
-        # 3. JAV (Multi-Provider: MissAV + JAVDatabase + TPDB JAV + Sukebei RSS up to 50 items)
-        elif category == "jav":
-            results = fetch_jav_discover(feed=feed, query=query, limit=limit, tpdb_key=tpdb_key)
-
-        # 4. ENGLISH ADULT (ThePornDB + Eporner + XHamster; no JAV/Sukebei fallback)
-        elif category == "english_adult":
-            # Each provider can be selected independently; "all" distributes the requested
-            # result budget across providers so an early source cannot starve later sources.
-            adult_provider_quota = max(1, (limit + (2 if tpdb_key else 1)) // (3 if tpdb_key else 2))
-            if provider in ("all", "theporndb") and tpdb_key:
-                scenes = fetch_tpdb_scenes(tpdb_key, query=query, feed=feed, limit=limit if provider == "theporndb" else adult_provider_quota)
-                for sc in scenes[:limit]:
-                    sc_title = sc.get("title") or ""
-                    site_obj = sc.get("site") or {}
-                    site_name = site_obj.get("name") or ""
-                    date_str = sc.get("date") or ""
-                    year_val = int(date_str[:4]) if len(date_str) >= 4 and date_str[:4].isdigit() else None
-                    q_str = f"{site_name} {sc_title}".strip() if site_name else sc_title
-                    scene_url = str(sc.get("url") or sc.get("scene_url") or "").strip()
-                    results.append(
-                        {
-                            "id": f"tpdb:{sc.get('id')}",
-                            "title": f"[{site_name}] {sc_title}" if site_name else sc_title,
-                            "year": year_val,
-                            "rating": round(float(sc.get("rating") or 0), 1),
-                            "poster_url": sc.get("poster") or sc.get("image") or "",
-                            "overview": (sc.get("description") or "")[:240],
-                            "category": "english_adult",
-                            "source_provider": "ThePornDB",
-                            "original_url": scene_url if scene_url.startswith("https://") else "",
-                            "search_query": q_str,
-                        }
-                    )
-
-            if provider in ("all", "eporner"):
-                eporner_results = fetch_eporner_videos(query=query, feed=feed, limit=limit if provider == "eporner" else adult_provider_quota)
-                seen_adult_ids = {str(item.get("id") or "").lower() for item in results}
-                for item in eporner_results:
-                    if str(item.get("id") or "").lower() not in seen_adult_ids:
-                        results.append(item)
-                        seen_adult_ids.add(str(item.get("id") or "").lower())
-                    if len(results) >= limit:
-                        break
-
-            if provider in ("all", "xhamster") and len(results) < limit:
-                xhamster_results = fetch_xhamster_videos(query=query, feed=feed, limit=limit if provider == "xhamster" else adult_provider_quota)
-                seen_adult_ids = {str(item.get("id") or "").lower() for item in results}
-                for item in xhamster_results:
-                    if str(item.get("id") or "").lower() not in seen_adult_ids:
-                        results.append(item)
-                        seen_adult_ids.add(str(item.get("id") or "").lower())
-                    if len(results) >= limit: break
-
-
         final_results = results[:limit]
         if final_results:
             with _DISCOVER_CACHE_LOCK:
@@ -2929,7 +2071,6 @@ def api_discover():
             "ok": True,
             "category": category,
             "feed": feed,
-            "provider": provider,
             "count": len(final_results),
             "results": final_results,
         })
@@ -2964,8 +2105,11 @@ def _poster_host_allowed(host: str) -> bool:
 @app.route("/api/discover/poster-proxy", methods=["GET"])
 def api_discover_poster_proxy():
     """
-    Proxies and caches external discovery cover images (MissAV, Fourhoi, Surrit, DMM, ThePornDB)
-    with valid Referer headers so hotlink-protected covers render cleanly in the browser.
+    Proxies and caches external discovery cover images with valid Referer headers so
+    hotlink-protected covers render cleanly in the browser.
+
+    The Discovery UI now hotlinks TMDb and AniList covers directly, but the endpoint
+    stays registered and hardened for providers whose CDNs block hotlinking.
     """
     raw_url = (request.args.get("url") or "").strip()
     if not raw_url or not raw_url.startswith(("http://", "https://")):
@@ -3075,7 +2219,7 @@ def api_discover_poster_proxy():
 @app.route("/api/discover/search-cache", methods=["POST"])
 def api_discover_search_cache():
     """
-    Universal TorBox Instant Cache search across all 6 video categories (for new media OR quality upgrades).
+    TorBox Instant Cache search across library categories, for new media or quality upgrades.
     """
     payload = request.get_json(silent=True) or {}
     query = (payload.get("query") or "").strip()
@@ -3340,140 +2484,6 @@ def api_series_check_torbox_cache():
             "results": results[:20],
         }
     )
-
-
-@app.route("/api/torbox/webdl/hosters", methods=["GET"])
-def api_torbox_webdl_hosters():
-    """Return TorBox's live WebDL hoster catalogue for diagnostics/UI."""
-    settings = db.get_settings()
-    api_key = (settings.get("torbox_api_key") or "").strip()
-    if not api_key:
-        return jsonify({"ok": False, "error": "TorBox API Key is not configured."}), 400
-    try:
-        resp = meta_eng.HTTP_SESSION.get(
-            f"{TORBOX_API_BASE}/webdl/hosters",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=(8, 20),
-        )
-        try:
-            body = resp.json()
-        except ValueError:
-            body = {"detail": resp.text[:300]}
-        if resp.status_code != 200 or (isinstance(body, dict) and body.get("success") is False):
-            detail = body.get("detail") if isinstance(body, dict) else ""
-            return jsonify({"ok": False, "error": detail or f"TorBox HTTP {resp.status_code}"}), 502
-        hosters = body.get("data", body) if isinstance(body, dict) else body
-        return jsonify({"ok": True, "hosters": hosters})
-    except Exception as exc:
-        return jsonify({"ok": False, "error": f"Could not retrieve TorBox hosters: {exc}"}), 502
-
-
-@app.route("/api/torbox/webdl/batch", methods=["POST"])
-def api_torbox_webdl_batch():
-    """Submit up to 10 selected provider page/direct URLs to TorBox Web Downloads."""
-    payload = request.get_json(silent=True) or {}
-    items = payload.get("items") or []
-    if not isinstance(items, list) or not items:
-        return jsonify({"ok": False, "error": "Select at least one link."}), 400
-    if len(items) > 10:
-        return jsonify({"ok": False, "error": "Maximum 10 links per batch. Submit another batch for the rest."}), 400
-
-    settings = db.get_settings()
-    api_key = (settings.get("torbox_api_key") or "").strip()
-    if not api_key:
-        return jsonify({"ok": False, "error": "TorBox API Key is not configured."}), 400
-
-    # Known source domains. Additional providers are enabled only after their adapter
-    # returns canonical page URLs and TorBox hoster compatibility is verified.
-    allowed_domains = {
-        "eporner.com", "pornhub.com", "xvideos.com", "xhamster.com",
-        "xnxx.com", "youporn.com", "redtube.com", "tube8.com",
-    }
-    headers = {"Authorization": f"Bearer {api_key}"}
-    results: List[Dict[str, Any]] = []
-    for idx, item in enumerate(items, start=1):
-        if not isinstance(item, dict):
-            results.append({"index": idx, "ok": False, "error": "Invalid item."})
-            continue
-        link = str(item.get("url") or "").strip()
-        name = re.sub(r"\s+", " ", str(item.get("name") or "TorBox Web Download")).strip()[:180]
-        provider_name = str(item.get("provider") or "").strip()[:40]
-        requested_category = str(item.get("category") or "english_adult").strip().lower()
-        if requested_category not in db.VALID_CATEGORIES - {"uncategorized"}:
-            requested_category = "english_adult"
-        poster_url = str(item.get("poster_url") or "").strip()
-        if poster_url and (not poster_url.startswith("https://") or len(poster_url) > 2048):
-            poster_url = ""
-        parsed = urlparse(link)
-        host = (parsed.hostname or "").lower().rstrip(".")
-        domain_ok = any(host == domain or host.endswith("." + domain) for domain in allowed_domains)
-        if parsed.scheme != "https" or not host or parsed.username or parsed.password or not domain_ok:
-            results.append({"index": idx, "name": name, "provider": provider_name, "ok": False, "error": "URL must be a canonical HTTPS page from a supported provider domain."})
-            continue
-        used, wait_seconds = _webdl_rate_state()
-        if used >= _WEB_DL_MAX_REQUESTS:
-            results.append({"index": idx, "name": name, "provider": provider_name, "url": link, "ok": False, "rate_limited": True, "error": "Local WebDL hourly limit reached; wait for the countdown."})
-            # Preserve remaining unsubmitted items as pending in the response.
-            for pending_idx, pending in enumerate(items[idx:], start=idx + 1):
-                results.append({"index": pending_idx, "name": str((pending or {}).get("name") or "Pending")[:180], "ok": False, "pending": True, "error": "Not submitted because the hourly limit was reached."})
-            break
-        try:
-            _webdl_record_request()
-            form_fields = {
-                "link": (None, link),
-                "name": (None, name),
-                "as_queued": (None, "false"),
-                "add_only_if_cached": (None, "false"),
-            }
-            resp = meta_eng.HTTP_SESSION.post(
-                f"{TORBOX_API_BASE}/webdl/createwebdownload",
-                headers=headers,
-                files=form_fields,
-                timeout=(8, 35),
-            )
-            try:
-                body = resp.json() if resp.content else {}
-            except ValueError:
-                body = {"detail": resp.text[:250]}
-            ok = resp.status_code in (200, 201) and body.get("success", True) is not False
-            data_obj = body.get("data") or {}
-            if resp.status_code == 429:
-                retry_after = resp.headers.get("Retry-After", "")
-                try:
-                    retry_seconds = max(1, int(retry_after))
-                except (TypeError, ValueError):
-                    retry_seconds = 3600
-                results.append({"index": idx, "name": name, "provider": provider_name, "url": link, "ok": False, "rate_limited": True, "retry_after_seconds": retry_seconds, "error": "TorBox rate limit (HTTP 429)."})
-                for pending_idx, pending in enumerate(items[idx:], start=idx + 1):
-                    results.append({"index": pending_idx, "name": str((pending or {}).get("name") or "Pending")[:180], "ok": False, "pending": True, "error": "Not submitted because TorBox rate limit was reached."})
-                break
-            webdl_id = data_obj.get("web_id") or data_obj.get("webdl_id") or data_obj.get("id")
-            if ok and webdl_id:
-                TORBOX_MONITOR.track(
-                    kind="webdl",
-                    item_id=str(webdl_id),
-                    title=name,
-                    category=requested_category,
-                    poster_url=poster_url,
-                )
-            results.append({
-                "index": idx,
-                "name": name,
-                "provider": provider_name,
-                "url": link,
-                "ok": bool(ok),
-                "webdl_id": webdl_id,
-                "message": body.get("detail") or ("Submitted to TorBox Web Downloads." if ok else "TorBox rejected this link."),
-                "error": "" if ok else (body.get("detail") or body.get("error") or f"TorBox HTTP {resp.status_code}"),
-            })
-        except Exception as exc:
-            results.append({"index": idx, "name": name, "provider": provider_name, "url": link, "ok": False, "error": str(exc)[:250]})
-
-    succeeded = sum(1 for row in results if row.get("ok"))
-    rate_limited = any(row.get("rate_limited") for row in results)
-    _, wait_seconds = _webdl_rate_state()
-    retry_seconds = max([int(row.get("retry_after_seconds") or 0) for row in results] + [wait_seconds])
-    return jsonify({"ok": succeeded > 0, "submitted": succeeded, "failed": len(results) - succeeded, "rate_limited": rate_limited, "retry_after_seconds": retry_seconds, "remaining_local": max(0, _WEB_DL_MAX_REQUESTS - _webdl_rate_state()[0]), "results": results}), (429 if rate_limited and succeeded == 0 else 200)
 
 
 @app.route("/api/torbox/add-cached", methods=["POST"])

@@ -23,14 +23,16 @@ Status per **27 November 2026**. Baseline uji: `python -m pytest tests -q --no-h
 | 13 | P3.2 Aturan always-on | `~/.config/opencode/instructions/torbox-media-hub.md` | Backup DB sebelum migrasi, larangan mencetak secret, larangan restart saat antrean aktif. Terdaftar di `instructions` pada `opencode.json`/`opencode.jsonc` (keduanya sudah di-backup). |
 | 14 | P3.3 Dokumentasi | `docs/POSTER_RELIABILITY_PHASE4.md` | Bagian 6 baru: guard SSRF per hop, redirect manual, batas 5 MB, pemetaan status, kebersihan socket, allowlist opsional. |
 | 15 | Tes regresi | `tests/test_roxxy_download_guardrails.py`, `tests/test_poster_proxy_ssrf.py`, `tests/test_request_guard.py` | 16 + 9 + 13 tes baru; seluruh suite offline dan tidak menyentuh DB aplikasi. |
+| 16 | Discovery & Search hanya 4 kategori | `app.py` `api_discover`, `templates/index.html` | Tab JAV, English Adult, dan Indo dihapus; `/api/discover` menolak kategori lain dengan 400. Adapter MissAV/JAVDatabase/ThePornDB/Eporner/XHamster/Sukebei dihapus, selector provider adult, sorting durasi, dan UI WebDL batch (khusus adult/Indo) dibuang. Endpoint `/api/torbox/webdl/hosters` dan `/api/torbox/webdl/batch` beserta guard 60/jam ikut dihapus karena tidak lagi punya pemanggil. Pencarian Discovery tetap ada untuk General Movie, TV Show, Anime, dan Donghua; poster TMDb/AniList di-hotlink langsung. |
 
 ---
 
 ## Tersisa
 
 ### V1 - verifikasi manual (butuh app berjalan)
-- Uji poster proxy pada satu cover missav dan satu cover theporndb setelah restart, untuk memastikan guard IP tidak memblokir CDN sah.
-- Bila ingin allowlist aktif: isi `TBH_POSTER_HOST_ALLOWLIST` dengan host yang benar-benar muncul di log proxy, lalu ulangi uji cover.
+- Buka Discovery Hub dan pastikan hanya ada empat tab (Movies, TV Shows, Anime, Donghua); feed Trending/Popular/Top Rated dan Search harus memuat untuk keempatnya.
+- Pastikan `GET /api/discover?category=jav` (juga `english_adult`, `indo`) mengembalikan 400 dan tidak ada request keluar.
+- Poster proxy masih terdaftar dan diuji, tetapi tidak lagi dipanggil UI Discovery. Uji manual hanya bila endpoint itu akan dipakai lagi.
 - Setelah restart, pantau `Get-NetTCPConnection -OwningProcess <pid>` dan pastikan jumlah `CloseWait` outbound tidak naik lagi seperti sebelumnya (39 dalam ~1 jam).
 
 ### V2 - belum diputuskan
