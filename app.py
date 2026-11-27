@@ -30,7 +30,7 @@ import platform_support as platform_env
 import webdl_resolver as webdl
 from roxxy_module import roxxy_bp
 
-APP_VERSION = "v1.3D5"  # single source of truth; templates render this
+APP_VERSION = "v1.3D6"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(

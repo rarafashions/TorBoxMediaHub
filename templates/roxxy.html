@@ -226,7 +226,7 @@
           <img id="detail-poster" class="hidden h-48 w-32 shrink-0 rounded-xl border border-white/15 object-cover shadow-2xl sm:h-56 sm:w-36" alt="Poster">
           <div class="min-w-0 flex-1 space-y-2.5">
             <div class="flex flex-wrap items-center gap-2">
-              <span id="library-badge" class="rounded-full px-3 py-0.5 text-[11px] font-bold tracking-wide"></span>
+              <span id="library-badge" class="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold tracking-wide"></span>
             </div>
             <h2 id="detail-title" class="text-xl font-black leading-snug text-white sm:text-2xl"></h2>
             <p id="detail-description" class="text-xs leading-relaxed text-slate-300 sm:text-sm line-clamp-3"></p>
@@ -445,6 +445,7 @@ function renderCatalogCards(items, append = false) {
         <div class="relative overflow-hidden bg-slate-800">
           ${m.poster ? `<img src="${esc(m.poster)}" class="w-full object-cover" loading="lazy">` : '<div class="aspect-[2/3] w-full bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center text-xs text-slate-500">No Poster</div>'}
           <div class="absolute left-2 top-2 rounded bg-black/75 px-2 py-0.5 text-[10px] font-bold tracking-wide text-sky-300 backdrop-blur-md border border-white/10">${esc(m.jav_code || m.id)}</div>
+          ${m.in_library ? '<div class="absolute right-2 top-2 inline-flex items-center gap-1 rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-black tracking-wide text-emerald-950 shadow-lg shadow-emerald-500/30">✓ IN LIBRARY</div>' : ''}
           <div class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity duration-300 group-hover:opacity-100"><div class="flex h-12 w-12 items-center justify-center rounded-full bg-sky-500 text-slate-950 shadow-xl">▶</div></div>
           <div class="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/85 to-transparent p-3 pt-10"><div class="line-clamp-2 text-xs font-bold leading-snug text-white group-hover:text-sky-300">${esc(m.name)}</div></div>
         </div>
@@ -692,8 +693,13 @@ function renderMeta(m) {
   $('detail-poster').src = m.poster || '';
   $('detail-backdrop').src = m.poster || '';
   $('detail-poster').classList.toggle('hidden', !m.poster);
-  $('library-badge').textContent = m.in_library ? '✓ IN LIBRARY' : 'NOT IN LIBRARY';
-  $('library-badge').className = 'rounded-full px-3 py-0.5 text-[11px] font-bold ' + (m.in_library ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-white/10 text-slate-300');
+  const badge = $('library-badge');
+  const inLibrary = !!m.in_library;
+  badge.textContent = inLibrary ? '✓ IN LIBRARY' : 'NOT IN LIBRARY';
+  badge.className = 'inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-[11px] font-bold tracking-wide ' + (inLibrary ? 'bg-emerald-500 text-emerald-950 shadow-lg shadow-emerald-500/30' : 'bg-white/10 text-slate-300');
+  const matched = inLibrary ? (m.library_match || null) : null;
+  badge.title = matched ? `Sudah ada di Library: ${matched.title || matched.file_name || 'item'}` : '';
+  badge.setAttribute('aria-label', inLibrary ? 'Video sudah ada di Library' : 'Video belum ada di Library');
   
   const fields = [['Kode', m.jav_code], ['Tahun', m.year], ['Studio', m.studio], ['Durasi', m.runtime], ['Genre', (m.genres || []).join(', ')]];
   $('detail-meta').innerHTML = fields.filter(x => x[1]).map(x => `

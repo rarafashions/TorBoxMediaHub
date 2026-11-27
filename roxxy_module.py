@@ -86,6 +86,94 @@ def _extract_code(text: str) -> str:
     return m.group(0).upper() if m else ""
 
 
+# --- Library presence -------------------------------------------------------
+# A Roxxy meta carries a JAV production code only for JAV catalogs. English
+# adult, Indo and general titles have to be matched by their stored title or
+# file name, so the detail badge can say "IN LIBRARY" before the user downloads
+# a title that already exists locally or in TorBox Cloud.
+LIBRARY_MATCH_MIN_LENGTH = 6
+_LIBRARY_FILE_SUFFIXES = {
+    ".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".wmv",
+    ".mpg", ".mpeg", ".flv", ".srt", ".ass", ".vtt",
+}
+_LIBRARY_SELECT = (
+    "id, title, file_name, parent_name, source_type, content_category, "
+    "has_metadata, has_subtitle, season_num, episode_num, code_id"
+)
+
+
+def _library_match_key(value: Any) -> str:
+    """Fold a title or file name into an exact comparison key.
+
+    Punctuation, casing, and a known video extension are dropped so
+    ``Massage.Gone.Squirt.mp4`` and ``Massage Gone Squirt`` compare equal.
+    Short or purely numeric keys are refused because they would match unrelated
+    releases.
+    """
+    text = str(value or "").strip()
+    stem, extension = os.path.splitext(text)
+    if extension.casefold() in _LIBRARY_FILE_SUFFIXES:
+        text = stem
+    text = re.sub(r"[^0-9a-z]+", " ", text.casefold())
+    key = " ".join(text.split())
+    if len(key) < LIBRARY_MATCH_MIN_LENGTH or not any(ch.isalpha() for ch in key):
+        return ""
+    return key
+
+
+def _build_library_index(rows: Any) -> Dict[str, Dict[str, Any]]:
+    """Index library rows for one request; newest row wins on a shared key."""
+    by_code: Dict[str, Dict[str, Any]] = {}
+    by_title: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        item = dict(row)
+        code = str(item.get("code_id") or "").strip().upper()
+        if code:
+            by_code.setdefault(code, item)
+        # Episodes share their series title, so a title hit would not prove that
+        # this exact episode is already available.
+        if item.get("season_num") is not None or item.get("episode_num") is not None:
+            continue
+        for field in ("title", "file_name"):
+            key = _library_match_key(item.get(field))
+            if key:
+                by_title.setdefault(key, item)
+    return {"by_code": by_code, "by_title": by_title}
+
+
+def _load_library_index() -> Dict[str, Dict[str, Any]]:
+    with db.get_connection() as conn:
+        rows = conn.execute(
+            f"SELECT {_LIBRARY_SELECT} FROM media_items ORDER BY id DESC"
+        ).fetchall()
+    return _build_library_index(rows)
+
+
+def _library_match_for_meta(
+    meta: Any, index: Dict[str, Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """Return the library row that already holds this meta, if any."""
+    if not isinstance(meta, dict) or not index:
+        return None
+    code = str(meta.get("jav_code") or "").strip().upper()
+    if not code:
+        code = _extract_code(
+            f"{meta.get('id', '')} {meta.get('name', '')} {meta.get('description', '')}"
+        )
+    if code:
+        match = index.get("by_code", {}).get(code)
+        if match:
+            return dict(match, match_reason="code")
+    for field in ("name", "title", "original_name"):
+        key = _library_match_key(meta.get(field))
+        if not key:
+            continue
+        match = index.get("by_title", {}).get(key)
+        if match:
+            return dict(match, match_reason="title")
+    return None
+
+
 @roxxy_bp.get("/roxxy")
 def page():
     return render_template("roxxy.html", download_path=(_settings().get("roxxy_download_path") or DEFAULT_DOWNLOAD_PATH))
@@ -152,8 +240,12 @@ def api_catalog(catalog_type: str, catalog_id: str):
         path = f"catalog/{quote(catalog_type, safe='')}/{quote(catalog_id, safe=':')}{suffix}.json"
         data = _roxxy_get(path, params)
         metas = data.get("metas") or []
+        index = _load_library_index()
         for item in metas:
             item["jav_code"] = _extract_code(f"{item.get('id','')} {item.get('name','')} {item.get('description','')}")
+            # Show the green badge on the grid itself so an owned title is
+            # visible before the user opens the detail drawer.
+            item["in_library"] = _library_match_for_meta(item, index) is not None
         return jsonify({"ok": True, "metas": metas, "cacheMaxAge": data.get("cacheMaxAge")})
     except Exception as exc:
         return jsonify({"ok": False, "error": _safe_error(exc)}), 502
@@ -166,19 +258,9 @@ def api_meta(meta_type: str, meta_id: str):
         data = _roxxy_get(path)
         meta = data.get("meta") or {}
         meta["jav_code"] = _extract_code(f"{meta.get('id','')} {meta.get('name','')} {meta.get('description','')}")
-        code = meta["jav_code"]
-        meta["in_library"] = False
-        meta["library_match"] = None
-        if code:
-            with db.get_connection() as conn:
-                row = conn.execute(
-                    "SELECT id, title, file_name, source_type, content_category, has_metadata, has_subtitle "
-                    "FROM media_items WHERE UPPER(COALESCE(code_id,'')) = ? ORDER BY id DESC LIMIT 1",
-                    (code,),
-                ).fetchone()
-            if row:
-                meta["in_library"] = True
-                meta["library_match"] = dict(row)
+        match = _library_match_for_meta(meta, _load_library_index())
+        meta["in_library"] = match is not None
+        meta["library_match"] = match
         return jsonify({"ok": True, "meta": meta})
     except Exception as exc:
         return jsonify({"ok": False, "error": _safe_error(exc)}), 502
