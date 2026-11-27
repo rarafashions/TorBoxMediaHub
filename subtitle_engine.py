@@ -37,19 +37,21 @@ HTTP_SESSION.mount("https://", _adapter)
 TORBOX_API_BASE = "https://api.torbox.app/v1/api"
 
 
-def _detect_lang_from_name(name: str) -> str:
-    low = name.lower()
-    if any(k in low for k in (".id.", "_id.", "[id]", "(id)", "indonesian", "indonesia", "bahasa", ".ind.")):
-        return "id"
-    if any(k in low for k in (".en.", "_en.", "[en]", "(en)", "english", ".eng.")):
-        return "en"
-    if any(k in low for k in (".ms.", "_ms.", "malay", "melayu")):
-        return "ms"
-    if any(k in low for k in (".zh.", ".chs.", ".cht.", "chinese")):
-        return "zh"
-    if any(k in low for k in (".ja.", ".jpn.", "japanese")):
-        return "ja"
-    return "en"
+def _detect_lang_from_name(name: str) -> Optional[str]:
+    """Detect an explicit language marker; ambiguous filenames remain unknown."""
+    stem = os.path.splitext(os.path.basename(name or ""))[0].lower()
+    tokens = [t for t in re.split(r"[. _\-\[\]()]+", stem) if t]
+    aliases = {
+        "id": "id", "ind": "id", "indonesian": "id", "indonesia": "id", "bahasa": "id", "id-id": "id",
+        "en": "en", "eng": "en", "english": "en", "en-us": "en", "en-gb": "en",
+        "ms": "ms", "may": "ms", "malay": "ms", "melayu": "ms",
+        "zh": "zh", "chs": "zh", "cht": "zh", "chinese": "zh",
+        "ja": "ja", "jpn": "ja", "japanese": "ja",
+    }
+    for token in reversed(tokens):
+        if token in aliases:
+            return aliases[token]
+    return None
 
 
 def _extract_ep_tag(name: str) -> Optional[str]:
@@ -107,7 +109,7 @@ def _save_subtitle_bytes(raw: bytes, dest_base_name: str, ext: str = ".srt") -> 
     return out_path
 
 
-def _extract_subtitle_from_zip(raw_zip: bytes, dest_base_name: str) -> Optional[Tuple[str, str]]:
+def _extract_subtitle_from_zip(raw_zip: bytes, dest_base_name: str, target_language: Optional[str] = None) -> Optional[Tuple[str, str]]:
     try:
         with zipfile.ZipFile(io.BytesIO(raw_zip)) as zf:
             candidates = [
@@ -116,6 +118,16 @@ def _extract_subtitle_from_zip(raw_zip: bytes, dest_base_name: str) -> Optional[
             ]
             if not candidates:
                 return None
+            if target_language in ("en", "id"):
+                detected = {n: _detect_lang_from_name(n) for n in candidates}
+                matching = [n for n in candidates if detected[n] == target_language]
+                if matching:
+                    candidates = matching
+                elif any(lang in ("en", "id") for lang in detected.values()):
+                    # An explicitly tagged file for the other target language must never pass.
+                    return None
+                elif len(candidates) != 1:
+                    return None
             candidates.sort(
                 key=lambda n: (
                     0 if _detect_lang_from_name(n) == "en" else (1 if _detect_lang_from_name(n) == "id" else 2),
@@ -127,7 +139,12 @@ def _extract_subtitle_from_zip(raw_zip: bytes, dest_base_name: str) -> Optional[
             sub_bytes = zf.read(chosen)
             saved = _save_subtitle_bytes(sub_bytes, dest_base_name, ext=ext)
             if saved:
-                return saved, _detect_lang_from_name(chosen)
+                detected = _detect_lang_from_name(chosen)
+                # OpenSubtitles query was already constrained to this language; a single
+                # generically named archive member can safely inherit that query language.
+                if target_language in ("en", "id") and len(candidates) == 1:
+                    detected = target_language
+                return saved, detected
     except Exception:
         pass
     return None
@@ -301,8 +318,11 @@ def download_torbox_cloud_subtitle_from_index(
     item: Dict[str, Any],
     torbox_api_key: str,
     sub_index: Dict[Tuple[str, str], List[Dict[str, Any]]],
+    target_language: Optional[str] = None,
 ) -> Optional[Tuple[str, str]]:
     if not torbox_api_key or item.get("source_type") != "cloud":
+        return None
+    if target_language not in (None, "en", "id"):
         return None
     kind = item.get("torbox_kind") or "torrent"
     pid = str(item.get("torbox_item_id") or "")
@@ -312,23 +332,30 @@ def download_torbox_cloud_subtitle_from_index(
 
     vid_stem = os.path.splitext(item.get("file_name") or "")[0].lower()
     vid_ep_tag = _extract_ep_tag(vid_stem)
-
     scored: List[Tuple[int, Dict[str, Any]]] = []
-    for c in candidates:
-        c_stem = os.path.splitext(c["file_name"])[0].lower()
-        c_ep_tag = _extract_ep_tag(c_stem)
-        if vid_ep_tag and c_ep_tag and vid_ep_tag != c_ep_tag:
+    for candidate in candidates:
+        lang = _detect_lang_from_name(candidate.get("file_name", ""))
+        if lang not in ("en", "id"):
             continue
-        lang = _detect_lang_from_name(c["file_name"])
-        lang_prio = 0 if lang == "en" else (1 if lang == "id" else 2)
+        if target_language and lang != target_language:
+            continue
+        c_stem = os.path.splitext(candidate.get("file_name") or "")[0].lower()
+        c_ep_tag = _extract_ep_tag(c_stem)
+        # When the video identifies an episode, do not risk attaching an untagged or
+        # differently-tagged subtitle from another episode in the same TorBox item.
+        if vid_ep_tag and c_ep_tag != vid_ep_tag:
+            continue
         name_match = 0 if (vid_stem and (vid_stem in c_stem or c_stem in vid_stem)) else 1
-        scored.append((name_match * 10 + lang_prio, c))
+        lang_prio = 0 if lang == "en" else 1
+        scored.append((name_match * 10 + lang_prio, candidate))
 
     if not scored:
         return None
-
-    scored.sort(key=lambda x: x[0])
+    scored.sort(key=lambda row: row[0])
     chosen = scored[0][1]
+    chosen_lang = _detect_lang_from_name(chosen.get("file_name", ""))
+    if chosen_lang not in ("en", "id") or (target_language and chosen_lang != target_language):
+        return None
 
     headers = {"Authorization": f"Bearer {torbox_api_key.strip()}"}
     req_url = f"{TORBOX_API_BASE}/{'torrents' if kind == 'torrent' else 'usenet'}/requestdl"
@@ -351,23 +378,28 @@ def download_torbox_cloud_subtitle_from_index(
                 if sub_resp.status_code == 200:
                     ext = os.path.splitext(chosen["file_name"])[1].lower() or ".srt"
                     digest = hashlib.sha256((item.get("unique_key") or str(item.get("id"))).encode()).hexdigest()[:20]
-                    saved = _save_subtitle_bytes(sub_resp.content, f"tb_{digest}", ext=ext)
+                    saved = _save_subtitle_bytes(sub_resp.content, f"tb_{digest}_{chosen_lang}", ext=ext)
                     if saved:
-                        return saved, _detect_lang_from_name(chosen["file_name"])
+                        return saved, chosen_lang
     except Exception:
         pass
     return None
 
 
-def find_torbox_cloud_subtitle_for_item(item: Dict[str, Any], torbox_api_key: str) -> Optional[Tuple[str, str]]:
+def find_torbox_cloud_subtitle_for_item(
+    item: Dict[str, Any], torbox_api_key: str, target_language: Optional[str] = None
+) -> Optional[Tuple[str, str]]:
     if not torbox_api_key or item.get("source_type") != "cloud":
         return None
     idx = build_torbox_subtitle_index(torbox_api_key)
-    return download_torbox_cloud_subtitle_from_index(item, torbox_api_key, idx)
+    return download_torbox_cloud_subtitle_from_index(item, torbox_api_key, idx, target_language)
 
 
-def _search_subtitlecat_jav(code_id: str, dest_base_name: str) -> Optional[Tuple[str, str]]:
-    if not code_id:
+def _search_subtitlecat_jav(
+    code_id: str, dest_base_name: str, target_language: str
+) -> Optional[Tuple[str, str]]:
+    """Search SubtitleCat by JAV code and download only an explicitly tagged language."""
+    if not code_id or target_language not in ("en", "id"):
         return None
     try:
         url = f"https://www.subtitlecat.com/index.php?search={quote_plus(code_id)}"
@@ -375,47 +407,36 @@ def _search_subtitlecat_jav(code_id: str, dest_base_name: str) -> Optional[Tuple
         if resp.status_code != 200:
             return None
         soup = BeautifulSoup(resp.text, "html.parser")
-        links = soup.select("table.sub-table tbody tr td a")
         target_href = None
-        for a in links:
-            txt = a.get_text(" ", strip=True).upper()
-            if code_id.upper() in txt:
-                target_href = a.get("href")
+        for anchor in soup.select("table.sub-table tbody tr td a"):
+            if code_id.upper() in anchor.get_text(" ", strip=True).upper():
+                target_href = anchor.get("href")
                 break
         if not target_href:
             return None
         detail_url = target_href if target_href.startswith("http") else f"https://www.subtitlecat.com/{target_href.lstrip('/')}"
-        d_resp = HTTP_SESSION.get(detail_url, timeout=10)
-        if d_resp.status_code != 200:
+        detail_resp = HTTP_SESSION.get(detail_url, timeout=10)
+        if detail_resp.status_code != 200:
             return None
-        d_soup = BeautifulSoup(d_resp.text, "html.parser")
-        dl_links = d_soup.select("a.green-link")
+        detail_soup = BeautifulSoup(detail_resp.text, "html.parser")
         chosen_dl = None
-        chosen_lang = "en"
-        for dl in dl_links:
-            href = dl.get("href") or ""
-            low = href.lower()
-            label = dl.get_text(" ", strip=True).lower()
-            if "-en." in low or "english" in label:
+        for link in detail_soup.select("a.green-link"):
+            href = link.get("href") or ""
+            label = link.get_text(" ", strip=True)
+            detected = _detect_lang_from_name(f"{href} {label}")
+            if detected == target_language:
                 chosen_dl = href
-                chosen_lang = "en"
                 break
-            if ("-id." in low or "indonesian" in label) and not chosen_dl:
-                chosen_dl = href
-                chosen_lang = "id"
-        if not chosen_dl and dl_links:
-            chosen_dl = dl_links[0].get("href")
-            chosen_lang = _detect_lang_from_name(chosen_dl or "")
-        if chosen_dl:
-            full_dl = chosen_dl if chosen_dl.startswith("http") else f"https://www.subtitlecat.com/{chosen_dl.lstrip('/')}"
-            s_resp = HTTP_SESSION.get(full_dl, timeout=10)
-            if s_resp.status_code == 200:
-                saved = _save_subtitle_bytes(s_resp.content, dest_base_name, ext=".srt")
-                if saved:
-                    return saved, chosen_lang
+        if not chosen_dl:
+            return None
+        full_dl = chosen_dl if chosen_dl.startswith("http") else f"https://www.subtitlecat.com/{chosen_dl.lstrip('/')}"
+        sub_resp = HTTP_SESSION.get(full_dl, timeout=10)
+        if sub_resp.status_code != 200:
+            return None
+        saved = _save_subtitle_bytes(sub_resp.content, f"{dest_base_name}_{target_language}", ext=".srt")
+        return (saved, target_language) if saved else None
     except Exception:
-        pass
-    return None
+        return None
 
 
 def _search_opensubtitles_rest(
@@ -423,10 +444,13 @@ def _search_opensubtitles_rest(
     dest_base_name: str,
     season: Optional[int] = None,
     episode: Optional[int] = None,
+    target_language: Optional[str] = None,
 ) -> Optional[Tuple[str, str]]:
     if not query_title:
         return None
-    for lang_code in ("eng", "ind"):
+    language_codes = {"en": "eng", "id": "ind"}
+    requested_codes = [language_codes[target_language]] if target_language in language_codes else ["eng", "ind"]
+    for lang_code in requested_codes:
         try:
             parts = [f"https://rest.opensubtitles.org/search/query-{quote_plus(query_title)}"]
             if season is not None:
@@ -446,7 +470,24 @@ def _search_opensubtitles_rest(
             rows = resp.json()
             if not isinstance(rows, list) or not rows:
                 continue
-            best = rows[0]
+            # Phase 7.1: rank provider candidates using available metadata and
+            # discard only explicit language/year/season/episode conflicts.
+            try:
+                from subtitle_match_validator import rank_candidates
+                ranked = rank_candidates(
+                    rows,
+                    title=query_title,
+                    year=None,
+                    season=season,
+                    episode=episode,
+                    language=("en" if lang_code == "eng" else "id"),
+                )
+                if not ranked:
+                    continue
+                best = ranked[0][0]
+            except Exception:
+                # Preserve provider availability if optional diagnostics fail.
+                best = rows[0]
             dl_link = best.get("SubDownloadLink") or best.get("ZipDownloadLink")
             if not dl_link:
                 continue
@@ -456,24 +497,100 @@ def _search_opensubtitles_rest(
 
             raw = dl_resp.content
             short_lang = "en" if lang_code == "eng" else "id"
+            lang_dest = f"{dest_base_name}_{short_lang}"
             if dl_link.endswith(".gz"):
                 try:
                     raw = gzip.decompress(raw)
                 except Exception:
                     pass
-                saved = _save_subtitle_bytes(raw, dest_base_name, ext=".srt")
+                saved = _save_subtitle_bytes(raw, lang_dest, ext=".srt")
                 if saved:
                     return saved, short_lang
             elif zipfile.is_zipfile(io.BytesIO(raw)):
-                extracted = _extract_subtitle_from_zip(raw, dest_base_name)
+                extracted = _extract_subtitle_from_zip(raw, lang_dest, target_language=short_lang)
                 if extracted:
                     return extracted
             else:
-                saved = _save_subtitle_bytes(raw, dest_base_name, ext=".srt")
+                saved = _save_subtitle_bytes(raw, lang_dest, ext=".srt")
                 if saved:
                     return saved, short_lang
         except Exception:
             continue
+    return None
+
+
+def fetch_subtitle_for_language(
+    item: Dict[str, Any],
+    language: str,
+    torbox_api_key: str = "",
+    torbox_sub_index: Optional[Dict[Tuple[str, str], List[Dict[str, Any]]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Fetch one explicitly requested language, reusing local/Cloud tracks before providers."""
+    language = (language or "").strip().lower()
+    if language not in ("en", "id"):
+        raise ValueError("Language must be 'en' or 'id'.")
+
+    if item.get("source_type") == "local":
+        from dual_subtitle_engine import scan_item_subtitles
+        for row in scan_item_subtitles(item):
+            if row.get("language") == language:
+                return {"subtitle_path": row["subtitle_path"], "subtitle_lang": language,
+                        "subtitle_source": row.get("subtitle_source", "local"),
+                        "is_embedded": row.get("is_embedded", False),
+                        "stream_index": row.get("stream_index")}
+
+    category = item.get("content_category") or "uncategorized"
+    if category == "english_adult":
+        return None
+
+    digest = hashlib.sha256((item.get("unique_key") or str(item.get("id"))).encode()).hexdigest()[:20]
+    dest_base = f"sub_{digest}"
+
+    # Cloud subtitle files are checked before external providers. A caller may pass a
+    # prebuilt index for batch work; API/manual calls build the index on demand.
+    if item.get("source_type") == "cloud" and torbox_api_key:
+        if torbox_sub_index is None:
+            torbox_sub_index = build_torbox_subtitle_index(torbox_api_key)
+        cloud_result = download_torbox_cloud_subtitle_from_index(
+            item, torbox_api_key, torbox_sub_index, target_language=language
+        )
+        if cloud_result and cloud_result[1] == language:
+            return {"subtitle_path": cloud_result[0], "subtitle_lang": language,
+                    "subtitle_source": "torbox_cloud", "is_embedded": False}
+
+    season = item.get("season_num")
+    episode = item.get("episode_num")
+    if category == "jav":
+        code_id = (item.get("code_id") or "").strip()
+        if code_id:
+            sc_result = _search_subtitlecat_jav(code_id, dest_base, target_language=language)
+            if sc_result and sc_result[1] == language:
+                return {"subtitle_path": sc_result[0], "subtitle_lang": language,
+                        "subtitle_source": "subtitlecat", "is_embedded": False}
+            # JAV fallback uses the catalog code, not a potentially noisy display title.
+            os_result = _search_opensubtitles_rest(
+                code_id, dest_base, target_language=language
+            )
+        else:
+            # Without a catalog code, use the best available title conservatively.
+            title_q = item.get("title") or item.get("file_name") or ""
+            os_result = _search_opensubtitles_rest(
+                title_q, dest_base, target_language=language
+            )
+    else:
+        if season is not None or episode is not None:
+            title_q = item.get("series_title") or item.get("title") or item.get("file_name") or ""
+        else:
+            title_q = item.get("title") or item.get("file_name") or ""
+        os_result = _search_opensubtitles_rest(
+            title_q, dest_base, season=season, episode=episode, target_language=language
+        )
+
+    if os_result:
+        path, detected_language = os_result
+        if detected_language == language:
+            return {"subtitle_path": path, "subtitle_lang": language,
+                    "subtitle_source": "opensubtitles", "is_embedded": False}
     return None
 
 
@@ -489,7 +606,7 @@ def fetch_subtitle_for_item(
     # 1. Check local sidecar
     if item.get("source_type") == "local":
         sidecar = find_local_sidecar_subtitle(item.get("file_path"))
-        if sidecar:
+        if sidecar and sidecar[1] in ("en", "id"):
             return {"subtitle_path": sidecar[0], "subtitle_lang": sidecar[1], "subtitle_source": "local_sidecar"}
 
     # 2. Check subtitle file inside TorBox Cloud
@@ -498,7 +615,7 @@ def fetch_subtitle_for_item(
             tb_sub = download_torbox_cloud_subtitle_from_index(item, torbox_api_key, torbox_sub_index)
         else:
             tb_sub = find_torbox_cloud_subtitle_for_item(item, torbox_api_key)
-        if tb_sub:
+        if tb_sub and tb_sub[1] in ("en", "id"):
             return {"subtitle_path": tb_sub[0], "subtitle_lang": tb_sub[1], "subtitle_source": "torbox_cloud"}
 
     # 3. Check embedded subtitle stream (local file or TorBox Cloud)
@@ -514,7 +631,9 @@ def fetch_subtitle_for_item(
     if category == "jav":
         code_id = item.get("code_id") or ""
         if code_id:
-            sc_res = _search_subtitlecat_jav(code_id, dest_base)
+            sc_res = _search_subtitlecat_jav(code_id, dest_base, target_language="en")
+            if not sc_res:
+                sc_res = _search_subtitlecat_jav(code_id, dest_base, target_language="id")
             if sc_res:
                 return {"subtitle_path": sc_res[0], "subtitle_lang": sc_res[1], "subtitle_source": "subtitlecat"}
             os_res = _search_opensubtitles_rest(code_id, dest_base)

@@ -18,7 +18,7 @@
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased">
 
   <!-- TOP NAVBAR -->
-  <header class="sticky top-0 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-4 py-3">
+  <header id="main-navbar" class="sticky top-0 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-4 py-3">
     <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3">
       <div class="flex items-center gap-3">
         <img
@@ -46,6 +46,7 @@
         <button onclick="openDiscoveryModal()" id="tab-discover" class="action-lock-btn px-3 py-1.5 rounded-md text-xs font-semibold bg-gradient-to-r from-purple-600/90 to-indigo-600/90 hover:from-purple-500 hover:to-indigo-500 text-white border border-indigo-400/40 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-sm">
           <span>&#128269; Discover &amp; Search</span>
         </button>
+        <a href="/roxxy" class="px-3 py-1.5 rounded-md text-xs font-semibold bg-fuchsia-700/90 hover:bg-fuchsia-600 text-white border border-fuchsia-500/40">Roxxy JAV Center</a>
         <button onclick="switchTab('playlists')" id="tab-playlists" class="tab-btn action-lock-btn px-3 py-1.5 rounded-md text-xs font-semibold text-slate-400 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed">Playlists (<span id="nav-pl-count">0</span>)</button>
         <button onclick="switchTab('settings')" id="tab-settings" class="tab-btn action-lock-btn px-3 py-1.5 rounded-md text-xs font-semibold text-slate-400 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed">Settings &amp; DB</button>
       </nav>
@@ -54,6 +55,7 @@
       <div class="flex flex-wrap items-center gap-2">
         <button onclick="triggerTask('/api/tasks/sync-torbox', {auto_enrich: false})" class="task-trigger-btn action-lock-btn px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white transition">Sync Cloud</button>
         <button onclick="triggerTask('/api/tasks/scan-local', {auto_enrich: false})" class="task-trigger-btn action-lock-btn px-3 py-1.5 rounded-lg bg-teal-600 hover:bg-teal-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white transition">Scan Local</button>
+        <button onclick="triggerTask('/api/tasks/classify-pending', {})" class="task-trigger-btn action-lock-btn px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white transition">Classify New</button>
         <button onclick="triggerTask('/api/tasks/batch-enrich', {force: false})" class="task-trigger-btn action-lock-btn px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white transition">Enrich Meta</button>
         <button onclick="triggerTask('/api/tasks/batch-subtitle', {})" class="task-trigger-btn action-lock-btn px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white transition">Find Subtitles</button>
       </div>
@@ -101,151 +103,173 @@
 
     <!-- ==================== LIBRARY VIEW ==================== -->
     <section id="view-library">
-      <!-- TELEMETRY STRIP -->
-      <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-4">
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
-          <div class="text-[11px] text-slate-400">Total Media</div>
-          <div class="text-lg font-bold text-white"><span id="stat-total">0</span> <span class="text-[11px] font-normal text-emerald-400">(Free: <span id="stat-unassigned">0</span>)</span></div>
-        </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
-          <div class="text-[11px] text-slate-400">Cloud / Local</div>
-          <div class="text-sm font-bold text-sky-400 mt-1"><span id="stat-cloud">0</span> / <span id="stat-local" class="text-teal-400">0</span></div>
-        </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
-          <div class="text-[11px] text-slate-400">Complete Metadata</div>
-          <div class="text-sm font-bold text-emerald-400 mt-1"><span id="stat-meta">0</span> <span class="text-xs text-slate-500">(-<span id="stat-meta-miss">0</span>)</span></div>
-        </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
-          <div class="text-[11px] text-slate-400">Subtitles Ready</div>
-          <div class="text-sm font-bold text-amber-400 mt-1"><span id="stat-sub">0</span> <span class="text-xs text-slate-500">(-<span id="stat-sub-miss">0</span>)</span></div>
-        </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
-          <div class="text-[11px] text-slate-400">Movie / TV Show</div>
-          <div class="text-sm font-bold text-slate-200 mt-1"><span id="stat-movie">0</span> / <span id="stat-series">0</span></div>
-        </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
-          <div class="text-[11px] text-slate-400">Anime / Donghua</div>
-          <div class="text-sm font-bold text-purple-400 mt-1"><span id="stat-anime">0</span> / <span id="stat-donghua" class="text-pink-400">0</span></div>
-        </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
-          <div class="text-[11px] text-slate-400">JAV / English Adult</div>
-          <div class="text-sm font-bold text-rose-400 mt-1"><span id="stat-jav">0</span> / <span id="stat-adult">0</span></div>
-        </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
-          <div class="text-[11px] text-slate-400">Watched</div>
-          <div class="text-sm font-bold text-indigo-400 mt-1"><span id="stat-watched">0</span> <span class="text-xs text-slate-500">(Uncat: <span id="stat-uncat">0</span>)</span></div>
-        </div>
-      </div>
-
-      <!-- PLAYLIST SCOPE SUB-TABS & BULK ACTIONS -->
-      <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-        <div class="inline-flex items-center bg-slate-900 p-1 rounded-xl border border-slate-800">
-          <button onclick="setPlaylistScope('unassigned')" id="scope-unassigned" class="action-lock-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white transition disabled:opacity-40 disabled:cursor-not-allowed">
-            Unassigned (<span id="scope-count-unassigned">0</span>)
-          </button>
-          <button onclick="setPlaylistScope('assigned')" id="scope-assigned" class="action-lock-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed">
-            In Playlists (<span id="scope-count-assigned">0</span>)
-          </button>
-          <button onclick="setPlaylistScope('all')" id="scope-all" class="action-lock-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed">
-            All Media (<span id="scope-count-all">0</span>)
-          </button>
-        </div>
-
-        <div class="flex flex-wrap items-center gap-2">
-          <button onclick="selectAllVisible()" class="action-lock-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs text-slate-200 border border-slate-700">Select All</button>
-          <button onclick="clearSelection()" class="action-lock-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs text-slate-200 border border-slate-700">Clear Selection</button>
-          <button onclick="openAddToExistingPlaylistModal()" class="task-trigger-btn action-lock-btn px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white">
-            + Add to Playlist (<span id="selected-count-add">0</span>)
-          </button>
-          <button onclick="openCreatePlaylistModal()" class="task-trigger-btn action-lock-btn px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white">
-            + New Playlist (<span id="selected-count">0</span>)
-          </button>
-        </div>
-      </div>
-
-      <!-- FILTER BAR -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 mb-3 flex flex-wrap items-center gap-2.5">
-        <div class="flex items-center gap-2 min-w-[260px] flex-1">
-          <input id="filter-search" type="text" placeholder="Search title, JAV code, actress, studio..." oninput="debouncedLoadMedia()" class="w-56 sm:w-64 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500" />
-          <div id="filter-result-info" class="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-300 font-medium truncate">
-            Showing <span class="text-emerald-400 font-bold">0</span> videos
+      <!-- STICKY CONTROLS WRAPPER (TELEMETRY + SCOPE + FILTER BAR + SERIES SUBNAV) -->
+      <div id="library-sticky-controls" class="sticky z-20 bg-slate-950/95 backdrop-blur -mx-4 px-4 pt-1 pb-3 mb-3 border-b border-slate-800/80 shadow-md" style="top: 65px;">
+        <!-- TELEMETRY STRIP -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-3">
+          <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+            <div class="text-[11px] text-slate-400">Total Media</div>
+            <div class="text-lg font-bold text-white"><span id="stat-total">0</span> <span class="text-[11px] font-normal text-emerald-400">(Free: <span id="stat-unassigned">0</span>)</span></div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+            <div class="text-[11px] text-slate-400">Cloud / Local</div>
+            <div class="text-sm font-bold text-sky-400 mt-1"><span id="stat-cloud">0</span> / <span id="stat-local" class="text-teal-400">0</span></div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+            <div class="text-[11px] text-slate-400">Complete Metadata</div>
+            <div class="text-sm font-bold text-emerald-400 mt-1"><span id="stat-meta">0</span> <span class="text-xs text-slate-500">(-<span id="stat-meta-miss">0</span>)</span></div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+            <div class="text-[11px] text-slate-400">Subtitles Ready</div>
+            <div class="text-sm font-bold text-amber-400 mt-1"><span id="stat-sub">0</span> <span class="text-xs text-slate-500">(-<span id="stat-sub-miss">0</span>)</span></div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+            <div class="text-[11px] text-slate-400">Movie / TV Show</div>
+            <div class="text-sm font-bold text-slate-200 mt-1"><span id="stat-movie">0</span> / <span id="stat-series">0</span></div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+            <div class="text-[11px] text-slate-400">Anime / Donghua</div>
+            <div class="text-sm font-bold text-purple-400 mt-1"><span id="stat-anime">0</span> / <span id="stat-donghua" class="text-pink-400">0</span></div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+            <div class="text-[11px] text-slate-400">JAV / English Adult</div>
+            <div class="text-sm font-bold text-rose-400 mt-1"><span id="stat-jav">0</span> / <span id="stat-adult">0</span></div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+            <div class="text-[11px] text-slate-400">Watched</div>
+            <div class="text-sm font-bold text-indigo-400 mt-1"><span id="stat-watched">0</span> <span class="text-xs text-slate-500">(Uncat: <span id="stat-uncat">0</span>)</span></div>
           </div>
         </div>
 
-        <select id="filter-source" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
-          <option value="all">All Sources</option>
-          <option value="cloud">TorBox Cloud</option>
-          <option value="local">Local Disk</option>
-        </select>
-
-        <select id="filter-category" onchange="handleCategoryChange()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
-          <option value="all">All Categories</option>
-          <option value="general_movie">General Movie</option>
-          <option value="tv_show">TV Show / Series</option>
-          <option value="anime">Anime</option>
-          <option value="donghua">Donghua</option>
-          <option value="jav">JAV</option>
-          <option value="english_adult">English Adult</option>
-          <option value="uncategorized">Uncategorized</option>
-        </select>
-
-        <select id="filter-meta" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
-          <option value="all">Metadata Status</option>
-          <option value="has">Has Metadata</option>
-          <option value="missing">Missing Metadata</option>
-        </select>
-
-        <select id="filter-sub" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
-          <option value="all">Subtitle Status</option>
-          <option value="has">Has Subtitle</option>
-          <option value="missing">No Subtitle</option>
-        </select>
-
-        <select id="filter-watched" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
-          <option value="all">Watch Status</option>
-          <option value="unwatched">Unwatched</option>
-          <option value="watched">Watched</option>
-        </select>
-
-        <select id="filter-sort" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
-          <option value="newest">Newest</option>
-          <option value="title_asc">Title A-Z</option>
-          <option value="year_desc">Release Year</option>
-          <option value="rating_desc">Highest Rating</option>
-          <option value="star_desc">Favorite Stars</option>
-          <option value="size_desc">Largest Size</option>
-          <option value="runtime_desc">Longest Duration</option>
-        </select>
-      </div>
-
-      <!-- MULTI-LEVEL SERIES / ANIME / DONGHUA SUB-MENU BAR -->
-      <div id="series-subnav-bar" class="hidden bg-slate-900/90 border border-indigo-500/40 rounded-xl p-3 mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div class="flex flex-wrap items-center gap-2.5">
-          <span id="series-cat-pill" class="px-2.5 py-1 rounded-md bg-indigo-600/25 border border-indigo-500/40 text-indigo-300 text-[11px] font-bold uppercase tracking-wider">SERIES HUB</span>
-
-          <!-- Sub-Menu 1: Main Series Title -->
-          <div class="flex items-center gap-1.5">
-            <label class="text-[11px] text-slate-400 font-semibold">Judul Utama:</label>
-            <select id="series-title-select" onchange="onSeriesTitleDropdownChange()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white min-w-[200px] max-w-[320px]">
-              <option value="">-- All Series (Show Cards) --</option>
-            </select>
+        <!-- PLAYLIST SCOPE SUB-TABS & BULK ACTIONS -->
+        <div class="flex flex-wrap items-center justify-between gap-3 mb-2.5">
+          <div class="inline-flex items-center bg-slate-900 p-1 rounded-xl border border-slate-800">
+            <button onclick="setPlaylistScope('unassigned')" id="scope-unassigned" class="action-lock-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 text-white transition disabled:opacity-40 disabled:cursor-not-allowed">
+              Unassigned (<span id="scope-count-unassigned">0</span>)
+            </button>
+            <button onclick="setPlaylistScope('assigned')" id="scope-assigned" class="action-lock-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed">
+              In Playlists (<span id="scope-count-assigned">0</span>)
+            </button>
+            <button onclick="setPlaylistScope('all')" id="scope-all" class="action-lock-btn px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-white transition disabled:opacity-40 disabled:cursor-not-allowed">
+              All Media (<span id="scope-count-all">0</span>)
+            </button>
           </div>
 
-          <!-- Sub-Menu 2: Season Selector -->
-          <div id="series-season-select-wrap" class="hidden flex items-center gap-1.5">
-            <label class="text-[11px] text-slate-400 font-semibold">Season:</label>
-            <select id="series-season-select" onchange="onSeriesSeasonDropdownChange()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-sky-300 font-semibold">
-            </select>
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="selectAllVisible()" class="action-lock-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs text-slate-200 border border-slate-700">Select All</button>
+            <button onclick="clearSelection()" class="action-lock-btn px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-40 disabled:cursor-not-allowed text-xs text-slate-200 border border-slate-700">Clear Selection</button>
+            <button onclick="openAddToExistingPlaylistModal()" class="task-trigger-btn action-lock-btn px-3 py-1.5 rounded-lg bg-sky-600 hover:bg-sky-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white">
+              + Add to Playlist (<span id="selected-count-add">0</span>)
+            </button>
+            <button onclick="openCreatePlaylistModal()" class="task-trigger-btn action-lock-btn px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white">
+              + New Playlist (<span id="selected-count">0</span>)
+            </button>
           </div>
         </div>
 
-        <div class="flex items-center gap-2">
-          <button id="btn-back-series-grid" onclick="exitSeriesExplorer()" class="hidden action-lock-btn px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 transition">
-            &larr; All Series Cards
-          </button>
-          <div class="inline-flex bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[11px]">
-            <button id="viewmode-grouped" onclick="setSeriesViewMode('grouped')" class="px-2.5 py-1 rounded-md bg-indigo-600 text-white font-semibold">Show Cards</button>
-            <button id="viewmode-flat" onclick="setSeriesViewMode('flat')" class="px-2.5 py-1 rounded-md text-slate-400 hover:text-white font-semibold">Flat Episodes</button>
+        <!-- FILTER BAR -->
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center gap-2.5">
+          <div class="flex items-center gap-2 min-w-[260px] flex-1">
+            <input id="filter-search" type="text" placeholder="Search title, JAV code, actress, studio..." oninput="debouncedLoadMedia()" class="w-56 sm:w-64 bg-slate-950 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500" />
+            <div id="filter-result-info" class="px-2.5 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] text-slate-300 font-medium truncate">
+              Showing <span class="text-emerald-400 font-bold">0</span> videos
+            </div>
+          </div>
+
+          <select id="filter-source" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+            <option value="all">All Sources</option>
+            <option value="cloud">TorBox Cloud</option>
+            <option value="local">Local Disk</option>
+          </select>
+
+          <select id="filter-category" onchange="handleCategoryChange()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+            <option value="all">All Categories</option>
+            <option value="general_movie">General Movie</option>
+            <option value="tv_show">TV Show / Series</option>
+            <option value="anime">Anime</option>
+            <option value="donghua">Donghua</option>
+            <option value="jav">JAV</option>
+            <option value="english_adult">English Adult</option>
+            <option value="indo">Indo</option>
+            <option value="uncategorized">Uncategorized</option>
+          </select>
+
+          <select id="filter-classification" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+            <option value="all">Classification: All</option>
+            <option value="needs_review">Needs Review</option>
+            <option value="pending">Pending</option>
+            <option value="classified">Auto Classified</option>
+            <option value="manually_classified">Manually Classified</option>
+          </select>
+
+          <select id="filter-meta" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+            <option value="all">Metadata Status</option>
+            <option value="has">Has Metadata</option>
+            <option value="missing">Missing Metadata</option>
+          </select>
+
+          <select id="filter-sub" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+            <option value="all">Subtitle Status</option>
+            <option value="has">Has Subtitle</option>
+            <option value="missing">No Subtitle</option>
+          </select>
+
+          <select id="filter-watched" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+            <option value="all">Watch Status</option>
+            <option value="unwatched">Unwatched</option>
+            <option value="watched">Watched</option>
+          </select>
+
+          <select id="filter-sort" onchange="loadMedia()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+            <option value="newest">Newest</option>
+            <option value="title_asc">Title A-Z</option>
+            <option value="year_desc">Release Year</option>
+            <option value="rating_desc">Highest Rating</option>
+            <option value="star_desc">Favorite Stars</option>
+            <option value="size_desc">Largest Size</option>
+            <option value="runtime_desc">Longest Duration</option>
+          </select>
+          <select id="filter-subtitle-quality" onchange="renderLibraryView()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200">
+            <option value="all">Quality Audit: All</option>
+            <option value="healthy">Healthy</option>
+            <option value="warning">Warning</option>
+            <option value="invalid">Invalid</option>
+            <option value="not_applicable">Embedded Only</option>
+            <option value="not_available">Not Audited</option>
+          </select>
+          <button id="btn-audit-library" onclick="auditVisibleLibrary()" class="px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-xs font-semibold text-white">Audit Visible Library</button>
+        </div>
+        <div id="subtitle-quality-summary" class="hidden text-[11px] text-slate-400 mt-2"></div>
+
+        <!-- MULTI-LEVEL SERIES / ANIME / DONGHUA SUB-MENU BAR -->
+        <div id="series-subnav-bar" class="hidden bg-slate-900/90 border border-indigo-500/40 rounded-xl p-3 mt-2.5 flex flex-wrap items-center justify-between gap-3">
+          <div class="flex flex-wrap items-center gap-2.5">
+            <span id="series-cat-pill" class="px-2.5 py-1 rounded-md bg-indigo-600/25 border border-indigo-500/40 text-indigo-300 text-[11px] font-bold uppercase tracking-wider">SERIES HUB</span>
+
+            <!-- Sub-Menu 1: Main Series Title -->
+            <div class="flex items-center gap-1.5">
+              <label class="text-[11px] text-slate-400 font-semibold">Judul Utama:</label>
+              <select id="series-title-select" onchange="onSeriesTitleDropdownChange()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white min-w-[200px] max-w-[320px]">
+                <option value="">-- All Series (Show Cards) --</option>
+              </select>
+            </div>
+
+            <!-- Sub-Menu 2: Season Selector -->
+            <div id="series-season-select-wrap" class="hidden flex items-center gap-1.5">
+              <label class="text-[11px] text-slate-400 font-semibold">Season:</label>
+              <select id="series-season-select" onchange="onSeriesSeasonDropdownChange()" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-sky-300 font-semibold">
+              </select>
+            </div>
+          </div>
+
+          <div class="flex items-center gap-2">
+            <button id="btn-back-series-grid" onclick="exitSeriesExplorer()" class="hidden action-lock-btn px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 transition">
+              &larr; All Series Cards
+            </button>
+            <div class="inline-flex bg-slate-950 p-0.5 rounded-lg border border-slate-800 text-[11px]">
+              <button id="viewmode-grouped" onclick="setSeriesViewMode('grouped')" class="px-2.5 py-1 rounded-md bg-indigo-600 text-white font-semibold">Show Cards</button>
+              <button id="viewmode-flat" onclick="setSeriesViewMode('flat')" class="px-2.5 py-1 rounded-md text-slate-400 hover:text-white font-semibold">Flat Episodes</button>
+            </div>
           </div>
         </div>
       </div>
@@ -297,7 +321,7 @@
 
           <div>
             <div class="flex items-center justify-between mb-1">
-              <label class="block text-xs text-slate-400">ThePornDB API Key (Optional for English Adult)</label>
+              <label class="block text-xs text-slate-400">ThePornDB API Key (English Adult + JAV fallback)</label>
               <span id="badge-tpdb-key" class="px-2 py-0.5 rounded text-[10px] font-semibold bg-slate-800 text-slate-400">Not Set</span>
             </div>
             <input id="set-tpdb-key" type="password" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white" placeholder="Enter TPDB Bearer Token..." />
@@ -357,6 +381,20 @@
               </button>
             </div>
             <textarea id="set-local-paths" rows="4" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white font-mono" placeholder="D:\Movies&#10;/mnt/media/Anime"></textarea>
+          </div>
+
+          <div class="bg-slate-950/80 border border-slate-800 rounded-xl p-3.5 space-y-2">
+            <div class="text-xs font-semibold text-slate-200">Dual-Language Subtitles</div>
+            <label class="flex items-center justify-between gap-3 text-xs text-slate-300">
+              <span><strong class="text-white">English</strong> — Primary / Required</span>
+              <span class="text-emerald-300 font-semibold">Always ON</span>
+            </label>
+            <label class="flex items-center justify-between gap-3 text-xs text-slate-300">
+              <span><strong class="text-white">Indonesian</strong> — Optional</span>
+              <input id="set-subtitle-id-enabled" type="checkbox" checked class="w-4 h-4 accent-indigo-500" />
+            </label>
+            <p class="text-[10px] text-slate-500">Batch subtitle search checks existing local/embedded tracks first and requests only missing enabled languages.</p>
+            <div id="subtitle-language-stats" class="text-[10px] text-slate-400">Complete / Ready / Partial / Not Ready: -</div>
           </div>
 
           <button onclick="saveSettingsForm()" class="action-lock-btn w-full py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-xs font-semibold text-white">Save Settings</button>
@@ -433,8 +471,15 @@
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div id="modal-poster-box" class="aspect-[2/3] bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center text-slate-600 text-xs">
-          No Poster
+        <div class="space-y-2">
+          <div id="modal-poster-box" class="aspect-[2/3] bg-slate-950 rounded-xl border border-slate-800 overflow-hidden flex items-center justify-center text-slate-600 text-xs">
+            No Poster
+          </div>
+          <div id="modal-poster-status" class="text-[10px] text-slate-400">Poster status: not checked</div>
+          <button type="button" onclick="retryCurrentPoster()" class="w-full px-2 py-1.5 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-[11px] font-semibold text-white">Retry Poster Only</button>
+          <input id="manual-poster-url" type="url" placeholder="Paste direct poster image URL (https://...)" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-[10px] text-white" />
+          <button type="button" onclick="saveManualPoster()" class="w-full px-2 py-1.5 rounded-lg bg-violet-700 hover:bg-violet-600 text-[11px] font-semibold text-white">Use This Poster</button>
+          <button id="btn-poster-automatic" type="button" onclick="useAutomaticPoster()" class="hidden w-full px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200">Use Automatic Poster</button>
         </div>
 
         <div class="md:col-span-2 space-y-3 text-xs">
@@ -456,6 +501,7 @@
                 <option value="donghua">Donghua</option>
                 <option value="jav">JAV</option>
                 <option value="english_adult">English Adult</option>
+                <option value="indo">Indo</option>
                 <option value="uncategorized">Uncategorized</option>
               </select>
             </div>
@@ -495,6 +541,46 @@
 
           <div id="modal-meta-extra" class="text-[11px] text-slate-400 space-y-1 bg-slate-950 p-2.5 rounded-lg border border-slate-800"></div>
 
+          <div class="rounded-xl border border-cyan-500/30 bg-cyan-950/10 p-3 space-y-2">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <div class="text-xs font-bold text-cyan-200">Subtitle Quality Audit</div>
+                <div class="text-[10px] text-slate-500">Read-only check; subtitle files are never modified.</div>
+              </div>
+              <button type="button" onclick="auditCurrentSubtitleQuality()" class="px-3 py-1.5 rounded-lg bg-cyan-700 hover:bg-cyan-600 text-[11px] font-semibold text-white">Run Audit</button>
+            </div>
+            <div id="modal-subtitle-quality-result" class="text-[11px] text-slate-400">Not audited yet.</div>
+          </div>
+
+          <div class="rounded-xl border border-violet-500/30 bg-violet-950/20 p-3 space-y-2">
+            <div class="flex items-center justify-between gap-2">
+              <div>
+                <div class="text-xs font-bold text-violet-200">Classification Review</div>
+                <div id="classification-current-status" class="text-[10px] text-slate-400 mt-0.5">Not classified yet</div>
+              </div>
+              <button type="button" onclick="previewClassification()" class="modal-action-btn action-lock-btn px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 text-[11px] font-semibold text-white">Preview Classification</button>
+            </div>
+            <div>
+              <label class="text-slate-400 block mb-1">Normalized Title (original filename remains unchanged)</label>
+              <input id="classification-normalized-title" type="text" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white" />
+            </div>
+            <div id="classification-preview-result" class="hidden text-[11px] bg-slate-950 border border-slate-800 rounded-lg p-2 text-slate-300"></div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 items-end">
+              <div>
+                <label class="text-slate-400 block mb-1">Confirm Category</label>
+                <select id="classification-confirm-category" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white">
+                  <option value="general_movie">General Movie</option><option value="tv_show">TV Show</option><option value="anime">Anime</option><option value="donghua">Donghua</option><option value="jav">JAV</option><option value="english_adult">English Adult</option><option value="indo">Indo</option>
+                </select>
+              </div>
+              <label class="flex items-center gap-2 text-[11px] text-slate-300 pb-2"><input id="classification-lock" type="checkbox" checked class="accent-violet-500" /> Lock manual decision</label>
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" onclick="applyManualClassification()" class="modal-action-btn action-lock-btn px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-[11px] font-semibold text-white">Confirm &amp; Save Classification</button>
+              <button type="button" onclick="loadClassificationHistory()" class="modal-action-btn action-lock-btn px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-slate-200">View History</button>
+            </div>
+            <div id="classification-history" class="hidden max-h-32 overflow-y-auto text-[10px] text-slate-400 space-y-1"></div>
+          </div>
+
           <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-800/80">
             <div class="flex flex-wrap gap-2">
               <button id="btn-modal-save" onclick="saveManualEdit()" class="modal-action-btn action-lock-btn px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed font-semibold text-white">Save Changes</button>
@@ -514,8 +600,8 @@
   </div>
 
   <!-- DISCOVERY & SEARCH HUB MODAL -->
-  <div id="discovery-modal" onclick="if(event.target === this) closeDiscoveryModal()" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-5">
-    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-6xl w-full max-h-[92vh] flex flex-col overflow-hidden shadow-2xl">
+  <div id="discovery-modal" class="hidden fixed inset-0 z-[60] bg-slate-950 flex flex-col overflow-hidden">
+    <div class="bg-slate-900 w-full h-full min-h-0 flex flex-col overflow-hidden shadow-2xl">
       
       <!-- Modal Header -->
       <div class="px-5 py-3.5 bg-slate-950/90 border-b border-slate-800 flex items-center justify-between gap-3 shrink-0">
@@ -523,7 +609,7 @@
           <span class="px-2 py-0.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-300 text-[10px] font-bold uppercase tracking-wider">DISCOVERY HUB</span>
           <h3 class="text-base font-bold text-white">Discover, Search &amp; Add to TorBox Cloud</h3>
         </div>
-        <button onclick="closeDiscoveryModal()" class="text-slate-400 hover:text-white text-xl font-bold px-2" title="Close (Esc)">&times;</button>
+        <button onclick="closeDiscoveryModal()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-white" title="Back to Library">&#8592; Back to Library</button>
       </div>
 
       <!-- Category Tabs & Sub-Tabs (Trending / Popular / Top Rated / Search) -->
@@ -537,7 +623,21 @@
             <button onclick="setDiscoveryCategory('donghua')" id="disc-cat-donghua" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">Donghua</button>
             <button onclick="setDiscoveryCategory('jav')" id="disc-cat-jav" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">JAV</button>
             <button onclick="setDiscoveryCategory('english_adult')" id="disc-cat-english_adult" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">English Adult</button>
+            <button onclick="setDiscoveryCategory('indo')" id="disc-cat-indo" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">Indo</button>
           </div>
+
+          <!-- English Adult provider selector; each provider keeps the same four feed modes -->
+          <div id="disc-adult-provider-wrap" class="hidden w-full flex-wrap items-center gap-2 rounded-lg border border-indigo-500/30 bg-slate-950/70 px-3 py-2">
+            <label for="disc-adult-provider" class="text-[11px] uppercase tracking-wide text-slate-400 font-bold">English Adult Website</label>
+            <select id="disc-adult-provider" onchange="setAdultProvider(this.value)" class="bg-slate-800 border border-slate-700 rounded-md px-3 py-1.5 text-xs text-white min-w-[190px]">
+              <option value="all">All Providers (ThePornDB + Eporner + XHamster)</option>
+              <option value="eporner">Eporner</option>
+              <option value="theporndb">ThePornDB</option>
+              <option value="xhamster">XHamster</option>
+            </select>
+            <button onclick="loadTorboxWebdlHosters()" class="px-2.5 py-1.5 rounded-md text-[11px] font-semibold bg-emerald-950 border border-emerald-700 text-emerald-200">TorBox Supported Hosters</button>
+          </div>
+          <div id="disc-webdl-hosters-panel" class="hidden w-full rounded-lg border border-emerald-800/70 bg-slate-950 px-3 py-2 text-[10px] text-slate-300"></div>
 
           <!-- Sub-Tabs: Trending / Popular / Top Rated / Search -->
           <div class="inline-flex bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
@@ -569,7 +669,7 @@
               &times;
             </button>
           </div>
-          <button onclick="executeDiscoverySearch()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shrink-0">
+          <button id="disc-search-btn" onclick="executeDiscoverySearch()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shrink-0 transition disabled:opacity-60 disabled:cursor-wait">
             Search Catalog
           </button>
           <button
@@ -588,7 +688,7 @@
       </div>
 
       <!-- Modal Body: Cache/Upgrade Inspector Drawer + Catalog Grid -->
-      <div class="flex-1 overflow-y-auto p-5 space-y-4">
+      <div id="discovery-scroll-area" onscroll="updateDiscoveryBackToTop()" class="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
         
         <!-- Active Cache & Upgrade Panel -->
         <div id="disc-cache-drawer" class="hidden bg-slate-950 border border-indigo-500/50 rounded-xl p-4 space-y-3 shadow-lg">
@@ -634,8 +734,48 @@
           <div id="disc-cache-results" class="space-y-2"></div>
         </div>
 
-        <!-- Discovery Items Grid -->
-        <div id="disc-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3.5"></div>
+        <!-- Multi-select TorBox Web Download action bar -->
+        <div id="disc-webdl-selection-bar" class="hidden sticky top-0 z-20 bg-emerald-950/95 border border-emerald-500/50 rounded-xl px-3.5 py-3 flex flex-wrap items-center justify-between gap-2 shadow-xl">
+          <div class="text-xs text-emerald-100"><b id="disc-webdl-selected-count">0/10</b> selected for TorBox Web Downloads <span class="text-[10px] text-emerald-300/70">(max 10 per batch)</span></div>
+          <div class="flex items-center gap-2">
+            <button onclick="selectAllDiscoveryWebdlItems()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-white">Select All (Page)</button>
+            <button onclick="clearDiscoveryWebdlSelection()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] text-white">Clear</button>
+            <button id="disc-webdl-submit-btn" onclick="submitDiscoveryWebdlSelection()" class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-[11px] font-bold text-white">&#10148; Send Selected to TorBox</button>
+          </div>
+        </div>
+        <div id="disc-webdl-rate-limit" class="hidden rounded-xl border border-amber-600/50 bg-amber-950/50 p-3 text-xs text-amber-100"></div>
+        <div id="disc-webdl-results" class="hidden rounded-xl border border-slate-700 bg-slate-950 p-3 text-xs space-y-1.5"></div>
+
+        <!-- Client-side Discovery filters: applied only after results have loaded -->
+        <div class="flex flex-wrap items-center justify-between gap-2 py-1">
+          <label for="disc-hide-in-library" class="flex items-center gap-2 text-[10px] text-slate-300 cursor-pointer select-none">
+            <input id="disc-hide-in-library" type="checkbox" onchange="setHideInLibraryItems(this.checked)"
+              class="accent-emerald-500 w-3.5 h-3.5" />
+            Hide In Library Items
+          </label>
+          <span id="disc-visible-count" class="text-[10px] text-slate-500"></span>
+        </div>
+
+        <!-- Discovery duration sorting (shown for Eporner when applicable) -->
+        <div id="disc-duration-sort-wrap" class="hidden flex items-center justify-end gap-2 py-1">
+          <label for="disc-duration-sort" class="text-[10px] text-slate-400">Sort by duration</label>
+          <select id="disc-duration-sort" onchange="setDiscoveryDurationSort(this.value)"
+            class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-[10px] text-white">
+            <option value="none">Default</option>
+            <option value="asc">Shortest first</option>
+            <option value="desc">Longest first</option>
+          </select>
+        </div>
+
+        <!-- Discovery Items Grid: compact cards; 50 results per progressive-load batch -->
+        <div id="disc-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5"></div>
+        <div id="disc-load-more-wrap" class="hidden text-center py-5">
+          <button id="disc-load-more-btn" type="button" onclick="loadMoreDiscoveryFeed()"
+            class="px-6 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">
+            Load 50 More
+          </button>
+          <p id="disc-load-more-note" class="text-[10px] text-slate-500 mt-2"></p>
+        </div>
         <div id="disc-empty" class="hidden text-center py-14 text-xs text-slate-400">
           No catalog items found. Try switching tabs or entering a search keyword above.
         </div>
@@ -643,6 +783,10 @@
 
     </div>
   </div>
+
+  <button id="discovery-back-to-top" type="button" onclick="scrollDiscoveryToTop()"
+    class="hidden fixed bottom-6 right-6 z-[70] w-11 h-11 rounded-full bg-indigo-600 hover:bg-indigo-500 border border-indigo-400/40 text-white text-xl font-bold shadow-xl transition"
+    title="Back to top" aria-label="Back to top">&#8593;</button>
 
   <!-- TOAST -->
   <div id="toast" class="fixed bottom-4 right-4 z-50 hidden bg-slate-800 border border-slate-600 text-white text-xs px-4 py-2.5 rounded-xl shadow-xl"></div>
@@ -684,14 +828,25 @@
     let discCategory = "general_movie";
     let discMode = "trending"; // 'trending' | 'popular' | 'top_rated' | 'search'
     let discItems = [];
+    // Optional client-side filter. Never sent to the Discovery API or applied during feed loading.
+    let discHideInLibraryItems = false;
+    let discAdultProvider = "all";
+    let discDurationSort = "none";
+    let discWebdlSelected = new Set();
+    let discWebdlCardStatus = {};
+    const DISC_PAGE_SIZE = 50;
+    let discRequestedCount = DISC_PAGE_SIZE;
+    const DISC_SESSION_MAX = 300;
     let discSelectedItem = null;
     let discCacheResults = [];
     let discExistingMatches = [];
 
     const TASK_LABELS = {
+      subtitle_quality_audit: "SUBTITLE QUALITY AUDIT",
       sync_torbox: "SYNC CLOUD",
       auto_import_torbox: "AUTO IMPORT TORBOX",
       scan_local: "SCAN LOCAL",
+      classify_pending: "CLASSIFY NEW",
       batch_enrich: "ENRICH META",
       batch_subtitle: "FIND SUBTITLES",
       create_playlist: "CREATE PLAYLIST",
@@ -718,7 +873,11 @@
     function openDiscoveryModal() {
       if (isTaskRunning || isActionBusy) return;
       document.getElementById("discovery-modal").classList.remove("hidden");
+      const scrollArea = document.getElementById("discovery-scroll-area");
+      if (scrollArea) scrollArea.scrollTop = 0;
+      updateDiscoveryBackToTop();
       updateDiscoveryClearButtons();
+      updateAdultProviderVisibility();
       if (!discItems.length) {
         loadDiscoveryFeed();
       }
@@ -726,6 +885,20 @@
 
     function closeDiscoveryModal() {
       document.getElementById("discovery-modal").classList.add("hidden");
+      const topButton = document.getElementById("discovery-back-to-top");
+      if (topButton) topButton.classList.add("hidden");
+    }
+
+    function updateDiscoveryBackToTop() {
+      const scrollArea = document.getElementById("discovery-scroll-area");
+      const button = document.getElementById("discovery-back-to-top");
+      if (!scrollArea || !button) return;
+      button.classList.toggle("hidden", scrollArea.scrollTop <= 320);
+    }
+
+    function scrollDiscoveryToTop() {
+      const scrollArea = document.getElementById("discovery-scroll-area");
+      if (scrollArea) scrollArea.scrollTo({ top: 0, behavior: "smooth" });
     }
 
     function updateDiscoveryClearButtons() {
@@ -742,6 +915,7 @@
     }
 
     function clearDiscoverySearch() {
+      discRequestedCount = DISC_PAGE_SIZE;
       const inp = document.getElementById("disc-search-input");
       if (inp) inp.value = "";
       if (discMode === "search") {
@@ -758,8 +932,46 @@
       loadDiscoveryFeed();
     }
 
+    function updateAdultProviderVisibility() {
+      const wrap = document.getElementById("disc-adult-provider-wrap");
+      if (wrap) {
+        wrap.classList.toggle("hidden", discCategory !== "english_adult");
+        wrap.classList.toggle("flex", discCategory === "english_adult");
+      }
+      const select = document.getElementById("disc-adult-provider");
+      if (select) select.value = discAdultProvider;
+    }
+
+    function updateAdultProviderButtons() {
+      const select = document.getElementById("disc-adult-provider");
+      if (select) select.value = discAdultProvider;
+
+      // Supported English Adult providers expose the standard Discovery feed modes.
+      const trendingBtn = document.getElementById("disc-mode-trending");
+      if (trendingBtn) {
+        trendingBtn.textContent = "🔥 Trending";
+        trendingBtn.title = "";
+      }
+    }
+
+    function setAdultProvider(provider) {
+      discAdultProvider = ["all", "eporner", "theporndb", "xhamster"].includes(provider) ? provider : "all";
+      discDurationSort = "none";
+      updateAdultProviderButtons();
+      discWebdlSelected.clear();
+      updateDiscoveryWebdlSelectionUI();
+      closeDiscoveryCacheDrawer();
+      loadDiscoveryFeed();
+    }
+
     function setDiscoveryCategory(cat) {
+      discRequestedCount = DISC_PAGE_SIZE;
       discCategory = cat;
+      if (cat === "english_adult") discAdultProvider = "all";
+      updateAdultProviderButtons();
+      discWebdlSelected.clear();
+      updateDiscoveryWebdlSelectionUI();
+      updateAdultProviderVisibility();
       document.querySelectorAll(".disc-cat-btn").forEach(btn => {
         const isAct = btn.id === `disc-cat-${cat}`;
         btn.className = isAct
@@ -784,6 +996,7 @@
     }
 
     function setDiscoveryMode(mode) {
+      discRequestedCount = DISC_PAGE_SIZE;
       discMode = mode;
       document.querySelectorAll(".disc-mode-btn").forEach(btn => {
         const isAct = btn.id === `disc-mode-${mode}`;
@@ -802,6 +1015,7 @@
     }
 
     function executeDiscoverySearch() {
+      discRequestedCount = DISC_PAGE_SIZE;
       const q = document.getElementById("disc-search-input").value.trim();
       if (q) {
         discMode = "search";
@@ -839,58 +1053,247 @@
       await openCacheDrawerForItem(syntheticItem);
     }
 
-    async function loadDiscoveryFeed() {
+    function parseDiscoveryDurationSeconds(value) {
+      const raw = String(value || "").trim();
+      if (!raw) return null;
+      if (/^\d+(?:\.\d+)?$/.test(raw)) return Number(raw);
+      const parts = raw.split(":").map(x => Number(x));
+      if (!parts.length || parts.some(x => !Number.isFinite(x))) return null;
+      return parts.reduce((total, part) => total * 60 + part, 0);
+    }
+
+    function setDiscoveryDurationSort(direction) {
+      discDurationSort = ["asc", "desc"].includes(direction) ? direction : "none";
+      if (discDurationSort !== "none") {
+        const sign = discDurationSort === "asc" ? 1 : -1;
+        discItems.sort((a, b) => {
+          const da = parseDiscoveryDurationSeconds(a.duration);
+          const db = parseDiscoveryDurationSeconds(b.duration);
+          if (da == null && db == null) return 0;
+          if (da == null) return 1;
+          if (db == null) return -1;
+          return (da - db) * sign;
+        });
+      }
+      renderDiscoveryGrid();
+    }
+
+    async function loadDiscoveryFeed(append = false) {
       const grid = document.getElementById("disc-grid");
       const empty = document.getElementById("disc-empty");
       const query = document.getElementById("disc-search-input").value.trim();
+      const loadWrap = document.getElementById("disc-load-more-wrap");
+      const loadBtn = document.getElementById("disc-load-more-btn");
+      const loadNote = document.getElementById("disc-load-more-note");
 
-      empty.classList.add("hidden");
-      grid.innerHTML = `
-        <div class="col-span-full py-12 text-center text-xs text-slate-300 space-y-2">
-          <div class="inline-block w-5 h-5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
-          <div>Fetching up to 50 ${discMode.replace("_", " ").toUpperCase()} items for ${discCategory.replace("_", " ")}...</div>
-        </div>
-      `;
+      if (!append) {
+        discWebdlSelected.clear();
+        updateDiscoveryWebdlSelectionUI();
+        const batchResults = document.getElementById("disc-webdl-results");
+        if (batchResults) { batchResults.classList.add("hidden"); batchResults.innerHTML = ""; }
+        discRequestedCount = DISC_PAGE_SIZE;
+        empty.classList.add("hidden");
+        grid.innerHTML = `
+          <div class="col-span-full py-12 text-center text-xs text-slate-300 space-y-2">
+            <div class="inline-block w-5 h-5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+            <div>Fetching first ${DISC_PAGE_SIZE} ${discMode.replace("_", " ").toUpperCase()} items for ${discCategory.replace("_", " ")}...</div>
+          </div>`;
+      } else {
+        if (discRequestedCount >= DISC_SESSION_MAX) return;
+        if (loadBtn) { loadBtn.disabled = true; loadBtn.textContent = "Loading..."; }
+      }
 
+      const requestFeed = discMode;
       const params = new URLSearchParams({
         category: discCategory,
-        feed: discMode,
+        feed: requestFeed,
+        provider: discCategory === "english_adult" ? discAdultProvider : "all",
         query: query,
-        limit: "50",
+        limit: String(discRequestedCount),
       });
+
+      const searchBtn = document.getElementById("disc-search-btn");
+      const isSearchRequest = Boolean(query);
+      const previousSearchLabel = searchBtn ? searchBtn.textContent : "";
+      if (!append && isSearchRequest && searchBtn) {
+        searchBtn.disabled = true;
+        searchBtn.textContent = "Searching...";
+      }
 
       try {
         const res = await fetch(`/api/discover?${params.toString()}`);
         const data = await res.json();
         if (!data.ok) {
-          grid.innerHTML = "";
-          empty.textContent = data.error || "Failed to load discovery catalog.";
-          empty.classList.remove("hidden");
+          if (!append) {
+            grid.innerHTML = "";
+            empty.textContent = data.error || "Failed to load discovery catalog.";
+            empty.classList.remove("hidden");
+          } else {
+            showToast(data.error || "Could not load more discovery results.", true);
+          }
           return;
         }
-        discItems = data.results || [];
+        const incoming = data.results || [];
+        if (append) {
+          const existing = new Set(discItems.map(x => String(x.id || `${x.title}|${x.year}`).toLowerCase()));
+          for (const item of incoming) {
+            const key = String(item.id || `${item.title}|${item.year}`).toLowerCase();
+            if (!existing.has(key)) { discItems.push(item); existing.add(key); }
+          }
+        } else {
+          discItems = incoming;
+          if (discDurationSort !== "none") {
+            const sign = discDurationSort === "asc" ? 1 : -1;
+            discItems.sort((a, b) => {
+              const da = parseDiscoveryDurationSeconds(a.duration);
+              const db = parseDiscoveryDurationSeconds(b.duration);
+              if (da == null && db == null) return 0;
+              if (da == null) return 1;
+              if (db == null) return -1;
+              return (da - db) * sign;
+            });
+          }
+        }
+        if (append && discDurationSort !== "none") {
+          const sign = discDurationSort === "asc" ? 1 : -1;
+          discItems.sort((a, b) => {
+            const da = parseDiscoveryDurationSeconds(a.duration);
+            const db = parseDiscoveryDurationSeconds(b.duration);
+            if (da == null && db == null) return 0;
+            if (da == null) return 1;
+            if (db == null) return -1;
+            return (da - db) * sign;
+          });
+        }
         renderDiscoveryGrid();
+        const canLoadMore = discItems.length < DISC_SESSION_MAX && incoming.length >= discRequestedCount;
+        if (loadWrap) loadWrap.classList.toggle("hidden", !canLoadMore);
+        if (loadBtn) {
+          loadBtn.disabled = false;
+          loadBtn.textContent = `Load ${DISC_PAGE_SIZE} More`;
+        }
+        if (loadNote) loadNote.textContent = `${discItems.length} of up to ${DISC_SESSION_MAX} results loaded. Cached checks run only when you select a title.`;
       } catch (e) {
-        grid.innerHTML = "";
-        empty.textContent = `Network error: ${e}`;
-        empty.classList.remove("hidden");
+        if (!append) {
+          grid.innerHTML = "";
+          empty.textContent = `Network error: ${e}`;
+          empty.classList.remove("hidden");
+        } else {
+          showToast(`Network error: ${e}`, true);
+        }
+      } finally {
+        if (loadBtn) { loadBtn.disabled = false; loadBtn.textContent = `Load ${DISC_PAGE_SIZE} More`; }
+        if (!append && isSearchRequest && searchBtn) {
+          searchBtn.disabled = false;
+          searchBtn.textContent = previousSearchLabel || "Search Catalog";
+        }
       }
     }
 
+    async function loadMoreDiscoveryFeed() {
+      if (discRequestedCount >= DISC_SESSION_MAX) return;
+      discRequestedCount = Math.min(discRequestedCount + DISC_PAGE_SIZE, DISC_SESSION_MAX);
+      await loadDiscoveryFeed(true);
+    }
+
+    function normalizeLibraryMatchText(value) {
+      return String(value || "")
+        .normalize("NFKC")
+        .toLowerCase()
+        .replace(/[._-]+/g, " ")
+        .replace(/[^\p{L}\p{N}\s]/gu, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function getDiscoveryLibraryCategory() {
+      const aliases = {
+        general_movie: "general_movie",
+        movie: "general_movie",
+        tv_show: "tv_show",
+        anime: "anime",
+        donghua: "donghua",
+        jav: "jav",
+        english_adult: "english_adult",
+        indo: "indo"
+      };
+      return aliases[String(discCategory || "").toLowerCase()] || "";
+    }
+
+    function getFirstNormalizedValue(obj, fields) {
+      for (const field of fields) {
+        const value = normalizeLibraryMatchText(obj && obj[field]);
+        if (value) return value;
+      }
+      return "";
+    }
+
     function findMatchingLibraryItems(discItem) {
-      const targetTitle = (discItem.title || "").trim().toLowerCase();
-      const targetQuery = (discItem.search_query || "").trim().toLowerCase();
-      const targetCode = (discItem.code_id || "").trim().toLowerCase();
+      if (!discItem || !Array.isArray(allItems)) return [];
+
+      const category = getDiscoveryLibraryCategory();
+      if (!category) return [];
+
+      const targetCode = normalizeLibraryMatchText(discItem.code_id);
+      const targetTitle = getFirstNormalizedValue(discItem, ["title", "original_title"]);
+      const targetYear = String(discItem.year || discItem.release_year || "").trim();
+      const targetStudio = normalizeLibraryMatchText(discItem.studio || discItem.production);
+      const targetTmdbId = String(discItem.tmdb_id || discItem.tmdbId || "").trim();
+      const targetAnilistId = String(discItem.anilist_id || discItem.anilistId || "").trim();
+      const targetProviderId = String(discItem.provider_id || discItem.external_id || "").trim();
+      const targetSeason = discItem.season_num ?? discItem.season_number ?? discItem.season ?? null;
+      const targetEpisode = discItem.episode_num ?? discItem.episode_number ?? discItem.episode ?? null;
+
+      if (category === "jav" && !targetCode) return [];
+      if (category !== "jav" && !targetTitle && !targetTmdbId && !targetAnilistId && !targetProviderId) return [];
+
       return allItems.filter(localIt => {
-        if (targetCode && localIt.code_id && localIt.code_id.trim().toLowerCase() === targetCode) {
-          return true;
+        // Category equality is mandatory for every Discovery category.
+        if (String(localIt.content_category || "").toLowerCase() !== category) return false;
+
+        const localCode = normalizeLibraryMatchText(localIt.code_id);
+
+        // JAV identity is the catalogue code only. Never fall back to title.
+        if (category === "jav") {
+          return Boolean(localCode && targetCode && localCode === targetCode);
         }
-        const lt = (localIt.title || "").trim().toLowerCase();
-        const st = (localIt.series_title || "").trim().toLowerCase();
-        return (
-          (targetTitle && (lt === targetTitle || st === targetTitle)) ||
-          (targetQuery && (lt === targetQuery || st === targetQuery))
-        );
+
+        const localTmdbId = String(localIt.tmdb_id || "").trim();
+        const localAnilistId = String(localIt.anilist_id || "").trim();
+
+        // If both sides expose a canonical ID, it must match exactly.
+        if (targetTmdbId && localTmdbId) return targetTmdbId === localTmdbId;
+        if (targetAnilistId && localAnilistId) return targetAnilistId === localAnilistId;
+
+        // Adult catalogue entries require exact title AND studio evidence.
+        // A title-only match is not sufficient for English Adult or Indo.
+        const localTitle = getFirstNormalizedValue(localIt, ["title", "original_title", "normalized_title"]);
+        if (category === "english_adult") {
+          const localStudio = normalizeLibraryMatchText(localIt.studio);
+          return Boolean(targetTitle && localTitle === targetTitle &&
+            targetStudio && localStudio && targetStudio === localStudio);
+        }
+        if (category === "indo") {
+          return Boolean(targetTitle && localTitle === targetTitle);
+        }
+
+        // TV/Movie/Anime/Donghua: if canonical IDs are unavailable,
+        // require exact title + year. Never use search_query or series_title.
+        if (!targetTitle || !localTitle || localTitle !== targetTitle) return false;
+
+        const localYear = String(localIt.year || "").trim();
+        if (!targetYear || !localYear || targetYear !== localYear) return false;
+
+        // For episodic TV records, season/episode must also agree whenever
+        // Discovery supplies those values. Do not match another episode
+        // simply because the parent series title is the same.
+        if (category === "tv_show") {
+          const localSeason = localIt.season_num;
+          const localEpisode = localIt.episode_num;
+          if (targetSeason != null && String(targetSeason) !== String(localSeason ?? "")) return false;
+          if (targetEpisode != null && String(targetEpisode) !== String(localEpisode ?? "")) return false;
+        }
+        return true;
       });
     }
 
@@ -901,6 +1304,7 @@
       const needsProxy =
         discCategory === "jav" ||
         discCategory === "english_adult" ||
+        discCategory === "indo" ||
         /missav|fourhoi|surrit|dmm\.co\.jp|javdatabase|javtrailers|mgstage|prestige-av|theporndb/i.test(rawUrl);
       if (needsProxy) {
         return `/api/discover/poster-proxy?url=${encodeURIComponent(rawUrl)}`;
@@ -908,25 +1312,66 @@
       return rawUrl;
     }
 
+    function setHideInLibraryItems(checked) {
+      discHideInLibraryItems = Boolean(checked);
+      // Re-render the already-loaded result set only; no API request or reload is triggered.
+      renderDiscoveryGrid();
+    }
+
     function renderDiscoveryGrid() {
       const grid = document.getElementById("disc-grid");
       const empty = document.getElementById("disc-empty");
+      const hideToggle = document.getElementById("disc-hide-in-library");
+      const visibleCount = document.getElementById("disc-visible-count");
       updateDiscoveryClearButtons();
+
+      if (hideToggle && hideToggle.checked !== discHideInLibraryItems) {
+        hideToggle.checked = discHideInLibraryItems;
+      }
 
       if (!discItems.length) {
         grid.innerHTML = "";
+        if (visibleCount) visibleCount.textContent = "";
+        empty.textContent = "No catalog items found. Try switching tabs or entering a search keyword above.";
+        empty.classList.remove("hidden");
+        return;
+      }
+
+      const sortWrap = document.getElementById("disc-duration-sort-wrap");
+      const sortSelect = document.getElementById("disc-duration-sort");
+      const canSortDuration = discCategory === "english_adult" &&
+        discAdultProvider === "eporner" &&
+        discItems.some(item => item && item.duration);
+      if (sortWrap) sortWrap.classList.toggle("hidden", !canSortDuration);
+      if (sortSelect && sortSelect.value !== discDurationSort) sortSelect.value = discDurationSort;
+
+      const posterAspectClass = "aspect-video";
+      const evaluatedItems = discItems.map((item, idx) => {
+        const matches = findMatchingLibraryItems(item);
+        return { item, idx, matches, inLib: matches.length > 0 };
+      });
+      const visibleItems = discHideInLibraryItems
+        ? evaluatedItems.filter(entry => !entry.inLib)
+        : evaluatedItems;
+
+      if (visibleCount) {
+        visibleCount.textContent = `Showing ${visibleItems.length} of ${discItems.length} loaded items`;
+      }
+      if (!visibleItems.length) {
+        grid.innerHTML = "";
+        empty.textContent = "All loaded discovery items are already in your library. Uncheck “Hide In Library Items” to show them.";
         empty.classList.remove("hidden");
         return;
       }
       empty.classList.add("hidden");
 
-      const posterAspectClass = discCategory === "jav" ? "aspect-video" : "aspect-[2/3]";
-
-      grid.innerHTML = discItems.map((item, idx) => {
-        const matches = findMatchingLibraryItems(item);
-        const inLib = matches.length > 0;
+      grid.innerHTML = visibleItems.map(({ item, idx, matches, inLib }) => {
         const posterSrc = getDiscoveryPosterSrc(item);
         const fallbackLabel = escapeHtml(item.code_id || item.title);
+        const hasWebdlUrl = Boolean(item.original_url && /^https:\/\//i.test(item.original_url));
+        const isWebdlSelected = discWebdlSelected.has(String(item.id));
+        const durationText = String(item.duration || "").trim();
+        const overviewText = String(item.overview || "").replace(/Duration:\s*[^•|]+[•|]?/i, "").trim();
 
         const posterHtml = posterSrc
           ? `<img
@@ -958,22 +1403,210 @@
                   <span class="px-2 py-0.5 rounded bg-emerald-600/95 text-white text-[10px] font-bold shadow">&#10003; IN LIBRARY (${matches.length})</span>
                 </div>
               ` : ""}
+              ${hasWebdlUrl ? `<label class="absolute top-2 right-2 flex items-center gap-1 rounded-md bg-slate-950/90 border border-emerald-500/60 px-2 py-1 text-[10px] font-bold text-emerald-200 cursor-pointer shadow"><input type="checkbox" ${isWebdlSelected ? "checked" : ""} onchange="toggleDiscoveryWebdlSelection(${idx}, this.checked)" class="accent-emerald-500 w-3.5 h-3.5" /> Select</label>` : ""}
             </div>
 
-            <div class="p-2.5 flex-1 flex flex-col justify-between space-y-2">
-              <div>
-                ${item.code_id ? `<div class="text-[10px] font-mono text-rose-400 font-bold">${escapeHtml(item.code_id)}</div>` : ""}
-                <h4 class="text-xs font-bold text-white line-clamp-2" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h4>
-                ${item.overview ? `<p class="text-[10px] text-slate-400 line-clamp-2 mt-1">${escapeHtml(item.overview)}</p>` : ""}
+            <div class="p-2 flex-1 flex flex-col justify-between gap-1.5 min-h-[112px]">
+              <div class="min-w-0">
+                ${item.code_id ? `<div class="text-[9px] font-mono text-rose-400 font-bold truncate">${escapeHtml(item.code_id)}</div>` : ""}
+                <h4 class="text-[11px] font-bold text-white line-clamp-2 leading-snug" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h4>
+                ${durationText ? `<div class="text-[10px] text-cyan-300 font-semibold mt-1">Duration: ${escapeHtml(durationText)}</div>` : ""}
+                ${overviewText ? `<p class="text-[9px] text-slate-400 line-clamp-1 mt-0.5">${escapeHtml(overviewText)}</p>` : ""}
               </div>
 
-              <button onclick="openDiscoveryCacheCheck(${idx})" class="w-full py-1.5 px-2 rounded-lg ${inLib ? "bg-amber-600 hover:bg-amber-500" : "bg-indigo-600 hover:bg-indigo-500"} text-[11px] font-semibold text-white transition">
-                ${inLib ? "&#9889; Check Cache / Upgrade" : "&#128269; Check TorBox Cache"}
-              </button>
+              ${item.original_url && /^https:\/\//i.test(item.original_url) ? `<a href="${escapeHtml(item.original_url)}" target="_blank" rel="noopener noreferrer" class="block w-full text-center py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-semibold text-sky-300 transition">Open Original ${escapeHtml(item.source_provider || "Website")} Page ↗</a><button onclick="sendDiscoveryItemToTorBox(${idx})" class="w-full py-1.5 px-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-[11px] font-bold text-white transition">Send to TorBox</button>${discWebdlCardStatus[String(item.id)] ? `<div class="text-[9px] ${discWebdlCardStatus[String(item.id)].ok ? "text-emerald-300" : discWebdlCardStatus[String(item.id)].pending ? "text-sky-300" : "text-rose-300"}">${escapeHtml(discWebdlCardStatus[String(item.id)].message || "")}</div>` : ""}` : ""}
+              ${item.source_provider === "Eporner" ? "" : `<button onclick="openDiscoveryCacheCheck(${idx})" class="w-full py-1.5 px-2 rounded-lg ${inLib ? "bg-amber-600 hover:bg-amber-500" : "bg-indigo-600 hover:bg-indigo-500"} text-[11px] font-semibold text-white transition">${inLib ? "&#9889; Check Cache / Upgrade" : "&#128269; Check TorBox Cache"}</button>`}
             </div>
           </div>
         `;
       }).join("");
+    }
+
+    async function loadTorboxWebdlHosters() {
+      const panel = document.getElementById("disc-webdl-hosters-panel");
+      if (!panel) return;
+      panel.classList.remove("hidden");
+      panel.textContent = "Loading live TorBox WebDL hoster list...";
+      try {
+        const res = await fetch("/api/torbox/webdl/hosters");
+        const data = await res.json();
+        if (!data.ok) {
+          panel.textContent = data.error || "Could not load TorBox hosters.";
+          return;
+        }
+        const raw = data.hosters;
+        const rows = Array.isArray(raw) ? raw : (raw && typeof raw === "object" ? Object.entries(raw).map(([key, value]) => ({name:key, value})) : []);
+        const labels = rows.map(row => {
+          if (typeof row === "string") return row;
+          return row.name || row.host || row.domain || row.hoster || row.value?.name || "";
+        }).filter(Boolean);
+        panel.innerHTML = labels.length
+          ? `<div class="font-bold text-emerald-300 mb-1">TorBox reports ${labels.length} supported hoster entries:</div><div class="flex flex-wrap gap-1">${labels.slice(0, 120).map(x => `<span class="rounded bg-slate-800 px-1.5 py-0.5">${escapeHtml(x)}</span>`).join("")}</div><div class="mt-1 text-slate-500">Final acceptance is determined by TorBox for each submitted URL.</div>`
+          : `<div class="text-amber-200">TorBox returned a hoster response, but its format was not recognized. Check server log/API response.</div>`;
+      } catch (e) {
+        panel.textContent = `Hoster lookup failed: ${e}`;
+      }
+    }
+
+    function updateDiscoveryWebdlSelectionUI() {
+      const bar = document.getElementById("disc-webdl-selection-bar");
+      const count = document.getElementById("disc-webdl-selected-count");
+      const submit = document.getElementById("disc-webdl-submit-btn");
+      if (count) count.textContent = `${discWebdlSelected.size}/10`;
+      // Keep the toolbar visible throughout English Adult browsing so Select All
+      // is available before the first checkbox is selected.
+      if (bar) bar.classList.toggle("hidden", discCategory !== "english_adult");
+      if (submit) submit.disabled = discWebdlSelected.size === 0;
+    }
+
+    function toggleDiscoveryWebdlSelection(idx, checked) {
+      const item = discItems[idx];
+      if (!item || !item.original_url) return;
+      const key = String(item.id);
+      if (checked) {
+        if (discWebdlSelected.size >= 10) {
+          showToast("Maximum 10 links per TorBox Web Download batch.", true);
+          renderDiscoveryGrid();
+          return;
+        }
+        discWebdlSelected.add(key);
+      } else {
+        discWebdlSelected.delete(key);
+      }
+      updateDiscoveryWebdlSelectionUI();
+    }
+
+    function clearDiscoveryWebdlSelection() {
+      discWebdlSelected.clear();
+      updateDiscoveryWebdlSelectionUI();
+      renderDiscoveryGrid();
+    }
+
+    function selectAllDiscoveryWebdlItems() {
+      const eligible = discItems.filter(item =>
+        item && item.id != null && item.original_url && /^https:\/\//i.test(item.original_url)
+      );
+      const remaining = Math.max(0, 10 - discWebdlSelected.size);
+      const additions = eligible.filter(item => !discWebdlSelected.has(String(item.id))).slice(0, remaining);
+      additions.forEach(item => discWebdlSelected.add(String(item.id)));
+      updateDiscoveryWebdlSelectionUI();
+      renderDiscoveryGrid();
+      if (remaining === 0) {
+        showToast("Selection limit reached: maximum 10 links per batch.", true);
+      } else if (additions.length === 0) {
+        showToast("No additional eligible links on this page.", true);
+      } else {
+        showToast(`${additions.length} link(s) selected. ${discWebdlSelected.size}/10 selected.`);
+      }
+    }
+
+    async function sendDiscoveryItemToTorBox(idx) {
+      const item = discItems[idx];
+      if (!item || !item.original_url) return;
+      const key = String(item.id);
+      discWebdlCardStatus[key] = { ok: false, pending: true, message: "Submitting to TorBox..." };
+      renderDiscoveryGrid();
+      setGlobalActionBusy(true, "TORBOX WEB DOWNLOAD", `Submitting ${item.title || "selected link"}...`);
+      try {
+        const data = await submitDiscoveryWebdlItems([item]);
+        const result = (data.results || [])[0] || {};
+        const accepted = Boolean(result.ok || Number(data.submitted) > 0);
+        discWebdlCardStatus[key] = {
+          ok: accepted,
+          pending: false,
+          message: accepted ? "✓ Submitted to TorBox Web Downloads" : `✕ ${result.error || result.message || "TorBox rejected this link"}`,
+        };
+        renderDiscoveryGrid();
+        const box = document.getElementById("disc-webdl-results");
+        if (box) {
+          box.classList.remove("hidden");
+          box.innerHTML = `<div class="font-bold ${accepted ? "text-emerald-300" : "text-rose-300"}">${accepted ? "✓ Single link submitted" : "✕ Single link failed"}</div><div class="border-t border-slate-800 pt-1.5 text-slate-200">${escapeHtml(item.title || "Selected link")}</div><div class="text-slate-400">${escapeHtml(result.message || result.error || (accepted ? "TorBox accepted the Web Download request." : "TorBox did not accept this link."))}</div>`;
+        }
+        if (accepted) showToast(`TorBox accepted: ${item.title || "Selected link"}`);
+        else showToast(result.rate_limited ? "TorBox WebDL limit reached. Check the countdown before retrying." : `TorBox rejected: ${result.error || item.title || "Selected link"}`, true);
+      } catch (e) {
+        discWebdlCardStatus[key] = { ok: false, pending: false, message: `✕ Submission error: ${e}` };
+        renderDiscoveryGrid();
+        showToast(`TorBox WebDL failed for ${item.title || "selected link"}: ${e}`, true);
+      } finally {
+        setGlobalActionBusy(false);
+      }
+    }
+
+    async function submitDiscoveryWebdlItems(items) {
+      const res = await fetch("/api/torbox/webdl/batch", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({items: items.map(item => ({url:item.original_url, name:item.title, provider:item.source_provider || (discCategory === "indo" ? "Indo" : discAdultProvider || "English Adult"), category:discCategory, poster_url:item.poster_url || item.cover_url || item.image || ""}))})
+      });
+      const data = await res.json();
+      const box = document.getElementById("disc-webdl-results");
+      if (box) {
+        box.classList.remove("hidden");
+        box.innerHTML = (data.results || []).map(row => `<div class="${row.ok ? "text-emerald-300" : "text-rose-300"}">${row.ok ? "✓" : "✕"} ${escapeHtml(row.name || "Link")}: ${escapeHtml(row.message || row.error || "")}</div>`).join("");
+      }
+      if (data.rate_limited || res.status === 429) {
+        startDiscoveryWebdlCountdown(data.retry_after_seconds || 3600);
+      }
+      if (!res.ok && !data.results) throw new Error(data.error || "TorBox WebDL request failed");
+      return data;
+    }
+
+    function startDiscoveryWebdlCountdown(seconds) {
+      const panel = document.getElementById("disc-webdl-rate-limit");
+      if (!panel) return;
+      let remaining = Math.max(1, Number(seconds) || 3600);
+      panel.classList.remove("hidden");
+      if (window.__discWebdlCountdown) clearInterval(window.__discWebdlCountdown);
+      const tick = () => {
+        const mm = String(Math.floor(remaining / 60)).padStart(2, "0");
+        const ss = String(remaining % 60).padStart(2, "0");
+        panel.textContent = `TorBox WebDL rate limit reached. Please wait ${mm}:${ss} before retrying the pending links.`;
+        if (remaining <= 0) {
+          clearInterval(window.__discWebdlCountdown);
+          panel.textContent = "Cooldown finished. You can retry the pending links.";
+        }
+        remaining -= 1;
+      };
+      tick();
+      window.__discWebdlCountdown = setInterval(tick, 1000);
+    }
+
+    async function submitDiscoveryWebdlSelection() {
+      const selected = discItems.filter(item => discWebdlSelected.has(String(item.id)));
+      if (!selected.length) return;
+      if (selected.length > 10) {
+        showToast("Maximum 10 links per batch.", true);
+        return;
+      }
+      const confirmSend = confirm(`Send ${selected.length} selected page link(s) to TorBox Web Downloads?\n\nTorBox will validate each URL and may reject unsupported or inaccessible pages.`);
+      if (!confirmSend) return;
+      const btn = document.getElementById("disc-webdl-submit-btn");
+      if (btn) { btn.disabled = true; btn.textContent = "Submitting..."; }
+      setGlobalActionBusy(true, "TORBOX WEB DOWNLOAD", `Submitting ${selected.length} selected link(s)...`);
+      try {
+        const data = await submitDiscoveryWebdlItems(selected);
+        const res = {ok: !data.rate_limited};
+        const box = document.getElementById("disc-webdl-results");
+        if (box) {
+          box.classList.remove("hidden");
+          box.innerHTML = `<div class="font-bold ${data.ok ? "text-emerald-300" : "text-rose-300"}">TorBox WebDL: ${Number(data.submitted || 0)} submitted · ${Number(data.failed || 0)} failed</div>` +
+            (data.results || []).map(row => `<div class="flex flex-wrap items-start gap-2 border-t border-slate-800 pt-1.5"><span class="${row.ok ? "text-emerald-300" : "text-rose-300"}">${row.ok ? "&#10003;" : "&#10007;"}</span><span class="flex-1 min-w-0 text-slate-200">${escapeHtml(row.name || "Link")}</span><span class="text-slate-400">${escapeHtml(row.message || row.error || "No response")}</span></div>`).join("");
+        }
+        if (data.ok) {
+          showToast(`${data.submitted} link(s) submitted to TorBox Web Downloads${data.failed ? `; ${data.failed} failed` : ""}.`);
+          discWebdlSelected.clear();
+          updateDiscoveryWebdlSelectionUI();
+          renderDiscoveryGrid();
+        } else {
+          showToast(data.error || "TorBox Web Download submission failed.", true);
+        }
+      } catch (e) {
+        showToast(`Web Download request failed: ${e}`, true);
+      } finally {
+        setGlobalActionBusy(false);
+        if (btn) { btn.disabled = false; btn.textContent = "➤ Send Selected to TorBox"; }
+      }
     }
 
     function closeDiscoveryCacheDrawer() {
@@ -1613,6 +2246,7 @@
         search: document.getElementById("filter-search").value,
         source: document.getElementById("filter-source").value,
         category: document.getElementById("filter-category").value,
+        classification_status: document.getElementById("filter-classification").value,
         meta_status: document.getElementById("filter-meta").value,
         sub_status: document.getElementById("filter-sub").value,
         watched_status: document.getElementById("filter-watched").value,
@@ -1799,16 +2433,107 @@
       loadMedia();
     }
 
+
+    const subtitleQualityCache = new Map();
+    let subtitleQualityBusy = false;
+
+    function subtitleQualityLabel(status) {
+      return ({
+        healthy: "HEALTHY", warning: "WARNING", invalid: "INVALID",
+        not_applicable: "EMBEDDED ONLY", not_available: "NOT AUDITED",
+      })[status] || "NOT AUDITED";
+    }
+
+    function applySubtitleQualityFilter(items) {
+      const filter = document.getElementById("filter-subtitle-quality");
+      const wanted = filter ? filter.value : "all";
+      if (wanted === "all") return items;
+      return items.filter(item => (subtitleQualityCache.get(Number(item.id))?.status || "not_available") === wanted);
+    }
+
+    async function auditMediaIds(mediaIds) {
+      const res = await fetch("/api/subtitle-quality/audit", {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({media_ids: mediaIds}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Subtitle quality audit failed.");
+      (data.results || []).forEach(result => subtitleQualityCache.set(Number(result.media_id), result));
+      return data;
+    }
+
+    async function auditVisibleLibrary() {
+      if (subtitleQualityBusy || !allItems.length) return;
+      if (isTaskRunning || isActionBusy) {
+        showToast("Another task is currently running. Please wait until it completes.", true);
+        return;
+      }
+      subtitleQualityBusy = true;
+      const button = document.getElementById("btn-audit-library");
+      button.disabled = true;
+      button.textContent = "Starting Audit...";
+      try {
+        const res = await fetch("/api/subtitle-quality/audit-visible", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({media_ids: allItems.map(item => item.id)}),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || "Unable to start subtitle quality audit.");
+        startTaskPolling();
+      } catch (err) {
+        showToast(err.message || String(err), true);
+        subtitleQualityBusy = false;
+        button.disabled = false;
+        button.textContent = "Audit Visible Library";
+      }
+    }
+
+    async function loadSubtitleQualityBatchResults() {
+      const res = await fetch("/api/subtitle-quality/audit-visible/results");
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error || "Unable to load audit results.");
+      (data.results || []).forEach(result => subtitleQualityCache.set(Number(result.media_id), result));
+      const s = data.summary || {};
+      const c = s.counts || {};
+      const summary = document.getElementById("subtitle-quality-summary");
+      summary.textContent = `Audit: ${s.audited || 0} media | ${c.healthy || 0} healthy · ${c.warning || 0} warning · ${c.invalid || 0} invalid · ${c.not_applicable || 0} embedded-only · ${c.not_available || 0} without subtitle tracks. DB subtitle flags: ${s.db_has_subtitle_count || 0}; media with verified tracks: ${s.verified_track_media_count || 0}; flag/track delta: ${s.db_flag_without_verified_tracks || 0} flag-only, ${s.verified_tracks_without_db_flag || 0} track-only.`;
+      summary.classList.remove("hidden");
+      renderLibraryView();
+      const button = document.getElementById("btn-audit-library");
+      button.disabled = false;
+      button.textContent = "Audit Visible Library";
+      subtitleQualityBusy = false;
+    }
+
+    async function auditCurrentSubtitleQuality() {
+      if (!activeMediaId) return;
+      const box = document.getElementById("modal-subtitle-quality-result");
+      box.textContent = "Auditing external subtitle files...";
+      try {
+        await auditMediaIds([activeMediaId]);
+        const result = subtitleQualityCache.get(Number(activeMediaId));
+        const rows = (result?.tracks || []).map(track => {
+          const issues = (track.issues || []).map(escapeHtml).join(", ") || "No issues";
+          return `<div class="border-t border-slate-800 pt-1 mt-1"><strong>${escapeHtml((track.language || "??").toUpperCase())}</strong> · ${escapeHtml(subtitleQualityLabel(track.status))}<div class="text-slate-500">${issues}</div></div>`;
+        }).join("");
+        box.innerHTML = `<div class="font-semibold text-cyan-200">Overall: ${escapeHtml(subtitleQualityLabel(result?.status))}</div>${rows || '<div>No subtitle tracks available for audit.</div>'}`;
+        renderLibraryView();
+      } catch (err) {
+        box.textContent = err.message || String(err);
+      }
+    }
+
     function renderLibraryView() {
       const grid = document.getElementById("media-grid");
       const empty = document.getElementById("empty-state");
       const explorer = document.getElementById("series-explorer-container");
       const cat = document.getElementById("filter-category").value;
       const isSeriesCat = SERIES_CATEGORIES.has(cat);
+      const visibleItems = applySubtitleQualityFilter(allItems);
 
-      const seriesGroups = groupItemsBySeries(allItems);
+      const seriesGroups = groupItemsBySeries(visibleItems);
       syncSeriesSubNav(seriesGroups);
-      updateResultInfo(allItems.length);
+      updateResultInfo(visibleItems.length);
 
       // Mode A: Active Prime Video-Style Season & Episode Explorer
       if (activeSeriesTitle) {
@@ -1822,7 +2547,7 @@
       explorer.classList.add("hidden");
       grid.classList.remove("hidden");
 
-      if (!allItems.length) {
+      if (!visibleItems.length) {
         grid.innerHTML = "";
         empty.classList.remove("hidden");
         return;
@@ -1836,7 +2561,7 @@
       }
 
       // Mode C: Standard Flat Media Cards (Movies, JAV, Adult, or Flat Episodes)
-      renderFlatMediaCards(allItems);
+      renderFlatMediaCards(visibleItems);
     }
 
     function renderNetflixShowCards(groups) {
@@ -1851,7 +2576,7 @@
         const pctWatched = epCount > 0 ? Math.round((grp.watched_count / epCount) * 100) : 0;
 
         const posterHtml = posterItem && posterItem.has_poster
-          ? `<img src="/api/media/${posterItem.id}/poster?v=${encodeURIComponent(posterItem.updated_at || '')}" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />`
+          ? `<img src="/api/media/${posterItem.id}/poster?v=${encodeURIComponent(posterItem.updated_at || '')}" onerror="handlePosterLoadError(${posterItem.id}, this)" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />`
           : `<div class="w-full h-full flex flex-col items-center justify-center p-3 text-center bg-gradient-to-br from-slate-900 to-slate-950">
                <span class="text-[11px] font-bold text-slate-400 uppercase">${catLabel}</span>
                <span class="text-xs text-slate-300 mt-1 line-clamp-2 font-semibold">${escapeHtml(grp.series_title)}</span>
@@ -1973,7 +2698,7 @@
       const allSeasonSelected = seasonItemIds.length > 0 && seasonItemIds.every(id => selectedIds.has(id));
 
       const posterHtml = heroItem && heroItem.has_poster
-        ? `<img src="/api/media/${heroItem.id}/poster?v=${encodeURIComponent(heroItem.updated_at || '')}" class="w-full h-full object-cover" />`
+        ? `<img src="/api/media/${heroItem.id}/poster?v=${encodeURIComponent(heroItem.updated_at || '')}" onerror="handlePosterLoadError(${heroItem.id}, this)" class="w-full h-full object-cover" />`
         : `<div class="w-full h-full flex items-center justify-center text-slate-600 text-xs bg-slate-950">No Poster</div>`;
 
       const seasonTabsHtml = (data.seasons || []).map(s => {
@@ -2424,7 +3149,7 @@
           ? `S${String(item.season_num).padStart(2, "0")}E${String(item.episode_num).padStart(2, "0")}`
           : "";
         const posterHtml = item.has_poster
-          ? `<img src="/api/media/${item.id}/poster?v=${encodeURIComponent(item.updated_at || '')}" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />`
+          ? `<img src="/api/media/${item.id}/poster?v=${encodeURIComponent(item.updated_at || '')}" onerror="handlePosterLoadError(${item.id}, this)" loading="lazy" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />`
           : `<div class="w-full h-full flex flex-col items-center justify-center p-3 text-center bg-gradient-to-br from-slate-900 to-slate-950">
                <span class="text-[11px] font-bold text-slate-400 uppercase">${catLabel}</span>
                <span class="text-xs text-slate-500 mt-1 line-clamp-2">${escapeHtml(item.code_id || item.file_name)}</span>
@@ -2437,6 +3162,14 @@
         const plTagHtml = item.in_playlist
           ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-600/90 text-white" title="In: ${escapeHtml((item.playlist_names || []).join(', '))}">IN PLAYLIST</span>`
           : "";
+        const classTagHtml = item.classification_status === "needs_review"
+          ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-600/90 text-white">NEEDS REVIEW</span>`
+          : item.classification_status === "manually_classified"
+            ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-700/90 text-white">MANUAL</span>` : "";
+        const quality = subtitleQualityCache.get(Number(item.id));
+        const qualityTagHtml = quality
+          ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${quality.status === "healthy" ? "bg-emerald-700/90 text-white" : quality.status === "invalid" ? "bg-rose-700/90 text-white" : "bg-amber-700/90 text-white"}">${subtitleQualityLabel(quality.status)}</span>`
+          : "";
 
         return `
           <div class="group bg-slate-900 border ${isSelected ? "border-emerald-500 ring-2 ring-emerald-500/40" : "border-slate-800 hover:border-slate-600"} rounded-xl overflow-hidden flex flex-col transition">
@@ -2448,6 +3181,8 @@
                 ${epTag ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-950/90 text-indigo-200 border border-indigo-500/40">${epTag}</span>` : ""}
                 <span class="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase ${item.source_type === "cloud" ? "bg-sky-950/90 text-sky-300 border border-sky-500/40" : "bg-teal-950/90 text-teal-300 border border-teal-500/40"}">${item.source_type}</span>
                 ${plTagHtml}
+                ${classTagHtml}
+                ${qualityTagHtml}
               </div>
 
               <label onclick="event.stopPropagation()" class="absolute top-2 right-2 w-6 h-6 rounded-md bg-slate-950/80 border border-slate-600 flex items-center justify-center cursor-pointer">
@@ -2456,7 +3191,12 @@
 
               <div class="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-1 text-[10px] font-semibold">
                 <div class="flex items-center gap-1">
-                  ${item.has_subtitle ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/90 text-slate-950">SUB ${(item.subtitle_lang || "").toUpperCase()}</span>` : `<span></span>`}
+                  ${(item.subtitle_tracks || []).map(track => {
+                    const lang = (track.language || "").toLowerCase();
+                    const label = lang === "en" ? "ENG" : (lang === "id" ? "IND" : lang.toUpperCase());
+                    const embedded = track.source === "embedded";
+                    return `<span title="${label} ${embedded ? "Embedded" : "External"}" class="px-1.5 py-0.5 rounded ${embedded ? "bg-emerald-500/90 text-slate-950" : "bg-sky-500/90 text-slate-950"}">${label} · ${embedded ? "EMB" : "EXT"}</span>`;
+                  }).join("") || `<span></span>`}
                   ${durText ? `<span class="px-1.5 py-0.5 rounded bg-slate-950/85 text-sky-300 border border-sky-500/30 font-mono">${durText}</span>` : ""}
                 </div>
                 ${item.is_watched ? `<span class="px-1.5 py-0.5 rounded bg-emerald-500/90 text-slate-950">WATCHED</span>` : ""}
@@ -2584,6 +3324,13 @@
       document.getElementById("modal-sub-badge").textContent = item.has_subtitle
         ? `SUB: ${(item.subtitle_lang || "").toUpperCase()} (${item.subtitle_source})`
         : "NO SUBTITLE";
+      const qualityResult = subtitleQualityCache.get(Number(item.id));
+      const qualityBox = document.getElementById("modal-subtitle-quality-result");
+      if (qualityBox) {
+        qualityBox.innerHTML = qualityResult
+          ? `<div class="font-semibold text-cyan-200">Overall: ${escapeHtml(subtitleQualityLabel(qualityResult.status))}</div>${(qualityResult.tracks || []).map(track => `<div>${escapeHtml((track.language || "??").toUpperCase())}: ${escapeHtml(subtitleQualityLabel(track.status))}</div>`).join("")}`
+          : "Not audited yet.";
+      }
       document.getElementById("modal-pl-badge").textContent = item.in_playlist
         ? `PLAYLIST: ${(item.playlist_names || []).join(", ")}`
         : "UNASSIGNED";
@@ -2600,14 +3347,25 @@
       document.getElementById("edit-runtime").value = item.runtime || "";
       document.getElementById("edit-studio").value = item.studio || "";
       document.getElementById("edit-plot").value = item.plot || "";
+      document.getElementById("classification-normalized-title").value = item.normalized_title || item.file_name || "";
+      document.getElementById("classification-confirm-category").value = ["general_movie", "tv_show", "anime", "donghua", "jav", "english_adult"].includes(item.content_category) ? item.content_category : "general_movie";
+      document.getElementById("classification-lock").checked = item.classification_locked !== 0;
+      document.getElementById("classification-preview-result").classList.add("hidden");
+      document.getElementById("classification-history").classList.add("hidden");
+      const classStatus = item.classification_status || "pending";
+      document.getElementById("classification-current-status").textContent = `Status: ${classStatus.replaceAll("_", " ")} | ${item.classification_locked ? "Manual lock enabled" : "Not locked"}`;
 
       const remoteLink = document.getElementById("btn-modal-remote-m3u");
       if (remoteLink) remoteLink.href = `/api/media/${item.id}/remote-m3u`;
 
       const posterBox = document.getElementById("modal-poster-box");
       posterBox.innerHTML = item.has_poster
-        ? `<img src="/api/media/${item.id}/poster?v=${encodeURIComponent(item.updated_at || '')}" class="w-full h-full object-cover" />`
+        ? `<img src="/api/media/${item.id}/poster?v=${encodeURIComponent(item.updated_at || '')}" onerror="handlePosterLoadError(${item.id}, this)" class="w-full h-full object-cover" />`
         : `<div class="p-4 text-center text-slate-500">No Poster Cached</div>`;
+      const posterStatus = item.poster_status || (item.has_poster ? "found" : "not_checked");
+      document.getElementById("modal-poster-status").textContent = `Poster: ${posterStatus.replaceAll("_", " ")}${item.poster_error ? " — " + item.poster_error : ""}`;
+      document.getElementById("manual-poster-url").value = item.poster_is_manual ? (item.poster_url || "") : "";
+      document.getElementById("btn-poster-automatic").classList.toggle("hidden", !item.poster_is_manual);
 
       const extra = [];
       if (item.parent_name) extra.push(`<div><strong class="text-slate-300">Folder/Torrent:</strong> ${escapeHtml(item.parent_name)}</div>`);
@@ -2621,6 +3379,58 @@
       if (modalPlayBtn) modalPlayBtn.textContent = `Play in ${getPlayerDisplayName()}`;
 
       document.getElementById("detail-modal").classList.remove("hidden");
+    }
+
+    let lastClassificationPreview = null;
+
+    async function previewClassification() {
+      if (!activeMediaId) return;
+      const title = document.getElementById("classification-normalized-title").value.trim();
+      const res = await fetch(`/api/media/${activeMediaId}/classification/preview`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({normalized_title: title}),
+      });
+      const data = await res.json();
+      if (!data.ok) { showToast(data.error || "Classification preview failed.", true); return; }
+      lastClassificationPreview = data.result;
+      const result = data.result;
+      const detected = result.detected_category || "Needs Review";
+      const warnings = (result.warnings || []).map(escapeHtml).join("; ") || "No warnings";
+      const signals = (result.signals || []).map(escapeHtml).join(", ") || "No strong signals";
+      const box = document.getElementById("classification-preview-result");
+      box.innerHTML = `<div class="font-bold text-violet-200">Recommendation: ${escapeHtml(detected.replaceAll("_", " "))} (${result.category_confidence || 0}% confidence)</div><div class="mt-1">Method: ${escapeHtml(result.classification_method || "unknown")}</div><div class="mt-1">Signals: ${signals}</div><div class="mt-1 text-amber-300">${warnings}</div><div class="mt-1 text-slate-500">Preview only — no database changes have been made.</div>`;
+      box.classList.remove("hidden");
+      if (result.detected_category) document.getElementById("classification-confirm-category").value = result.detected_category;
+    }
+
+    async function applyManualClassification() {
+      if (!activeMediaId) return;
+      const normalizedTitle = document.getElementById("classification-normalized-title").value.trim();
+      const category = document.getElementById("classification-confirm-category").value;
+      if (!normalizedTitle) { showToast("Normalized title is required.", true); return; }
+      if (!confirm(`Confirm category '${category.replaceAll("_", " ")}' and save this manual classification?`)) return;
+      const res = await fetch(`/api/media/${activeMediaId}/classification/apply`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({category, normalized_title: normalizedTitle, lock: document.getElementById("classification-lock").checked}),
+      });
+      const data = await res.json();
+      if (!data.ok) { showToast(data.error || "Unable to save classification.", true); return; }
+      showToast("Manual classification saved.");
+      const statusFilter = document.getElementById("filter-classification");
+      if (statusFilter.value === "needs_review" || statusFilter.value === "pending") statusFilter.value = "all";
+      await loadMedia();
+      openDetailModal(activeMediaId);
+    }
+
+    async function loadClassificationHistory() {
+      if (!activeMediaId) return;
+      const res = await fetch(`/api/media/${activeMediaId}/classification/history`);
+      const data = await res.json();
+      if (!data.ok) { showToast(data.error || "Unable to load history.", true); return; }
+      const box = document.getElementById("classification-history");
+      const rows = data.history || [];
+      box.innerHTML = rows.length ? rows.map(h => `<div class="border-b border-slate-800 pb-1"><strong>${escapeHtml(h.changed_by || "system")}</strong> · ${escapeHtml(h.previous_category || "?")} → ${escapeHtml(h.new_category || "?")} · ${escapeHtml(h.created_at || "")}${h.note ? `<div>${escapeHtml(h.note)}</div>` : ""}</div>`).join("") : "No classification history yet.";
+      box.classList.remove("hidden");
     }
 
     function closeDetailModal() {
@@ -2666,6 +3476,82 @@
       }
     }
 
+    async function handlePosterLoadError(mediaId, imageElement) {
+      if (imageElement && imageElement.dataset.posterFailed) return;
+      if (imageElement) {
+        imageElement.dataset.posterFailed = "1";
+        imageElement.style.display = "none";
+        const parent = imageElement.parentElement;
+        if (parent && !parent.querySelector(".poster-load-fallback")) {
+          const fallback = document.createElement("div");
+          fallback.className = "poster-load-fallback w-full h-full flex items-center justify-center p-3 text-center bg-slate-950 text-slate-500 text-xs";
+          fallback.textContent = "Poster unavailable";
+          parent.insertBefore(fallback, imageElement.nextSibling);
+        }
+      }
+      try {
+        await fetch(`/api/media/${mediaId}/poster/load-error`, {method: "POST"});
+      } catch (_) {}
+    }
+
+    async function retryCurrentPoster() {
+      if (!activeMediaId || isModalBusy || isActionBusy) return;
+      setModalButtonsLocked(true);
+      setGlobalActionBusy(true, "POSTER RETRY", "Checking and downloading poster only...");
+      try {
+        const res = await fetch(`/api/media/${activeMediaId}/poster/retry`, {method: "POST"});
+        const data = await res.json();
+        if (!data.ok) showToast(data.error || data.result?.poster_error || "Poster retry failed.", true);
+        else showToast("Poster downloaded and validated.");
+        await loadMedia();
+        openDetailModal(activeMediaId);
+      } finally {
+        setModalButtonsLocked(false);
+        setGlobalActionBusy(false);
+      }
+    }
+
+    async function saveManualPoster() {
+      if (!activeMediaId || isModalBusy || isActionBusy) return;
+      const posterUrl = document.getElementById("manual-poster-url").value.trim();
+      if (!posterUrl) { showToast("Paste a direct poster image URL first.", true); return; }
+      if (!confirm("Download and use this image as the manual poster?")) return;
+      setModalButtonsLocked(true);
+      setGlobalActionBusy(true, "VALIDATING POSTER", "Downloading and validating the selected image...");
+      try {
+        const res = await fetch(`/api/media/${activeMediaId}/poster/manual`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({poster_url: posterUrl}),
+        });
+        const data = await res.json();
+        if (!data.ok) { showToast(data.error || "Manual poster could not be saved.", true); return; }
+        showToast("Manual poster saved and locked.");
+        await loadMedia();
+        openDetailModal(activeMediaId);
+      } finally {
+        setModalButtonsLocked(false);
+        setGlobalActionBusy(false);
+      }
+    }
+
+    async function useAutomaticPoster() {
+      if (!activeMediaId || isModalBusy || isActionBusy) return;
+      if (!confirm("Remove the manual poster lock and retry the provider poster?")) return;
+      setModalButtonsLocked(true);
+      setGlobalActionBusy(true, "AUTOMATIC POSTER", "Releasing manual lock and checking provider poster...");
+      try {
+        const res = await fetch(`/api/media/${activeMediaId}/poster/automatic`, {method: "POST"});
+        const data = await res.json();
+        if (!data.ok) showToast(data.error || data.result?.poster_error || "Automatic poster lookup failed.", true);
+        else showToast("Automatic poster restored.");
+        await loadMedia();
+        openDetailModal(activeMediaId);
+      } finally {
+        setModalButtonsLocked(false);
+        setGlobalActionBusy(false);
+      }
+    }
+
     async function reEnrichCurrent() {
       if (!activeMediaId || isModalBusy || isActionBusy) return;
       setModalButtonsLocked(true);
@@ -2673,15 +3559,29 @@
       try {
         const res = await fetch(`/api/media/${activeMediaId}/enrich`, {method: "POST"});
         const data = await res.json();
-        if (data.ok) {
-          showToast("Metadata, poster & duration refreshed.");
-          if (activeSeriesTitle) {
-            await openSeriesExplorer(activeSeriesTitle, activeSeriesSeason);
-          } else {
-            await loadMedia();
-          }
-          openDetailModal(activeMediaId);
+        if (!res.ok || !data.ok) {
+          showToast(data.error || `Metadata enrichment failed (HTTP ${res.status}).`, true);
+          return;
         }
+        const lookup = data.lookup || {};
+        if (lookup.status === "not_found") {
+          const attempts = (lookup.attempts || []).map(x => `${x.provider}:${x.status}`).join(", ");
+          showToast(`Re-Enrich selesai, tetapi provider tidak menemukan metadata. ${lookup.message || "Periksa judul dan konfigurasi provider."}${attempts ? ` [${attempts}]` : ""}`, true);
+        } else if (lookup.status === "metadata_found_poster_missing") {
+          showToast(`Metadata ditemukan dari ${lookup.provider || "provider"}, tetapi provider tidak menyediakan cover.`, true);
+        } else if (lookup.status === "metadata_found_poster_download_failed") {
+          showToast(`Metadata ditemukan, tetapi cover gagal diunduh: ${lookup.message || "unknown error"}`, true);
+        } else {
+          showToast(`Metadata diperbarui dari ${lookup.provider || "provider"}; poster: ${lookup.poster_status || "not checked"}.`);
+        }
+        if (activeSeriesTitle) {
+          await openSeriesExplorer(activeSeriesTitle, activeSeriesSeason);
+        } else {
+          await loadMedia();
+        }
+        openDetailModal(activeMediaId);
+      } catch (err) {
+        showToast(`Re-Enrich failed: ${err.message || err}`, true);
       } finally {
         setModalButtonsLocked(false);
         setGlobalActionBusy(false);
@@ -2696,7 +3596,8 @@
         const res = await fetch(`/api/media/${activeMediaId}/subtitle`, {method: "POST"});
         const data = await res.json();
         if (data.ok) {
-          showToast(`Subtitle found (${data.item.subtitle_source})!`);
+          const langs = (data.available_languages || []).map(x => x.toUpperCase()).join(" + ");
+          showToast(`Subtitle check: ${data.status || "updated"} (${langs || "no language label"}).`);
           if (activeSeriesTitle) {
             await openSeriesExplorer(activeSeriesTitle, activeSeriesSeason);
           } else {
@@ -2912,9 +3813,30 @@
       setTaskButtonsLocked(true);
 
       clearInterval(taskPollTimer);
+      let pollInFlight = false;
+      let pollFailures = 0;
       const poll = async () => {
-        const res = await fetch("/api/task/status");
-        const data = await res.json();
+        if (pollInFlight) return;
+        pollInFlight = true;
+        let data;
+        try {
+          const res = await fetch("/api/task/status");
+          if (!res.ok) throw new Error(`Task status HTTP ${res.status}`);
+          data = await res.json();
+        } catch (err) {
+          pollFailures += 1;
+          // A restart or a stuck DB must not leave the UI locked forever.
+          if (pollFailures >= 5) {
+            clearInterval(taskPollTimer);
+            if (warnLock) warnLock.classList.add("hidden");
+            setTaskButtonsLocked(false);
+            showToast("Status task tidak dapat dibaca; polling dihentikan.", true);
+          }
+          return;
+        } finally {
+          pollInFlight = false;
+        }
+        pollFailures = 0;
         if (!data.ok) return;
         updateStats(data.stats);
         const t = data.task;
@@ -2941,10 +3863,19 @@
 
         if (!t.running) {
           clearInterval(taskPollTimer);
+          if (t.task_type === "subtitle_quality_audit") {
+            try { await loadSubtitleQualityBatchResults(); }
+            catch (err) { showToast(err.message || String(err), true); }
+          }
           document.getElementById("task-bar").style.width = "100%";
           if (pctEl) pctEl.textContent = "100% completed";
           if (warnLock) warnLock.classList.add("hidden");
           setTaskButtonsLocked(false);
+          if (t.task_type === "subtitle_quality_audit") {
+            subtitleQualityBusy = false;
+            const auditBtn = document.getElementById("btn-audit-library");
+            if (auditBtn) { auditBtn.disabled = false; auditBtn.textContent = "Audit Visible Library"; }
+          }
           showToast(t.message);
           if (activeSeriesTitle) {
             await openSeriesExplorer(activeSeriesTitle, activeSeriesSeason);
@@ -2956,7 +3887,8 @@
         }
       };
       poll();
-      taskPollTimer = setInterval(poll, 700);
+      // 1.2 s is fast enough for a progress banner and halves the request rate.
+      taskPollTimer = setInterval(poll, 1200);
     }
 
     function updateSecretField(inputId, badgeId, hasKey, maskedVal) {
@@ -2978,6 +3910,12 @@
       const data = await res.json();
       if (!data.ok) return;
       const s = data.settings;
+      const subtitlePrefs = data.subtitle_preferences || {indonesian_enabled: true};
+      const idToggle = document.getElementById("set-subtitle-id-enabled");
+      if (idToggle) idToggle.checked = !!subtitlePrefs.indonesian_enabled;
+      const subStats = data.subtitle_language_stats || {};
+      const subStatsEl = document.getElementById("subtitle-language-stats");
+      if (subStatsEl) subStatsEl.textContent = `Complete: ${subStats.complete || 0} • Ready: ${subStats.ready || 0} • Partial: ${subStats.partial || 0} • Not Ready: ${subStats.not_ready || 0}`;
       detectedOsPlatform = data.os_platform || detectedOsPlatform;
       defaultPlayerPaths = data.default_paths || defaultPlayerPaths;
       applyEnvInfo(data.env);
@@ -3022,6 +3960,7 @@
         mpv_path: playerPathsCache.mpv || defaultPlayerPaths.mpv || "",
         custom_player_path: playerPathsCache.custom || "",
         custom_player_args: (document.getElementById("set-custom-args").value || "").trim(),
+        indonesian_enabled: document.getElementById("set-subtitle-id-enabled").checked,
       };
 
       const tbVal = document.getElementById("set-torbox-key").value.trim();
@@ -3115,6 +4054,22 @@
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
     }
+
+    // Keep sticky library controls aligned directly beneath the sticky top navbar
+    function syncStickyControlsOffset() {
+      const nav = document.getElementById("main-navbar");
+      const stickyBar = document.getElementById("library-sticky-controls");
+      if (nav && stickyBar) {
+        stickyBar.style.top = `${nav.offsetHeight}px`;
+      }
+    }
+
+    const navEl = document.getElementById("main-navbar");
+    if (navEl && typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(syncStickyControlsOffset).observe(navEl);
+    }
+    window.addEventListener("resize", syncStickyControlsOffset);
+    syncStickyControlsOffset();
 
     bootstrap();
   </script>

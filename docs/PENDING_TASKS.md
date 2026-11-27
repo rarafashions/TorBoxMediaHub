@@ -1,0 +1,51 @@
+# Pending Tasks
+
+Status per **27 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **155 passed, 24 subtests passed** (0 gagal).
+
+---
+
+## Selesai
+
+| # | Item | Lokasi | Catatan |
+|---|---|---|---|
+| 1 | Guard `download_path` untuk download lokal | `roxxy_download_engine.py` `_safe_download_dir()` | Menolak OS tree, `Program Files*`, `ProgramData`, folder Startup, direktori app, prefix `\\?\`. Dipakai di `api_local_start` dan `api_local_retry`. Bukan allowlist agar pemilih folder tetap bebas. |
+| 2 | `_INSPECT_CACHE` LRU + lock | `roxxy_module.py` | `OrderedDict` + `_INSPECT_CACHE_LOCK`; entri tertua dibuang pada 64, tidak lagi `clear()`. |
+| 3 | Polling `/api/task/status` | `templates/index.html` `startTaskPolling()` | 700 ms -> 1200 ms, guard `pollInFlight`, berhenti setelah 5 kegagalan beruntun dan membuka lock UI. |
+| 4 | Poster proxy: guard IP privat, redirect, batas ukuran | `app.py` `api_discover_poster_proxy()` | Memakai ulang `metadata_engine._poster_url_is_public` (resolve semua IP, `is_global`, `localhost`, `*.local`) setiap hop, `allow_redirects=False`, maks 5 hop, batas 5 MB via `_read_poster_response`. Status 404/415/413 tidak lagi dipaksa menjadi 502. |
+| 5 | P1.1 Socket `CloseWait` | `metadata_engine.py`, `app.py` | Pool bersama turun ke `pool_connections=8, pool_maxsize=8` dengan `Retry(total=1, connect=1, read=1)` hanya untuk `GET/HEAD`; proxy poster memakai `requests.Session` sekali pakai yang ditutup di `finally`, sehingga host cover tidak lagi menumpuk di pool global. |
+| 6 | P1.2 Guard tulis lintas situs | `app.py` `_guard_cross_site_writes()` | `before_request` menolak `POST/PUT/PATCH/DELETE` dengan `Origin`/`Referer` beda host atau `Sec-Fetch-Site` cross-site. Request tanpa header (curl, skrip, launcher) sengaja dibiarkan. Startup mencetak peringatan bila `TBH_HOST` bukan loopback. |
+| 7 | P1.3 Allowlist host poster (opt-in) | `app.py` `_poster_host_allowed()` | `TBH_POSTER_HOST_ALLOWLIST` berisi domain/suffix dipisah koma. Default kosong (nonaktif) karena CDN provider berubah dan allowlist keras berisiko mematahkan cover. |
+| 8 | P2.2 Cache `get_telemetry_stats()` | `app.py` `_task_telemetry_stats()` | TTL 3 s, kunci `_task_stats_lock`, hanya dipakai `api_task_status`; rute mutasi tetap menghitung stats sendiri agar tidak stale. |
+| 9 | P2.1 Baseline tes | `tests/test_classification_engine.py`, `tests/test_poster_reliability.py`, `classification_engine.py`, `metadata_engine.py` | Triase selesai: 7 kegagalan klasifikasi adalah perubahan perilaku yang disengaja (status `needs_review` untuk judul ambigu, `detected_category=None` sesuai kontrak, Donghua mengalahkan TV Show), dan 1 kegagalan poster adalah mock yang bolong (SSL nyata). Mock diperbaiki, bukan ekspektasi. |
+| 10 | P2.3 Fan-out katalog Roxxy | `templates/roxxy.html` | Sudah dibatasi 6 permintaan per batch secara berurutan; tidak ada perubahan tambahan yang diperlukan. |
+| 11 | P2.4 Polling lain | `app.py` | `/api/torbox/watch-status` hanya membaca status monitor di memori dan `/api/roxxy/local/queue` membaca state lokal; keduanya tidak memanggil API luar, jadi interval 6 s / 3 s dibiarkan. |
+| 12 | P3.1 Versi + commit | `app.py`, `.gitignore` | `APP_VERSION = "v1.3D3"`; `*.zip` diabaikan agar artefak rilis tidak ikut ter-commit. |
+| 13 | P3.2 Aturan always-on | `~/.config/opencode/instructions/torbox-media-hub.md` | Backup DB sebelum migrasi, larangan mencetak secret, larangan restart saat antrean aktif. Terdaftar di `instructions` pada `opencode.json`/`opencode.jsonc` (keduanya sudah di-backup). |
+| 14 | P3.3 Dokumentasi | `docs/POSTER_RELIABILITY_PHASE4.md` | Bagian 6 baru: guard SSRF per hop, redirect manual, batas 5 MB, pemetaan status, kebersihan socket, allowlist opsional. |
+| 15 | Tes regresi | `tests/test_roxxy_download_guardrails.py`, `tests/test_poster_proxy_ssrf.py`, `tests/test_request_guard.py` | 16 + 9 + 13 tes baru; seluruh suite offline dan tidak menyentuh DB aplikasi. |
+
+---
+
+## Tersisa
+
+### V1 - verifikasi manual (butuh app berjalan)
+- Uji poster proxy pada satu cover missav dan satu cover theporndb setelah restart, untuk memastikan guard IP tidak memblokir CDN sah.
+- Bila ingin allowlist aktif: isi `TBH_POSTER_HOST_ALLOWLIST` dengan host yang benar-benar muncul di log proxy, lalu ulangi uji cover.
+- Setelah restart, pantau `Get-NetTCPConnection -OwningProcess <pid>` dan pastikan jumlah `CloseWait` outbound tidak naik lagi seperti sebelumnya (39 dalam ~1 jam).
+
+### V2 - belum diputuskan
+- Autentikasi token penuh: guard Origin menutup CSRF dari browser, tetapi klien lokal mana pun tetap bisa memanggil API. Token butuh alur login; belum dikerjakan.
+- Allowlist poster berbasis allowlist keras: menunggu daftar CDN yang stabil.
+- Klasifikasi: `needs_review` kini tidak mengekspos `detected_category`. Bila ada kebutuhan UI untuk menampilkan kandidat, harus lewat field terpisah (mis. `candidate_category`), bukan mengubah kontrak.
+
+---
+
+## Verifikasi cepat
+
+```powershell
+cd C:\Users\Imaulana\Projects\TorBoxMediaHub
+python -m pytest tests -q --no-header
+python -m pytest tests\test_poster_proxy_ssrf.py tests\test_request_guard.py tests\test_roxxy_download_guardrails.py -q --no-header
+python -c "import app; print(app.APP_VERSION)"
+Get-NetTCPConnection -OwningProcess <pid> | Group-Object State | Select-Object Name,Count
+```

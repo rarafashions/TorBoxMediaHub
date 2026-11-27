@@ -1,0 +1,662 @@
+"""Local Roxxy downloader worker (yt-dlp / aria2c).
+
+Runs only user-selected Roxxy streams. Magnet streams remain handled by TorBox.
+Queue is process-local in this first Phase C increment; V1.2 database is untouched.
+"""
+from __future__ import annotations
+
+import os
+import re
+import json
+import time
+import shutil
+import threading
+import subprocess
+import uuid
+from datetime import datetime
+from urllib.parse import urlparse, unquote
+from email.message import Message
+from typing import Any, Dict, List
+
+import requests
+from flask import Blueprint, jsonify, request
+import database_manager as db
+import classification_engine
+import subtitle_engine
+
+localdl_bp = Blueprint("roxxy_localdl", __name__)
+_lock = threading.RLock()
+_jobs: Dict[str, Dict[str, Any]] = {}
+_workers = threading.Semaphore(3)
+_library_worker_started = False
+_library_worker_lock = threading.Lock()
+_registration_worker_started = False
+DEFAULT_PATH = r"E:\01 Imaulana\01 Isa Maulana\03 Ionos\Movies"
+VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".ts", ".m4v", ".mpg", ".mpeg"}
+HTTP = requests.Session()
+HTTP.headers.update({"User-Agent": "TorBoxMediaHub-Roxxy/1.3", "Accept": "*/*"})
+
+def _safe_filename(value: str) -> str:
+    value = unquote(str(value or "")).replace("\x00", "")
+    value = re.sub(r'[<>:"/\\\\|?*]', "_", value)
+    value = re.sub(r"\s+", " ", value).strip(" .")
+    return value[:180] or "Roxxy_Download"
+
+def _fallback_name(payload: Dict[str, Any], ext: str = "") -> str:
+    meta = payload.get("meta") or {}
+    code = str(meta.get("jav_code") or payload.get("jav_code") or "").strip().upper()
+    title = str(meta.get("name") or payload.get("title") or "Roxxy JAV").strip()
+    resolution = str(payload.get("resolution") or "")
+    if not resolution:
+        text = " ".join(str(payload.get(k) or "") for k in ("name", "title", "description"))
+        m = re.search(r"\b(2160p|1080p|720p|480p)\b", text, re.I)
+        resolution = m.group(1) if m else ""
+    base = " - ".join(x for x in (code, title, resolution) if x)
+    return _safe_filename(base or "Roxxy_Download") + ext
+
+def _content_disposition_name(value: str) -> str:
+    if not value:
+        return ""
+    msg = Message()
+    msg["content-disposition"] = value
+    try:
+        return msg.get_filename() or ""
+    except Exception:
+        return ""
+
+def _validate_http_url(url: str) -> str:
+    p = urlparse(str(url or "").strip())
+    if p.scheme not in {"http", "https"} or not p.hostname:
+        raise ValueError("URL harus berupa HTTP/HTTPS.")
+    if p.username or p.password:
+        raise ValueError("URL dengan kredensial tertanam tidak didukung.")
+    return p.geturl()
+
+def _download_denied_roots() -> List[str]:
+    """Directories a download must never write into: OS trees, shell autostart
+    folders, and the application's own source directory."""
+    candidates: List[str] = [
+        os.environ.get("SystemRoot") or "",
+        os.environ.get("windir") or "",
+        os.environ.get("ProgramFiles") or "",
+        os.environ.get("ProgramFiles(x86)") or "",
+        os.environ.get("ProgramData") or "",
+    ]
+    appdata = os.environ.get("APPDATA") or ""
+    if appdata:
+        candidates.append(os.path.join(appdata, "Microsoft", "Windows", "Start Menu", "Programs", "Startup"))
+    if os.name == "nt":
+        candidates.append(r"C:\Windows")
+    else:
+        candidates.extend(["/etc", "/bin", "/sbin", "/usr", "/boot", "/var/lib", "/var/spool"])
+    candidates.append(os.path.dirname(os.path.abspath(__file__)))
+
+    denied = set()
+    for raw in candidates:
+        if not raw:
+            continue
+        normalized = os.path.normcase(os.path.realpath(raw)).rstrip("\\/")
+        if normalized:
+            denied.add(normalized)
+    return sorted(denied)
+
+
+def _safe_download_dir(raw: Any) -> str:
+    """Validate a client-supplied download directory and return its real path.
+
+    The GUI lets the user browse to any folder, so downloads cannot be limited to
+    one allowlisted root. Instead this rejects the locations that would turn an
+    arbitrary write into code execution: the OS trees, autostart folders, and the
+    app's own source directory. Device-namespace prefixes are also refused.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("Folder tujuan belum diisi.")
+    if text.startswith(("\\\\?\\", "\\\\.\\", "//?/", "//./")):
+        raise ValueError("Folder tujuan tidak valid.")
+    if not os.path.isabs(text):
+        raise ValueError("Folder tujuan harus berupa path absolut.")
+
+    real = os.path.realpath(text)
+    normalized = os.path.normcase(real).rstrip("\\/")
+    for denied in _download_denied_roots():
+        if normalized == denied or normalized.startswith(denied + os.sep):
+            raise ValueError("Folder tujuan berada di lokasi sistem yang tidak diizinkan.")
+
+    parent = os.path.dirname(real) or real
+    if not os.path.isdir(real) and not os.path.isdir(parent):
+        raise ValueError("Folder tujuan tidak ditemukan.")
+    return real
+
+
+def _inspect(url: str) -> Dict[str, Any]:
+    url = _validate_http_url(url)
+    try:
+        r = HTTP.head(url, allow_redirects=False, timeout=(8, 15))
+        if r.status_code in (405, 501):
+            r.close()
+            r = HTTP.get(url, headers={"Range": "bytes=0-0"}, allow_redirects=False, stream=True, timeout=(8, 15))
+        ctype = (r.headers.get("Content-Type") or "").split(";")[0].lower()
+        cd_name = _content_disposition_name(r.headers.get("Content-Disposition", ""))
+        length = r.headers.get("Content-Length")
+        location = r.headers.get("Location")
+        status = r.status_code
+        r.close()
+        if 300 <= status < 400 and location:
+            from urllib.parse import urljoin
+            target = _validate_http_url(urljoin(url, location))
+            # Inspect one redirect hop only; never recursively follow unknown redirects.
+            r2 = HTTP.head(target, allow_redirects=False, timeout=(8, 15))
+            ctype = (r2.headers.get("Content-Type") or "").split(";")[0].lower()
+            cd_name = _content_disposition_name(r2.headers.get("Content-Disposition", "")) or cd_name
+            length = r2.headers.get("Content-Length") or length
+            status = r2.status_code
+            r2.close()
+            url = target
+        path = urlparse(url).path.lower()
+        ext = os.path.splitext(path)[1]
+        name_ext = os.path.splitext(cd_name)[1].lower()
+        chosen_ext = name_ext or ext
+        if chosen_ext in {".m3u8", ".mpd"} or ctype in {"application/vnd.apple.mpegurl", "application/x-mpegurl", "application/dash+xml"}:
+            engine, kind = "yt-dlp", "manifest"
+        elif chosen_ext == ".mkv" or "matroska" in ctype or "hevc" in cd_name.lower() or "h265" in cd_name.lower():
+            engine, kind = "aria2c", "file"
+        elif chosen_ext == ".mp4" or ctype in {"video/mp4", "video/webm", "video/quicktime"}:
+            engine, kind = "yt-dlp", "media"
+        elif ctype.startswith("video/") or ctype in {"application/octet-stream", "binary/octet-stream"} or chosen_ext in VIDEO_EXTS:
+            engine, kind = "aria2c", "file"
+        else:
+            engine, kind = "manual", "unknown"
+        return {"engine": engine, "kind": kind, "content_type": ctype, "filename": cd_name,
+                "extension": chosen_ext, "content_length": int(length) if str(length or "").isdigit() else None,
+                "http_status": status, "url": url}
+    except requests.RequestException as exc:
+        raise RuntimeError("Pemeriksaan URL gagal. Periksa akses provider atau URL yang kedaluwarsa.") from exc
+
+def _set(job_id: str, **changes: Any) -> None:
+    with _lock:
+        if job_id in _jobs:
+            _jobs[job_id].update(changes)
+            _jobs[job_id]["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+def _find_completed_file(output_dir: str, requested_filename: str, engine: str, min_mtime: float = 0.0) -> str:
+    """Resolve the actual completed output, including yt-dlp's selected extension.
+
+    ``min_mtime`` keeps a job from claiming an older file that merely shares the
+    same stem (for example ``Title.mp4`` from a previous download).
+    """
+    expected = os.path.join(output_dir, requested_filename)
+    if os.path.isfile(expected):
+        return expected
+    stem = os.path.splitext(requested_filename)[0]
+    candidates = []
+    try:
+        for name in os.listdir(output_dir):
+            path = os.path.join(output_dir, name)
+            if os.path.isfile(path) and (name == requested_filename or name.startswith(stem + ".")):
+                if os.path.splitext(name)[1].lower() in VIDEO_EXTS:
+                    if min_mtime and os.path.getmtime(path) < min_mtime - 2.0:
+                        continue
+                    candidates.append(path)
+    except OSError:
+        return ""
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda p: os.path.getmtime(p))
+
+
+def _validate_completed_file(path: str) -> Dict[str, Any]:
+    """Lightweight D1 validation: existence, regular file, allowed video extension, stable size."""
+    if not path or not os.path.isfile(path):
+        raise ValueError("File hasil download tidak ditemukan.")
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in VIDEO_EXTS:
+        raise ValueError(f"Ekstensi file tidak didukung untuk Library: {ext or '(tanpa ekstensi)'}")
+    first = os.path.getsize(path)
+    if first <= 0:
+        raise ValueError("File hasil download kosong.")
+    time.sleep(1.0)
+    second = os.path.getsize(path)
+    if second <= 0 or second != first:
+        raise ValueError("Ukuran file belum stabil; validasi akan dicoba kembali.")
+    return {"valid": True, "extension": ext, "size": second, "mtime": os.path.getmtime(path)}
+
+
+def _identify_roxxy_media(task: Dict[str, Any], validation: Dict[str, Any]) -> Dict[str, Any]:
+    """D2: classify the downloaded title and detect a verified JAV duplicate."""
+    metadata = task.get("metadata") or {}
+    filename = os.path.basename(task.get("file_path") or "")
+    title = str(metadata.get("name") or metadata.get("title") or "").strip()
+    description = str(metadata.get("description") or "").strip()
+    # Roxxy metadata is preferred over the generated local filename; the file
+    # name remains available to the classifier as a second signal.
+    classification = classification_engine.classify_media(
+        filename=filename,
+        parent_name=description,
+        normalized_title=title or os.path.splitext(filename)[0],
+        metadata=metadata,
+    )
+    category = classification.get("detected_category")
+    code = str(metadata.get("jav_code") or classification.get("detected_code") or "").strip().upper()
+    if category != "jav":
+        code = ""
+
+    duplicate = None
+    if category == "jav" and code:
+        with db.get_connection() as conn:
+            row = conn.execute(
+                "SELECT id, title, file_name, source_type, content_category "
+                "FROM media_items WHERE UPPER(REPLACE(REPLACE(COALESCE(code_id,''),' ',''),'_','-'))=? "
+                "ORDER BY id DESC LIMIT 1",
+                (code.replace(" ", "").replace("_", "-"),),
+            ).fetchone()
+        duplicate = dict(row) if row else None
+
+    if duplicate:
+        status = "duplicate"
+    elif classification.get("classification_status") == "classified" and not (category == "jav" and not code):
+        status = "identified"
+    else:
+        status = "needs_review"
+
+    result = dict(validation or {})
+    result["d2_identification"] = {
+        "classifier_version": "d2-multicat-4",
+        "category": category,
+        "classification_status": classification.get("classification_status"),
+        "classification_method": classification.get("classification_method"),
+        "confidence": classification.get("category_confidence"),
+        "signals": classification.get("signals") or [],
+        "warnings": (classification.get("warnings") or []) + (["JAV category detected but no verified production code was extracted; manual review required."] if category == "jav" and not code else []),
+        "engine_results": classification.get("engine_results") or [],
+        "attributes": classification.get("attributes") or [],
+        "code_id": code or None,
+        "duplicate": duplicate,
+        "subtitle_policy": "skip" if category == "indo" else "eligible_if_needed",
+    }
+    return {"status": status, "file_size": int(validation.get("size") or task.get("file_size") or 0),
+            "validation": result, "code_id": code, "category": category}
+
+
+
+def _roxxy_runtime_minutes(value: Any) -> int:
+    """Parse Stremio-style runtime strings into the V1.2 minute unit."""
+    if isinstance(value, (int, float)):
+        return max(0, int(value))
+    match = re.search(r"(\d{1,4})", str(value or ""))
+    return int(match.group(1)) if match else 0
+
+
+def _register_roxxy_media(task: Dict[str, Any]) -> Dict[str, Any]:
+    """D3: create/update one local Library record using the Roxxy metadata snapshot."""
+    metadata = task.get("metadata") or {}
+    validation = task.get("validation") or {}
+    identification = validation.get("d2_identification") or {}
+    category = identification.get("category") or "uncategorized"
+    if identification.get("classification_status") != "classified":
+        raise ValueError("Task belum memiliki hasil klasifikasi D2 yang valid.")
+    if category == "jav" and not identification.get("code_id"):
+        raise ValueError("Kategori JAV tidak memiliki production code terverifikasi.")
+    path = os.path.abspath(task.get("file_path") or "")
+    if not os.path.isfile(path):
+        raise ValueError("File lokal tidak ditemukan saat registrasi Library.")
+
+    filename = os.path.basename(path)
+    title = str(metadata.get("name") or metadata.get("title") or os.path.splitext(filename)[0]).strip()
+    if not title:
+        title = os.path.splitext(filename)[0]
+    release = str(metadata.get("releaseInfo") or "").strip()
+    year_match = re.search(r"\b(19\d{2}|20\d{2})\b", release)
+    genres = metadata.get("genres") or []
+    if not isinstance(genres, list):
+        genres = [str(genres)]
+    genres = [str(g).strip() for g in genres if str(g).strip()]
+    runtime = _roxxy_runtime_minutes(metadata.get("runtime"))
+    unique_path = os.path.normcase(os.path.abspath(path))
+    media_data = {
+        "unique_key": "local:" + unique_path,
+        "source_type": "local",
+        "file_name": filename,
+        "file_path": path,
+        "file_size": int(validation.get("size") or task.get("file_size") or os.path.getsize(path)),
+        "code_id": identification.get("code_id") or None,
+        "title": title,
+        "original_title": title,
+        "year": int(year_match.group(1)) if year_match else None,
+        "runtime": runtime,
+        "plot": str(metadata.get("description") or "").strip() or None,
+        "content_category": category,
+        "is_adult": 1 if category in ("jav", "english_adult", "indo") else 0,
+        "has_metadata": 1,
+        "metadata_source": "roxxy",
+        "poster_url": metadata.get("poster") or metadata.get("background") or None,
+        "genres": genres,
+        "has_subtitle": 0,
+        "subtitle_source": "none",
+    }
+    media_id = db.upsert_media_item(media_data)
+    return {"media_id": media_id, "unique_key": media_data["unique_key"],
+            "title": title, "category": category}
+
+
+def _roxxy_registration_worker() -> None:
+    """Serialized D3 worker: register identified downloads and run subtitle fallback."""
+    while True:
+        try:
+            task = db.claim_roxxy_registration_task()
+            if not task:
+                time.sleep(2.0)
+                continue
+            validation = task.get("validation") or {}
+            try:
+                registered = _register_roxxy_media(task)
+                d3 = {
+                    "status": "registered",
+                    "media_id": registered["media_id"],
+                    "unique_key": registered["unique_key"],
+                    "title": registered["title"],
+                    "category": registered["category"],
+                }
+                validation["d3_registration"] = d3
+                category = registered["category"]
+                subtitle_result = None
+                subtitle_note = "skipped_indonesian" if category == "indo" else "not_found"
+                if category != "indo":
+                    try:
+                        item = db.get_media_item(registered["media_id"])
+                        settings = db.get_settings()
+                        subtitle_result = subtitle_engine.fetch_subtitle_for_item(
+                            item or {}, torbox_api_key=settings.get("torbox_api_key") or ""
+                        )
+                        if subtitle_result and subtitle_result.get("subtitle_path"):
+                            db.upsert_media_subtitle(
+                                registered["media_id"],
+                                subtitle_result.get("subtitle_lang") or "en",
+                                subtitle_result["subtitle_path"],
+                                subtitle_result.get("subtitle_source") or "roxxy_fallback",
+                                is_embedded=bool(subtitle_result.get("is_embedded", False)),
+                                stream_index=subtitle_result.get("stream_index"),
+                                verified=True,
+                            )
+                            subtitle_note = "found"
+                    except Exception as sub_exc:
+                        # Subtitle failure must not roll back a valid Library registration.
+                        validation.setdefault("d3_warnings", []).append(
+                            "Subtitle processing failed: " + str(sub_exc)[:180]
+                        )
+                        subtitle_note = "error"
+                validation["d3_registration"]["subtitle_status"] = subtitle_note
+                db.update_roxxy_library_task(
+                    task["id"], "completed", int(validation.get("size") or task.get("file_size") or 0),
+                    validation, None
+                )
+                with _lock:
+                    jid = task.get("download_job_id")
+                    if jid in _jobs:
+                        _jobs[jid]["library_status"] = "completed"
+                        _jobs[jid]["library_message"] = (
+                            f"Library terdaftar (ID {registered['media_id']}); subtitle: {subtitle_note}."
+                        )
+            except Exception as exc:
+                db.update_roxxy_library_task(
+                    task["id"], "failed", int(validation.get("size") or task.get("file_size") or 0),
+                    validation, "D3 registration failed: " + str(exc)
+                )
+                with _lock:
+                    jid = task.get("download_job_id")
+                    if jid in _jobs:
+                        _jobs[jid]["library_status"] = "failed"
+                        _jobs[jid]["library_message"] = str(exc)[:250]
+        except Exception:
+            time.sleep(3.0)
+
+
+def _library_task_worker() -> None:
+    """One serialized worker: validate (D1), then identify/classify (D2)."""
+    while True:
+        try:
+            task = db.claim_roxxy_library_task()
+            if not task:
+                time.sleep(2.0)
+                continue
+            try:
+                result = _validate_completed_file(task["file_path"])
+                identified = _identify_roxxy_media(task, result)
+                db.update_roxxy_library_task(
+                    task["id"], identified["status"], identified["file_size"],
+                    identified["validation"],
+                    "Duplicate code already exists in Library" if identified["status"] == "duplicate" else None,
+                )
+                messages = {
+                    "identified": "File valid dan kategori berhasil diidentifikasi; siap untuk registrasi Library.",
+                    "duplicate": "Kode JAV sudah ada di Library; tidak boleh dibuat sebagai entri duplikat.",
+                    "needs_review": "File valid, tetapi kategori belum cukup meyakinkan; perlu pemeriksaan manual.",
+                }
+                with _lock:
+                    jid = task.get("download_job_id")
+                    if jid in _jobs:
+                        _jobs[jid]["library_status"] = identified["status"]
+                        _jobs[jid]["library_message"] = messages[identified["status"]]
+            except Exception as exc:
+                db.update_roxxy_library_task(task["id"], "failed", 0, {}, str(exc))
+                with _lock:
+                    jid = task.get("download_job_id")
+                    if jid in _jobs:
+                        _jobs[jid]["library_status"] = "failed"
+                        _jobs[jid]["library_message"] = str(exc)[:250]
+        except Exception:
+            time.sleep(3.0)
+
+
+def start_library_task_worker() -> None:
+    """Start exactly one persistent post-download worker per application process."""
+    global _library_worker_started
+    with _library_worker_lock:
+        if _library_worker_started:
+            return
+        db.recover_roxxy_library_tasks()
+        db.promote_roxxy_validated_tasks_for_identification()
+        thread = threading.Thread(target=_library_task_worker, name="roxxy-library-queue", daemon=True)
+        thread.start()
+        _library_worker_started = True
+        global _registration_worker_started
+        if not _registration_worker_started:
+            registration_thread = threading.Thread(
+                target=_roxxy_registration_worker, name="roxxy-library-registration", daemon=True
+            )
+            registration_thread.start()
+            _registration_worker_started = True
+
+
+def _run_job(job_id: str, engine: str, url: str, output_dir: str, filename: str) -> None:
+    with _workers:
+        _set(job_id, status="downloading", message="Downloader dimulai.")
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            target = os.path.join(output_dir, filename)
+            stem, ext = os.path.splitext(target)
+            n = 1
+            while os.path.exists(target):
+                target = f"{stem} ({n}){ext}"
+                n += 1
+            if engine == "yt-dlp":
+                exe = shutil.which("yt-dlp")
+                if not exe:
+                    raise RuntimeError("yt-dlp belum terpasang atau tidak ditemukan di PATH.")
+                template = os.path.splitext(target)[0] + ".%(ext)s"
+                cmd = [exe, "--newline", "--no-playlist", "--continue", "--part",
+                       "--progress-template", "download:%(progress._percent_str)s",
+                       "-o", template, url]
+            elif engine == "aria2c":
+                exe = shutil.which("aria2c")
+                if not exe:
+                    raise RuntimeError("aria2c belum terpasang atau tidak ditemukan di PATH.")
+                cmd = [exe, "--continue=true", "--allow-overwrite=false", "--auto-file-renaming=true",
+                       "--summary-interval=1", "--console-log-level=notice", "--dir", output_dir,
+                       "--out", os.path.basename(target), url]
+            else:
+                raise RuntimeError("Engine lokal tidak dapat ditentukan secara aman.")
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, encoding="utf-8", errors="replace",
+                                    bufsize=1, creationflags=creationflags)
+            with _lock:
+                _jobs[job_id]["pid"] = proc.pid
+            for line in proc.stdout or []:
+                line = line.strip()
+                pct = None
+                if engine == "yt-dlp":
+                    m = re.search(r"(\d+(?:\.\d+)?)%", line)
+                    if m:
+                        pct = float(m.group(1))
+                else:
+                    m = re.search(r"\((\d+(?:\.\d+)?)%\)", line)
+                    if m:
+                        pct = float(m.group(1))
+                if pct is not None:
+                    _set(job_id, progress=max(0.0, min(100.0, pct)))
+                # Keep only a short sanitized tail; never store URL/command.
+                if line and not line.startswith(("http://", "https://")):
+                    _set(job_id, message=line[:180])
+            code = proc.wait()
+            if code != 0:
+                raise RuntimeError(f"{engine} berhenti dengan exit code {code}.")
+            _set(job_id, status="completed", progress=100.0, message="Download selesai.", completed_at=datetime.now().isoformat(timespec="seconds"))
+            with _lock:
+                completed_job = dict(_jobs.get(job_id) or {})
+            final_path = _find_completed_file(
+                output_dir, filename, completed_job.get("engine"), float(completed_job.get("started_ts") or 0)
+            )
+            if final_path:
+                task_id = db.enqueue_roxxy_library_task(
+                    job_id, final_path,
+                    completed_job.get("meta_snapshot") or {},
+                    completed_job.get("stream_snapshot") or {},
+                )
+                _set(job_id, library_task_id=task_id, library_status="queued",
+                     message="Download selesai. Menunggu validasi & registrasi Library.")
+            else:
+                _set(job_id, library_status="failed",
+                     message="Download selesai, tetapi file hasil tidak ditemukan untuk validasi Library.")
+        except Exception as exc:
+            _set(job_id, status="failed", message=str(exc)[:250])
+        finally:
+            _set(job_id, pid=None)
+
+@localdl_bp.post("/api/roxxy/local/inspect")
+def api_local_inspect():
+    data = request.get_json(silent=True) or {}
+    stream = data.get("stream") or {}
+    try:
+        info = _inspect(stream.get("url") or "")
+        return jsonify({"ok": True, "inspection": {k:v for k,v in info.items() if k != "url"}})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:250]}), 400
+
+@localdl_bp.post("/api/roxxy/local/start")
+def api_local_start():
+    data = request.get_json(silent=True) or {}
+    stream = data.get("stream") or {}
+    try:
+        url = _validate_http_url(stream.get("url") or "")
+        info = _inspect(url)
+        if info["engine"] not in {"yt-dlp", "aria2c"}:
+            return jsonify({"ok": False, "error": "URL belum teridentifikasi sebagai media/file yang dapat diunduh."}), 400
+        outdir = _safe_download_dir(data.get("download_path") or DEFAULT_PATH)
+        supplied_name = info.get("filename")
+        if supplied_name:
+            filename = _safe_filename(supplied_name)
+        else:
+            ext = info.get("extension") or (".mp4" if info["engine"] == "yt-dlp" else ".bin")
+            filename = _fallback_name({**data, "name": stream.get("name"), "meta": data.get("meta")}, ext)
+        job_id = uuid.uuid4().hex[:12]
+        job = {"id": job_id, "title": str((data.get("meta") or {}).get("name") or stream.get("name") or filename),
+               "filename": filename, "engine": info["engine"], "status": "queued", "progress": 0.0,
+               "message": "Menunggu slot downloader.", "output_dir": outdir,
+               "created_at": datetime.now().isoformat(timespec="seconds"), "updated_at": datetime.now().isoformat(timespec="seconds"),
+               "completed_at": None, "pid": None, "attempts": 0,
+               # Kept in memory only for retry; never serialised to the UI.
+               "url": info["url"], "started_ts": time.time(),
+               "meta_snapshot": data.get("meta") or {},
+               "stream_snapshot": stream}
+        with _lock:
+            _jobs[job_id] = job
+        thread = threading.Thread(target=_run_job, args=(job_id, info["engine"], info["url"], outdir, filename), daemon=True)
+        thread.start()
+        return jsonify({"ok": True, "job": {k:v for k,v in job.items() if k not in {"output_dir","pid","url","started_ts"}}, "inspection": {k:v for k,v in info.items() if k not in {"url"}}})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)[:250]}), 400
+
+@localdl_bp.get("/api/roxxy/library-queue")
+def api_library_queue():
+    try:
+        tasks = db.list_roxxy_library_tasks(100)
+        for task in tasks:
+            file_path = task.get("file_path") or ""
+            task.pop("file_path", None)
+            task.pop("stream", None)
+            # Keep only the display metadata needed by the local UI.
+            meta = task.get("metadata") or {}
+            task["title"] = meta.get("name") or meta.get("title") or os.path.basename(file_path)
+            task["file_name"] = os.path.basename(file_path)
+            task["jav_code"] = meta.get("jav_code") or meta.get("code") or ""
+            validation = task.get("validation") or {}
+            task["identification"] = validation.get("d2_identification") or {}
+            task["registration"] = validation.get("d3_registration") or {}
+            task["d3_warnings"] = validation.get("d3_warnings") or []
+            task.pop("metadata", None)
+            task.pop("validation", None)
+        return jsonify({"ok": True, "tasks": tasks})
+    except Exception:
+        return jsonify({"ok": False, "error": "Library queue tidak dapat dibaca."}), 500
+
+
+@localdl_bp.get("/api/roxxy/local/queue")
+def api_local_queue():
+    with _lock:
+        jobs = [dict(j) for j in _jobs.values()]
+    jobs.sort(key=lambda j: j["created_at"], reverse=True)
+    for job in jobs:
+        job.pop("output_dir", None)
+        job.pop("pid", None)
+        job.pop("url", None)
+        job.pop("started_ts", None)
+        job.pop("meta_snapshot", None)
+        job.pop("stream_snapshot", None)
+    return jsonify({"ok": True, "jobs": jobs})
+
+@localdl_bp.post("/api/roxxy/local/retry/<job_id>")
+def api_local_retry(job_id: str):
+    with _lock:
+        old = dict(_jobs.get(job_id) or {})
+    if not old:
+        return jsonify({"ok": False, "error": "Job download tidak ditemukan; mulai ulang dari katalog."}), 404
+    if old.get("status") != "failed":
+        return jsonify({"ok": False, "error": "Hanya download gagal yang dapat dicoba ulang."}), 400
+    url = str(old.get("url") or "")
+    if not url:
+        return jsonify({"ok": False, "error": "URL sesi sebelumnya sudah tidak tersedia (aplikasi pernah dimulai ulang). Pilih ulang dari katalog."}), 409
+    attempts = int(old.get("attempts") or 0)
+    if attempts >= 3:
+        return jsonify({"ok": False, "error": "Batas 3x percobaan ulang tercapai untuk file ini."}), 409
+    try:
+        # Re-validate: the stored directory may have been tampered with or removed.
+        outdir = _safe_download_dir(old.get("output_dir"))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    with _lock:
+        job = _jobs[job_id]
+        job.update(
+            status="queued", progress=0.0, pid=None, completed_at=None,
+            message="Menunggu slot downloader (percobaan ulang).",
+            library_status=None, library_task_id=None, library_message=None,
+            attempts=attempts + 1, started_ts=time.time(),
+            updated_at=datetime.now().isoformat(timespec="seconds"),
+        )
+        snapshot = {k: v for k, v in job.items() if k not in {"output_dir", "pid", "url", "started_ts"}}
+    threading.Thread(
+        target=_run_job,
+        args=(job_id, old.get("engine"), url, outdir, old.get("filename")),
+        daemon=True,
+    ).start()
+    return jsonify({"ok": True, "job": snapshot})

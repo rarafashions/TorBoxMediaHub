@@ -1,4 +1,5 @@
 import hashlib
+import html as html_lib
 import json
 import os
 import platform
@@ -12,18 +13,25 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, quote_plus, urlparse
+from urllib.parse import quote, quote_plus, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file
 from requests.exceptions import RequestException, Timeout
+from werkzeug.exceptions import HTTPException
 
 import database_manager as db
+import classification_engine as class_eng
 import metadata_engine as meta_eng
 import subtitle_engine as sub_eng
+import dual_subtitle_engine as dual_subs
+import subtitle_quality_audit as subtitle_audit
+import platform_support as platform_env
+import indo_keyword_engine as indo_eng
+from roxxy_module import roxxy_bp
 
-APP_VERSION = "v1.1"
+APP_VERSION = "v1.3D3"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -31,6 +39,35 @@ app = Flask(
     template_folder=os.path.join(BASE_DIR, "templates"),
     static_folder=os.path.join(BASE_DIR, "static"),
 )
+app.register_blueprint(roxxy_bp)
+from roxxy_download_engine import localdl_bp
+app.register_blueprint(localdl_bp)
+
+
+_MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+
+
+@app.before_request
+def _guard_cross_site_writes():
+    """Reject browser-initiated writes whose Origin/Referer is not this app.
+
+    The server has no login flow, so a page on any site could otherwise POST to
+    127.0.0.1:5050 with the user's browser. Requests without Origin/Referer
+    (curl, scripts, the desktop launcher) are left alone on purpose.
+    """
+    if request.method not in _MUTATING_METHODS:
+        return None
+    site = request.headers.get("Sec-Fetch-Site")
+    if site and site not in {"same-origin", "none"}:
+        return jsonify({"ok": False, "error": "Cross-site request blocked."}), 403
+    source = request.headers.get("Origin") or request.headers.get("Referer") or ""
+    if not source:
+        return None
+    expected = urlparse(request.url_root).netloc.lower()
+    if urlparse(source).netloc.lower() != expected:
+        return jsonify({"ok": False, "error": "Cross-site request blocked."}), 403
+    return None
 
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".m2ts")
 SUBTITLE_EXTENSIONS = (".srt", ".ass", ".ssa", ".vtt", ".sub")
@@ -40,6 +77,31 @@ M3U_FRESH_TTL_SECONDS = 1800  # 30 minutes cache for freshly generated playlist 
 DISCOVER_CACHE_TTL = 600  # 10 minutes cache for Discovery feeds
 _DISCOVER_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 _DISCOVER_CACHE_LOCK = threading.Lock()
+
+# TorBox WebDL rolling-window guard: 60 API submissions per hour per app process.
+_WEB_DL_WINDOW_SECONDS = 3600
+_WEB_DL_MAX_REQUESTS = 60
+_WEB_DL_REQUEST_TIMES: List[float] = []
+_WEB_DL_LOCK = threading.Lock()
+
+def _webdl_rate_state(now: Optional[float] = None) -> Tuple[int, int]:
+    current = now if now is not None else time.time()
+    with _WEB_DL_LOCK:
+        cutoff = current - _WEB_DL_WINDOW_SECONDS
+        while _WEB_DL_REQUEST_TIMES and _WEB_DL_REQUEST_TIMES[0] <= cutoff:
+            _WEB_DL_REQUEST_TIMES.pop(0)
+        used = len(_WEB_DL_REQUEST_TIMES)
+        wait = max(0, int(_WEB_DL_WINDOW_SECONDS - (current - _WEB_DL_REQUEST_TIMES[0]))) if used >= _WEB_DL_MAX_REQUESTS else 0
+        return used, wait
+
+def _webdl_record_request(now: Optional[float] = None) -> None:
+    current = now if now is not None else time.time()
+    with _WEB_DL_LOCK:
+        cutoff = current - _WEB_DL_WINDOW_SECONDS
+        while _WEB_DL_REQUEST_TIMES and _WEB_DL_REQUEST_TIMES[0] <= cutoff:
+            _WEB_DL_REQUEST_TIMES.pop(0)
+        _WEB_DL_REQUEST_TIMES.append(current)
+
 
 MISSAV_DOMAINS = [
     "https://missav.ws",
@@ -313,6 +375,284 @@ def _scrape_javdatabase_multi_page(feed: str = "trending", query: str = "", limi
     return results
 
 
+def fetch_eporner_videos(query: str = "", feed: str = "trending", limit: int = 50) -> List[Dict[str, Any]]:
+    """Fetch public Eporner catalogue metadata through its documented API v2.
+
+    This adapter intentionally returns page URLs only; it does not scrape or
+    manufacture direct media URLs.
+    """
+    safe_limit = min(max(int(limit or 50), 1), 300)
+    order_map = {
+        "trending": "top-weekly",
+        "popular": "most-popular",
+        "top_rated": "top-rated",
+        "search": "latest",
+    }
+    params = {
+        "query": (query or "").strip() or "all",
+        "per_page": safe_limit,
+        "page": 1,
+        "thumbsize": "big",
+        "order": order_map.get(feed, "latest"),
+        "gay": 0,
+        "lq": 0,
+        "format": "json",
+    }
+    try:
+        response = meta_eng.HTTP_SESSION.get(
+            "https://www.eporner.com/api/v2/video/search/",
+            params=params,
+            headers={"User-Agent": f"TorBoxMediaHub/{APP_VERSION}", "Accept": "application/json"},
+            timeout=(8, 20),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (RequestException, ValueError) as exc:
+        print(f"[EPORNER] API request failed: {exc}")
+        return []
+
+    rows = payload.get("videos") if isinstance(payload, dict) else None
+    if not isinstance(rows, list) and isinstance(payload, dict):
+        rows = payload.get("data") or payload.get("results")
+    if not isinstance(rows, list):
+        print("[EPORNER] Unexpected API response schema")
+        return []
+
+    results: List[Dict[str, Any]] = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        video_id = str(row.get("id") or "").strip()
+        title = re.sub(r"\s+", " ", str(row.get("title") or "")).strip()
+        page_url = str(row.get("url") or row.get("link") or "").strip()
+        # Only accept canonical Eporner page URLs from the provider response.
+        parsed = urlparse(page_url) if page_url else None
+        if not video_id or not title or not parsed or parsed.scheme != "https" or (parsed.hostname or "").lower() != "eporner.com" and not (parsed.hostname or "").lower().endswith(".eporner.com"):
+            continue
+        if video_id in seen:
+            continue
+        seen.add(video_id)
+        thumb = row.get("default_thumb") or row.get("thumb") or row.get("image") or ""
+        if isinstance(thumb, dict):
+            thumb = thumb.get("src") or thumb.get("url") or ""
+        if not thumb:
+            thumbs = row.get("thumbs") or []
+            if isinstance(thumbs, list) and thumbs:
+                first = next((x for x in thumbs if isinstance(x, dict) and x.get("src")), {})
+                thumb = first.get("src") or ""
+        try:
+            rating = float(row.get("rate") or row.get("rating") or 0)
+        except (TypeError, ValueError):
+            rating = 0.0
+        added = str(row.get("added") or row.get("uploaded") or "")
+        year_val = int(added[:4]) if len(added) >= 4 and added[:4].isdigit() else None
+        views = row.get("views")
+        duration = row.get("length") or row.get("duration") or ""
+        overview_bits = []
+        if duration:
+            overview_bits.append(f"Duration: {duration}")
+        if views not in (None, ""):
+            overview_bits.append(f"Views: {views}")
+        results.append({
+            "id": f"eporner:{video_id}",
+            "provider_id": video_id,
+            "source_provider": "Eporner",
+            "original_url": page_url,
+            "title": title,
+            "year": year_val,
+            "rating": round(rating, 1),
+            "poster_url": str(thumb or ""),
+            "overview": " • ".join(overview_bits) or "Source: Eporner",
+            "category": "english_adult",
+            "search_query": title,
+            "duration": str(duration),
+            "views": views,
+        })
+        if len(results) >= safe_limit:
+            break
+    return results
+
+
+
+
+
+def _adult_catalog_search_url(home_url: str, soup: BeautifulSoup, query: str) -> str:
+    """Build a search URL from the site's own public search form when available."""
+    form = soup.find("form", attrs={"role": "search"}) or soup.find("form")
+    if form:
+        action = urljoin(home_url, str(form.get("action") or home_url))
+        params = {}
+        for field in form.find_all(["input", "select"]):
+            name = str(field.get("name") or "").strip()
+            if not name or field.get("type") in ("submit", "button", "hidden", "checkbox", "radio"):
+                continue
+            if field.name == "select":
+                option = field.find("option", selected=True) or field.find("option")
+                if option and option.get("value"):
+                    params[name] = option.get("value")
+            else:
+                params[name] = query if (field.get("type") in (None, "search", "text") or "search" in name.lower() or "query" in name.lower()) else str(field.get("value") or "")
+        search_key = next((k for k in params if any(t in k.lower() for t in ("search", "query", "q"))), None)
+        if search_key:
+            params[search_key] = query
+            from requests import Request
+            return Request("GET", action, params=params).prepare().url
+    # XHamster's public search form is GET /search.
+    parsed = urlparse(home_url)
+    if (parsed.hostname or "").lower().endswith("xhamster.com"):
+        from requests import Request
+        return Request("GET", urljoin(home_url, "/search"), params={"query": query}).prepare().url
+    return ""
+
+
+def _parse_public_adult_catalog(html_text: str, base_url: str, provider: str, limit: int) -> List[Dict[str, Any]]:
+    """Extract catalogue cards only. Never inspect player configs or media URLs."""
+    soup = BeautifulSoup(html_text or "", "html.parser")
+    host = (urlparse(base_url).hostname or "").lower()
+    allowed_host = "xhamster.com"
+    if not (host == allowed_host or host.endswith("." + allowed_host)):
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    seen = set()
+
+    def add_item(page_url: str, title: str, poster: str = "", duration: str = "", views: Any = None, rating: Any = None, description: str = "") -> None:
+        parsed = urlparse(page_url)
+        item_host = (parsed.hostname or "").lower()
+        if parsed.scheme != "https" or not (item_host == allowed_host or item_host.endswith("." + allowed_host)):
+            return
+        if provider == "XHamster" and not re.search(r"/videos?/[^/?#]+", parsed.path, re.I):
+            return
+        canonical = f"https://{allowed_host}{parsed.path.rstrip('/') or '/'}"
+        if canonical in seen:
+            return
+        title = re.sub(r"\s+", " ", html_lib.unescape(str(title or ""))).strip()
+        if len(title) < 4:
+            return
+        seen.add(canonical)
+        poster = urljoin(base_url, str(poster or "")) if poster else ""
+        if poster and urlparse(poster).scheme not in ("http", "https"):
+            poster = ""
+        try:
+            rating_num = float(str(rating).replace("%", "").replace(",", "")) if rating not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            rating_num = 0.0
+        try:
+            if views not in (None, ""):
+                raw_views = str(views).strip().upper().replace(",", "")
+                multiplier = 1_000_000_000 if raw_views.endswith("B") else 1_000_000 if raw_views.endswith("M") else 1_000 if raw_views.endswith("K") else 1
+                numeric = re.sub(r"[^0-9.]", "", raw_views)
+                views_num = int(float(numeric) * multiplier) if numeric else 0
+            else:
+                views_num = 0
+        except (TypeError, ValueError):
+            views_num = 0
+        slug_or_id = parsed.path.rstrip("/").split("/")[-1]
+        rows.append({
+            "id": f"{provider.lower()}:{slug_or_id}",
+            "provider_id": slug_or_id,
+            "source_provider": provider,
+            "original_url": canonical,
+            "title": title,
+            "year": None,
+            "rating": round(rating_num, 1),
+            "poster_url": poster,
+            "overview": (re.sub(r"\s+", " ", str(description or "")).strip()[:240] or f"Source: {provider}"),
+            "category": "english_adult",
+            "search_query": title,
+            "duration": str(duration or ""),
+            "views": views,
+            "_views_sort": views_num,
+        })
+
+    # Structured VideoObject data is metadata, not player/stream extraction.
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            payload = json.loads(script.string or script.get_text() or "")
+        except (ValueError, TypeError):
+            continue
+        objects = payload if isinstance(payload, list) else [payload]
+        for obj in objects:
+            if isinstance(obj, dict) and isinstance(obj.get("@graph"), list):
+                objects.extend(x for x in obj["@graph"] if isinstance(x, dict))
+        for obj in objects:
+            if not isinstance(obj, dict) or str(obj.get("@type") or "").lower() not in ("videoobject", "video"):
+                continue
+            image = obj.get("thumbnailUrl") or obj.get("image") or ""
+            if isinstance(image, list): image = image[0] if image else ""
+            add_item(urljoin(base_url, str(obj.get("url") or obj.get("embedUrl") or "")), obj.get("name") or obj.get("headline") or "", image, obj.get("duration") or "", obj.get("interactionStatistic"), obj.get("aggregateRating", {}).get("ratingValue") if isinstance(obj.get("aggregateRating"), dict) else None, obj.get("description") or "")
+
+    # Catalogue links and their nearest card container; intentionally ignore video/embed/media URLs.
+    link_pattern = r"/videos?/[^/?#]+"
+    for anchor in soup.find_all("a", href=True):
+        href = str(anchor.get("href") or "")
+        if not re.search(link_pattern, href, re.I):
+            continue
+        page_url = urljoin(base_url, href)
+        title = anchor.get("title") or anchor.get("aria-label") or anchor.get_text(" ", strip=True)
+        card = anchor
+        for _ in range(4):
+            if not getattr(card, "parent", None): break
+            card = card.parent
+            if card.find("img") or card.get("class"):
+                break
+        img = card.find("img") if hasattr(card, "find") else None
+        poster = ""
+        if img:
+            poster = img.get("data-src") or img.get("data-original") or img.get("src") or ""
+            if not title or len(str(title).strip()) < 4:
+                title = img.get("alt") or title
+        card_text = card.get_text(" ", strip=True) if hasattr(card, "get_text") else ""
+        duration_match = re.search(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", card_text)
+        views_match = re.search(r"([\d,.]+\s*[KMB]?)\s*views?", card_text, re.I)
+        rating_match = re.search(r"(\d{1,3}(?:\.\d+)?)\s*%", card_text)
+        add_item(page_url, title, poster, duration_match.group(0) if duration_match else "", views_match.group(1) if views_match else None, rating_match.group(1) if rating_match else None)
+        if len(rows) >= limit:
+            break
+    return rows[:limit]
+
+
+def fetch_xhamster_videos(query: str = "", feed: str = "trending", limit: int = 50) -> List[Dict[str, Any]]:
+    """Read public XHamster catalogue cards; no embed or direct-media extraction."""
+    return _fetch_public_adult_site("XHamster", query, feed, limit)
+
+
+def _fetch_public_adult_site(provider: str, query: str, feed: str, limit: int) -> List[Dict[str, Any]]:
+    safe_limit = min(max(int(limit or 50), 1), 100)
+    domain = "https://xhamster.com/"
+    headers = {**JAV_SCRAPE_HEADERS, "Accept": "text/html,application/xhtml+xml", "Referer": domain}
+    try:
+        home = meta_eng.HTTP_SESSION.get(domain, headers=headers, timeout=(8, 18), allow_redirects=True)
+        home.raise_for_status()
+        final_home = home.url
+        if (urlparse(final_home).hostname or "").lower().split(":")[0] not in ("xhamster.com", "www.xhamster.com"):
+            return []
+        target_url = final_home
+        if query:
+            target_url = _adult_catalog_search_url(final_home, BeautifulSoup(home.text, "html.parser"), query)
+            if not target_url:
+                print(f"[{provider.upper()}] Search form not detected; refusing to guess search URL")
+                return []
+        response = meta_eng.HTTP_SESSION.get(target_url, headers=headers, timeout=(8, 20), allow_redirects=True)
+        response.raise_for_status()
+        final_host = (urlparse(response.url).hostname or "").lower()
+        allowed = "xhamster.com"
+        if not (final_host == allowed or final_host.endswith("." + allowed)):
+            return []
+        rows = _parse_public_adult_catalog(response.text, response.url, provider, safe_limit)
+        if feed == "popular":
+            rows.sort(key=lambda x: x.get("_views_sort", 0), reverse=True)
+        elif feed == "top_rated":
+            rows.sort(key=lambda x: x.get("rating", 0), reverse=True)
+        for item in rows:
+            item.pop("_views_sort", None)
+        return rows[:safe_limit]
+    except (RequestException, ValueError) as exc:
+        print(f"[{provider.upper()}] Public catalogue request failed: {exc}")
+        return []
+
+
 def fetch_tpdb_scenes(api_key: str, query: str = "", feed: str = "trending", limit: int = 50) -> List[Dict[str, Any]]:
     """
     Mengambil data scene dari ThePornDB (TPDB) menggunakan pagination per_page=25,
@@ -340,11 +680,15 @@ def fetch_tpdb_scenes(api_key: str, query: str = "", feed: str = "trending", lim
         if query:
             params["q"] = query
         elif feed == "popular":
-            params["orderBy"] = "views"
+            # ThePornDB SearchOrderEnum supports most_relevant, not "views".
+            params["orderBy"] = "most_relevant"
         elif feed == "top_rated":
-            params["orderBy"] = "rating"
+            # No server-side rating sort exists in SearchOrderEnum.
+            # Fetch a valid catalog page and sort the collected results locally below.
+            params["orderBy"] = "recently_released"
         else:
-            params["orderBy"] = "date"
+            # Valid ThePornDB enum value; "date" is not supported.
+            params["orderBy"] = "recently_released"
 
         data = None
         for attempt in range(2):
@@ -396,6 +740,13 @@ def fetch_tpdb_scenes(api_key: str, query: str = "", feed: str = "trending", lim
 
         if len(items) < params["per_page"]:
             break
+
+    if not query and feed == "top_rated":
+        # Page-local ranking only; ThePornDB does not expose a global rating sort.
+        results.sort(
+            key=lambda item: float(item.get("rating") or 0),
+            reverse=True,
+        )
 
     return results[:limit]
 
@@ -569,6 +920,12 @@ class BackgroundTaskManager:
 
 TASK_MGR = BackgroundTaskManager()
 
+# Phase 7.2.1.1: in-memory results for the latest visible-library audit.
+_SUBTITLE_AUDIT_BATCH_LOCK = threading.Lock()
+_SUBTITLE_AUDIT_BATCH_RESULTS: List[Dict[str, Any]] = []
+_SUBTITLE_AUDIT_BATCH_SUMMARY: Dict[str, Any] = {}
+
+
 
 def delete_media_physical(
     media_id: int,
@@ -666,6 +1023,13 @@ def delete_media_physical(
                             json={"usenet_id": int(torbox_item_id) if torbox_item_id.isdigit() else torbox_item_id, "operation": "delete"},
                             timeout=15,
                         )
+                    elif torbox_kind == "webdl":
+                        resp = meta_eng.HTTP_SESSION.post(
+                            f"{TORBOX_API_BASE}/webdl/controlwebdownload",
+                            headers=headers,
+                            json={"webdl_id": int(torbox_item_id) if torbox_item_id.isdigit() else torbox_item_id, "operation": "delete"},
+                            timeout=15,
+                        )
                     else:
                         resp = meta_eng.HTTP_SESSION.post(
                             f"{TORBOX_API_BASE}/torrents/controltorrent",
@@ -709,6 +1073,7 @@ class TorboxDownloadMonitor:
         season: int = 1,
         replace_media_id: Optional[int] = None,
         delete_remote_on_replace: bool = True,
+        poster_url: str = "",
     ) -> None:
         if not item_id:
             return
@@ -721,6 +1086,7 @@ class TorboxDownloadMonitor:
                 "title": title or f"{kind} #{item_id}",
                 "series_title": series_title,
                 "category": category,
+                "poster_url": poster_url or "",
                 "season": season,
                 "replace_media_id": int(replace_media_id) if replace_media_id else None,
                 "delete_remote_on_replace": bool(delete_remote_on_replace),
@@ -729,6 +1095,15 @@ class TorboxDownloadMonitor:
                 "finished": False,
                 "added_at": time.time(),
             }
+            with _TORBOX_IMPORT_HINTS_LOCK:
+                _TORBOX_IMPORT_HINTS[key] = {
+                    "content_category": category if category in db.VALID_CATEGORIES else "uncategorized",
+                    "poster_url": poster_url or "",
+                }
+            try:
+                db.save_torbox_import_hint(kind, str(item_id), category, poster_url)
+            except Exception as hint_exc:
+                print(f"[TorBoxImportHint] Persistence warning: {hint_exc}")
             if not self._thread_started:
                 self._thread_started = True
                 threading.Thread(target=self._loop, daemon=True).start()
@@ -763,7 +1138,7 @@ class TorboxDownloadMonitor:
             headers = {"Authorization": f"Bearer {api_key}"}
             torbox_state: Dict[str, Dict[str, Any]] = {}
 
-            for kind, ep in (("torrent", "torrents/mylist"), ("usenet", "usenet/mylist")):
+            for kind, ep in (("torrent", "torrents/mylist"), ("usenet", "usenet/mylist"), ("webdl", "webdl/mylist")):
                 if not any(v["kind"] == kind for v in snapshot.values()):
                     continue
                 try:
@@ -813,6 +1188,7 @@ class TorboxDownloadMonitor:
                     self.syncing_items.extend(completed_entries)
 
             if completed_entries:
+                imported_successfully = False
                 try:
                     for _ in range(60):
                         if not TASK_MGR.running:
@@ -823,37 +1199,55 @@ class TorboxDownloadMonitor:
                         "auto_import_torbox",
                         f"Auto-importing {len(completed_entries)} completed TorBox download(s)...",
                     )
-                    if started:
-                        try:
-                            _sync_torbox_cloud_worker(auto_enrich=True)
-                        except Exception as exc:
-                            TASK_MGR.finish(f"Auto-import error: {exc}")
-                    else:
-                        _sync_torbox_cloud_worker(auto_enrich=True)
+                    if not started:
+                        # Never bypass the shared task lock. Re-queue completed items
+                        # so they can be imported after the foreground task finishes.
+                        with self._lock:
+                            for entry in completed_entries:
+                                self.watched_items[entry["key"]] = entry
+                        continue
 
-                    for entry in completed_entries:
-                        rep_id = entry.get("replace_media_id")
-                        if rep_id:
-                            try:
-                                delete_media_physical(
-                                    int(rep_id),
-                                    delete_local=True,
-                                    delete_remote=bool(entry.get("delete_remote_on_replace", True)),
-                                )
-                            except Exception as del_exc:
-                                print(f"[TorboxDownloadMonitor] Replace delete error for #{rep_id}: {del_exc}")
+                    try:
+                        _sync_torbox_cloud_worker(auto_enrich=True)
+                        imported_successfully = True
+                    except Exception as exc:
+                        TASK_MGR.finish(f"Auto-import error: {exc}")
+
+                    if imported_successfully:
+                        for entry in completed_entries:
+                            rep_id = entry.get("replace_media_id")
+                            if rep_id:
+                                try:
+                                    delete_media_physical(
+                                        int(rep_id),
+                                        delete_local=True,
+                                        delete_remote=bool(entry.get("delete_remote_on_replace", True)),
+                                    )
+                                except Exception as del_exc:
+                                    print(f"[TorboxDownloadMonitor] Replace delete error for #{rep_id}: {del_exc}")
                 except Exception as exc:
                     print(f"[TorboxDownloadMonitor] Sync error: {exc}")
                 finally:
-                    with self._lock:
-                        done_keys = {e["key"] for e in completed_entries}
-                        self.syncing_items = [
-                            s for s in self.syncing_items if s["key"] not in done_keys
-                        ]
-                        self.recently_imported.extend(completed_entries)
+                    if imported_successfully:
+                        with self._lock:
+                            done_keys = {e["key"] for e in completed_entries}
+                            self.syncing_items = [
+                                s for s in self.syncing_items if s["key"] not in done_keys
+                            ]
+                            self.recently_imported.extend(completed_entries)
+                    else:
+                        with self._lock:
+                            done_keys = {e["key"] for e in completed_entries}
+                            self.syncing_items = [
+                                s for s in self.syncing_items if s["key"] not in done_keys
+                            ]
+
 
 
 TORBOX_MONITOR = TorboxDownloadMonitor()
+# Phase 8.4.0: preserve Discovery category and poster across WebDL completion/import.
+_TORBOX_IMPORT_HINTS: Dict[str, Dict[str, Any]] = {}
+_TORBOX_IMPORT_HINTS_LOCK = threading.Lock()
 
 
 def _is_video_file(filename: str) -> bool:
@@ -892,7 +1286,9 @@ def _get_environment_info() -> Dict[str, Any]:
         "host": host_bind,
         "port": port_bind,
         "lan_url": f"http://{lan_ip}:{port_bind}",
-        "ffprobe_available": bool(shutil.which("ffprobe")),
+        "ffprobe_available": bool(platform_env.resolve_executable("ffprobe")),
+        "ffmpeg_available": bool(platform_env.resolve_executable("ffmpeg")),
+        "mpv_available": bool(platform_env.resolve_executable("mpv")),
     }
 
 
@@ -994,12 +1390,18 @@ def detect_installed_players() -> List[Dict[str, str]]:
             if w:
                 _add(ptype, label, w)
 
+    # Generic resolver catches PATH, Homebrew, Scoop, Snap and Flatpak locations.
+    for ptype in ("mpv", "vlc"):
+        resolved = platform_env.resolve_executable(ptype)
+        if resolved:
+            _add(ptype, f"{ptype.upper()} (Auto-detected)", resolved)
+
     return found
 
 
 def _request_torbox_stream_url(api_key: str, kind: str, item_id: str, file_id: str) -> Optional[str]:
-    endpoint = "torrents" if kind == "torrent" else "usenet"
-    id_param = "torrent_id" if kind == "torrent" else "usenet_id"
+    endpoint_map = {"torrent": ("torrents", "torrent_id"), "usenet": ("usenet", "usenet_id"), "webdl": ("webdl", "web_id")}
+    endpoint, id_param = endpoint_map.get(str(kind or "torrent").lower(), ("torrents", "torrent_id"))
     resolved_file_id = str(file_id).strip() if file_id is not None and str(file_id).strip() != "" else "0"
     try:
         resp = meta_eng.HTTP_SESSION.get(
@@ -1045,6 +1447,7 @@ def _attach_cloud_stream_for_probe(item: Dict[str, Any], settings: Dict[str, str
 
 
 def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
+    """Import completed video files from TorBox Torrents, Usenet and Web Downloads."""
     settings = db.get_settings()
     api_key = (settings.get("torbox_api_key") or "").strip()
     if not api_key:
@@ -1053,50 +1456,124 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
 
     headers = {"Authorization": f"Bearer {api_key}"}
     discovered: List[Dict[str, Any]] = []
+    source_counts = {"torrent": 0, "usenet": 0, "webdl": 0}
+    errors: List[str] = []
 
-    for kind, ep in (("torrent", "torrents/mylist"), ("usenet", "usenet/mylist")):
-        TASK_MGR.update(message=f"Fetching {kind} list from TorBox Cloud...")
-        try:
-            resp = meta_eng.HTTP_SESSION.get(
-                f"{TORBOX_API_BASE}/{ep}",
-                headers=headers,
-                params={"bypass_cache": "true"},
-                timeout=20,
+    # TorBox mylist endpoints support offset/limit. Fetch every page instead of
+    # silently relying on the default first page (1000 records).
+    sources = (
+        ("torrent", "torrents/mylist"),
+        ("usenet", "usenet/mylist"),
+        ("webdl", "webdl/mylist"),
+    )
+    page_size = 1000
+    max_pages = 100
+
+    for kind, ep in sources:
+        offset = 0
+        page_num = 0
+        while page_num < max_pages:
+            page_num += 1
+            TASK_MGR.update(
+                message=f"Fetching {kind} list from TorBox Cloud (page {page_num})..."
             )
-            if resp.status_code != 200:
-                TASK_MGR.update(log_line=f"Warning {kind}: HTTP {resp.status_code}")
-                continue
-            data_list = resp.json().get("data") or []
-            if isinstance(data_list, dict):
-                data_list = [data_list]
-            for parent in data_list:
-                if not parent.get("download_finished", True) and parent.get("download_present") is False:
-                    continue
-                raw_pid = parent.get("id")
-                pid = str(raw_pid) if raw_pid is not None else ""
-                parent_title = (parent.get("name") or "").strip()
-                for fobj in (parent.get("files") or []):
-                    raw_name = fobj.get("short_name") or os.path.basename(fobj.get("name") or "")
-                    if not raw_name or not _is_video_file(raw_name):
+            try:
+                resp = meta_eng.HTTP_SESSION.get(
+                    f"{TORBOX_API_BASE}/{ep}",
+                    headers=headers,
+                    params={"bypass_cache": "true", "offset": offset, "limit": page_size},
+                    timeout=(8, 30),
+                )
+                if resp.status_code != 200:
+                    detail = ""
+                    try:
+                        payload_err = resp.json()
+                        detail = str(payload_err.get("detail") or payload_err.get("error") or "")
+                    except Exception:
+                        detail = (resp.text or "")[:180]
+                    errors.append(f"{kind}: HTTP {resp.status_code} {detail}".strip())
+                    TASK_MGR.update(log_line=f"Warning {kind}: HTTP {resp.status_code} {detail}".strip())
+                    break
+
+                payload = resp.json()
+                data_list = payload.get("data") if isinstance(payload, dict) else []
+                if isinstance(data_list, dict):
+                    data_list = [data_list]
+                if not isinstance(data_list, list):
+                    errors.append(f"{kind}: unexpected response data format")
+                    TASK_MGR.update(log_line=f"Warning {kind}: unexpected response data format")
+                    break
+
+                for parent in data_list:
+                    if not isinstance(parent, dict):
                         continue
-                    raw_fid = fobj.get("id")
-                    fid = str(raw_fid) if raw_fid is not None else "0"
-                    discovered.append(
-                        {
+                    # Only import files TorBox reports as present and finished.
+                    # Missing flags are tolerated for older/alternate response shapes.
+                    if parent.get("download_present") is False:
+                        continue
+                    if parent.get("download_finished") is False:
+                        continue
+
+                    raw_pid = parent.get("id") or parent.get("web_id") or parent.get("webdl_id")
+                    if raw_pid is None:
+                        continue
+                    pid = str(raw_pid)
+                    parent_title = (parent.get("name") or parent.get("title") or "").strip()
+
+                    files_list = parent.get("files") or []
+                    # Some WebDL responses expose a single file at the top level.
+                    if not files_list and (parent.get("short_name") or parent.get("name")):
+                        files_list = [parent]
+
+                    for fobj in files_list:
+                        if not isinstance(fobj, dict):
+                            continue
+                        raw_name = (
+                            fobj.get("short_name")
+                            or os.path.basename(fobj.get("name") or fobj.get("filename") or "")
+                        )
+                        if not raw_name or not _is_video_file(raw_name):
+                            continue
+                        raw_fid = fobj.get("id")
+                        fid = str(raw_fid) if raw_fid is not None else "0"
+                        try:
+                            fsize = int(fobj.get("size") or fobj.get("size_bytes") or 0)
+                        except (TypeError, ValueError):
+                            fsize = 0
+
+                        with _TORBOX_IMPORT_HINTS_LOCK:
+                            import_hint = dict(_TORBOX_IMPORT_HINTS.get(f"{kind}:{pid}") or {})
+                        if not import_hint:
+                            try:
+                                import_hint = db.get_torbox_import_hint(kind, pid)
+                            except Exception:
+                                import_hint = {}
+                        discovered.append({
                             "kind": kind,
                             "item_id": pid,
                             "file_id": fid,
+                            "content_category": import_hint.get("content_category", "uncategorized"),
+                            "poster_url": import_hint.get("poster_url", ""),
                             "parent_name": parent_title,
                             "file_name": raw_name,
-                            "file_size": int(fobj.get("size") or 0),
-                        }
-                    )
-        except Exception as exc:
-            TASK_MGR.update(log_line=f"Connection error ({kind}): {exc}")
+                            "file_size": fsize,
+                        })
+                        source_counts[kind] += 1
 
-    TASK_MGR.update(total=len(discovered), current=0, message=f"Saving {len(discovered)} items to database...")
+                if len(data_list) < page_size:
+                    break
+                offset += page_size
+            except Exception as exc:
+                errors.append(f"{kind}: {exc}")
+                TASK_MGR.update(log_line=f"Connection error ({kind}): {exc}")
+                break
+
+    TASK_MGR.update(
+        total=len(discovered),
+        current=0,
+        message=f"Saving {len(discovered)} completed video files to database..."
+    )
     new_or_updated_ids: List[int] = []
-
     with db.get_connection() as conn:
         for idx, entry in enumerate(discovered, start=1):
             ukey = f"torbox:{entry['kind']}:{entry['item_id']}:{entry['file_id']}"
@@ -1111,6 +1588,8 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
                     "file_name": entry["file_name"],
                     "file_size": entry["file_size"],
                     "title": entry["file_name"],
+                    "content_category": entry.get("content_category") or "uncategorized",
+                    "poster_url": entry.get("poster_url") or None,
                 },
                 conn=conn,
             )
@@ -1120,9 +1599,19 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
         conn.commit()
 
     if auto_enrich and new_or_updated_ids:
-        _enrich_ids_internal(new_or_updated_ids, force=False)
+        non_indo_ids = [mid for mid, entry in zip(new_or_updated_ids, discovered)
+                        if (entry.get("content_category") or "") != "indo"]
+        if non_indo_ids:
+            _enrich_ids_internal(non_indo_ids, force=False)
 
-    TASK_MGR.finish(f"TorBox sync completed: {len(discovered)} files processed.")
+    summary = (
+        f"TorBox sync completed: {len(discovered)} video files processed "
+        f"(Torrent {source_counts['torrent']}, Usenet {source_counts['usenet']}, "
+        f"WebDL {source_counts['webdl']})."
+    )
+    if errors:
+        summary += " Warnings: " + " | ".join(errors[:3])
+    TASK_MGR.finish(summary)
 
 
 def _scan_local_folders_worker(auto_enrich: bool = False) -> None:
@@ -1188,6 +1677,50 @@ def _scan_local_folders_worker(auto_enrich: bool = False) -> None:
     TASK_MGR.finish(f"Local scan completed: {len(found_files)} files processed.")
 
 
+def _classify_pending_worker() -> None:
+    """Classify only pending + uncategorized records; legacy categorized media are untouched."""
+    try:
+        candidates = db.get_pending_classification_candidates(limit=5000)
+        total = len(candidates)
+        TASK_MGR.update(total=total, current=0, message=f"Classifying {total} new/unclassified items...")
+        classified_count = 0
+        review_count = 0
+        skipped_count = 0
+        for idx, item in enumerate(candidates, start=1):
+            try:
+                result = class_eng.classify_media(
+                    item.get("file_name") or "",
+                    item.get("parent_name") or "",
+                    normalized_title=item.get("normalized_title") or None,
+                )
+                saved = db.save_classification_result(
+                    int(item["id"]), result,
+                    changed_by="classifier",
+                    note="Phase 3 batch classification",
+                )
+                if saved:
+                    if result.get("classification_status") == "classified":
+                        classified_count += 1
+                    else:
+                        review_count += 1
+                else:
+                    skipped_count += 1
+            except PermissionError:
+                skipped_count += 1
+            except Exception as exc:
+                skipped_count += 1
+                TASK_MGR.update(log_line=f"Classification error for media #{item.get('id')}: {exc}")
+            TASK_MGR.update(
+                current=idx,
+                message=f"Classifying ({idx}/{total}) — classified {classified_count}, review {review_count}...",
+            )
+        TASK_MGR.finish(
+            f"Classification completed: {classified_count} classified, {review_count} needs review, {skipped_count} skipped."
+        )
+    except Exception as exc:
+        TASK_MGR.finish(f"Classification failed: {exc}")
+
+
 def _enrich_ids_internal(media_ids: List[int], force: bool = False) -> int:
     settings = db.get_settings()
     items_to_process: List[Dict[str, Any]] = []
@@ -1200,7 +1733,7 @@ def _enrich_ids_internal(media_ids: List[int], force: bool = False) -> int:
             not force
             and item.get("has_metadata") == 1
             and item.get("content_category") != "uncategorized"
-            and item.get("has_poster")
+            and (item.get("has_poster") or int(item.get("poster_is_manual") or 0))
             and int(item.get("runtime") or 0) > 0
         ):
             continue
@@ -1231,11 +1764,26 @@ def _enrich_ids_internal(media_ids: List[int], force: bool = False) -> int:
                 enriched["unique_key"] = it["unique_key"]
                 enriched["file_name"] = it["file_name"]
                 enriched["_force_meta"] = True
-                db.upsert_media_item(enriched)
+                media_id = db.upsert_media_item(enriched)
+                if enriched.get("poster_status"):
+                    db.update_media_poster_state(
+                        media_id,
+                        poster_url=enriched.get("poster_url"),
+                        local_poster_path=enriched.get("local_poster_path"),
+                        status=enriched.get("poster_status"),
+                        error=enriched.get("poster_error"),
+                        source=enriched.get("poster_source") or enriched.get("metadata_source"),
+                        replace_url=True,
+                    )
                 enriched_count += 1
+                lookup = enriched.get("_lookup") or {}
                 TASK_MGR.update(
                     current=completed,
-                    message=f"Enrich ({completed}/{total}): [{enriched.get('content_category')}] {it['file_name']}",
+                    message=f"Enrich ({completed}/{total}): [{enriched.get('content_category')}] {it['file_name']} — {lookup.get('status', 'processed')}",
+                    log_line=(
+                        f"Metadata lookup {lookup.get('status')} via {lookup.get('provider')}; "
+                        f"query={lookup.get('query') or '-'}; poster={lookup.get('poster_status') or enriched.get('poster_status') or '-'}"
+                    ) if lookup.get("status") not in ("metadata_found",) or enriched.get("poster_status") != "found" else None,
                 )
             else:
                 TASK_MGR.update(
@@ -1257,54 +1805,198 @@ def _batch_enrich_worker(force: bool = False) -> None:
 
 
 def _batch_subtitle_worker() -> None:
-    db.verify_subtitle_files()
-    targets = db.query_media_items(missing_subtitle_only=True)
-    if not targets:
-        TASK_MGR.finish("All media items already have subtitles.")
+    """Language-aware batch retrieval: scan first, fetch only missing targets."""
+    settings = db.get_settings()
+    prefs = db.get_subtitle_preferences()
+    indonesian_enabled = prefs["indonesian_enabled"]
+    all_targets = db.query_media_items(missing_subtitle_only=False)
+    if not all_targets:
+        TASK_MGR.finish("No media items available for subtitle processing.")
         return
 
-    settings = db.get_settings()
-    torbox_key = (settings.get("torbox_api_key") or "").strip()
+    # Indo videos intentionally do not enter any subtitle workflow: no subtitle
+    # inventory scan, FFprobe, provider lookup, or download is performed.
+    indo_skipped = sum(1 for item in all_targets if (item.get("content_category") or "").lower() == "indo")
+    targets = [item for item in all_targets if (item.get("content_category") or "").lower() != "indo"]
+    if not targets:
+        TASK_MGR.finish(
+            f"Subtitle processing skipped: all {indo_skipped} media items are category Indo; "
+            "subtitle search is disabled for this category."
+        )
+        return
 
-    TASK_MGR.update(total=len(targets), current=0, message="Building TorBox Cloud subtitle index...")
-    torbox_sub_index = sub_eng.build_torbox_subtitle_index(torbox_key) if torbox_key else {}
-
-    found_count = 0
-    completed = 0
+    db.verify_subtitle_files()
     total = len(targets)
+    TASK_MGR.update(
+        total=total, current=0,
+        message=f"Checking subtitles for {total} eligible items; skipped {indo_skipped} Indo items..."
+    )
+    torbox_key = (settings.get("torbox_api_key") or "").strip()
+    processed = found_count = downloaded_count = 0
+    cloud_targets = any(item.get("source_type") == "cloud" for item in targets)
+    torbox_sub_index = sub_eng.build_torbox_subtitle_index(torbox_key) if torbox_key and cloud_targets else None
 
-    def _sub_worker(it: Dict[str, Any]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[str]]:
+    for item in targets:
+        media_id = int(item["id"])
         try:
-            res = sub_eng.fetch_subtitle_for_item(it, torbox_api_key=torbox_key, torbox_sub_index=torbox_sub_index)
-            return it, res, None
-        except Exception as e:
-            return it, None, str(e)
+            known = {r["language"]: r for r in db.get_media_subtitles(media_id)}
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        futures = [pool.submit(_sub_worker, it) for it in targets]
-        for fut in as_completed(futures):
-            completed += 1
-            it, res, err = fut.result()
-            if res and res.get("subtitle_path"):
-                db.update_media_subtitle(
-                    it["id"],
-                    res["subtitle_path"],
-                    res.get("subtitle_lang") or "en",
-                    res.get("subtitle_source") or "auto",
+            # Phase 7.1 reliability guard: skip already-complete media before
+            # running FFprobe or contacting any subtitle provider.
+            usable_known = {
+                row["language"]: row
+                for row in dual_subs.filter_usable_subtitle_tracks(list(known.values()), db.CACHE_DIR)
+            }
+            missing = dual_subs.plan_missing_languages(
+                list(usable_known.values()), indonesian_enabled=indonesian_enabled
+            )
+            if not missing:
+                status = dual_subs.subtitle_status(
+                    list(usable_known.values()), indonesian_enabled=indonesian_enabled
                 )
+                TASK_MGR.update(
+                    current=processed + 1, total=total,
+                    message=f"Dual subtitles ({processed + 1}/{total}): {item['file_name']} [{status}]",
+                    log_line=f"SKIPPED: {item['file_name']} | required subtitles already available; no scan or fetch needed",
+                )
+                processed += 1
+                continue
+
+            # Scan embedded/sidecar inventory only when at least one required
+            # language is missing. This preserves the Phase 6B.8 discovery path
+            # without repeatedly probing already-complete items.
+            for local_track in dual_subs.scan_item_subtitles(item, torbox_api_key=torbox_key):
+                if local_track["language"] not in known:
+                    db.upsert_media_subtitle(media_id, local_track["language"], local_track["subtitle_path"],
+                        local_track.get("subtitle_source", "local"),
+                        is_embedded=bool(local_track.get("is_embedded")),
+                        stream_index=local_track.get("stream_index"), verified=True)
+                    known[local_track["language"]] = local_track
+
+            missing = dual_subs.plan_missing_languages(list(known.values()), indonesian_enabled=indonesian_enabled)
+            for language in missing:
+                result = sub_eng.fetch_subtitle_for_language(
+                    item, language, torbox_api_key=torbox_key, torbox_sub_index=torbox_sub_index
+                )
+                if result and result.get("subtitle_path") and result.get("subtitle_lang") == language:
+                    db.upsert_media_subtitle(media_id, language, result["subtitle_path"],
+                        result.get("subtitle_source") or "auto",
+                        is_embedded=bool(result.get("is_embedded", False)),
+                        stream_index=result.get("stream_index"), verified=True)
+                    known[language] = result
+                    downloaded_count += 1
+            status = dual_subs.subtitle_status(list(known.values()), indonesian_enabled=indonesian_enabled)
+            if status in ("Ready", "Complete"):
                 found_count += 1
-                TASK_MGR.update(
-                    current=completed,
-                    message=f"Find Subtitles ({completed}/{total}): {it['file_name']}",
-                    log_line=f"OK [{res.get('subtitle_source')}]: {it['file_name']}",
-                )
-            else:
-                TASK_MGR.update(
-                    current=completed,
-                    message=f"Find Subtitles ({completed}/{total}): {it['file_name']}",
-                )
+            TASK_MGR.update(current=processed + 1, total=total,
+                message=f"Dual subtitles ({processed + 1}/{total}): {item['file_name']} [{status}]",
+                log_line=f"{status}: {item['file_name']} | missing searched: {','.join(missing) or 'none'}")
+        except Exception as exc:
+            TASK_MGR.update(current=processed + 1, total=total,
+                message=f"Subtitle error: {item['file_name']}",
+                log_line=f"ERROR: {item['file_name']}: {exc}")
+        processed += 1
 
-    TASK_MGR.finish(f"Subtitle search completed: found {found_count} of {total} items.")
+    stats = db.get_subtitle_language_stats(indonesian_enabled=indonesian_enabled)
+    TASK_MGR.finish(
+        f"Dual-language subtitle scan completed. English-ready: {stats['ready'] + stats['complete']}; "
+        f"Complete: {stats['complete']}; downloaded this run: {downloaded_count}; "
+        f"Indo skipped: {indo_skipped}."
+    )
+
+
+def _get_item_subtitle_tracks(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Read verified dual-language rows, retaining compatibility with legacy media rows."""
+    media_id = item.get("id")
+    rows: List[Dict[str, Any]] = []
+    if media_id is not None:
+        try:
+            rows = db.get_media_subtitles(int(media_id))
+        except Exception:
+            rows = []
+    if not rows:
+        legacy_path = item.get("subtitle_path") or ""
+        legacy_lang = (item.get("subtitle_lang") or "en").lower()
+        if legacy_path and legacy_lang in ("en", "id"):
+            rows = [{"language": legacy_lang, "subtitle_path": legacy_path,
+                     "is_embedded": str(legacy_path).startswith("embedded://"), "verified": True}]
+    for row in rows:
+        if row.get("subtitle_path") and not str(row.get("subtitle_path")).startswith("embedded://"):
+            row["subtitle_path"] = dual_subs.resolve_external_path(row["subtitle_path"], db.CACHE_DIR)
+    return rows
+
+
+def _attach_subtitle_track_summaries(items: List[Dict[str, Any]]) -> None:
+    """Attach compact per-language source labels to media-list API records in one DB query."""
+    if not items:
+        return
+    ids = [int(item["id"]) for item in items if item.get("id") is not None]
+    grouped: Dict[int, List[Dict[str, Any]]] = {media_id: [] for media_id in ids}
+    try:
+        placeholders = ",".join("?" for _ in ids)
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT media_id, language, is_embedded, subtitle_path, verified FROM media_subtitles "
+                f"WHERE media_id IN ({placeholders}) AND verified=1 ORDER BY CASE language WHEN 'en' THEN 0 ELSE 1 END",
+                ids,
+            ).fetchall()
+        for row in rows:
+            grouped.setdefault(int(row["media_id"]), []).append(dict(row))
+    except Exception:
+        # Older databases/legacy records remain renderable without dual-source badges.
+        pass
+
+    for item in items:
+        tracks = grouped.get(int(item["id"]), [])
+        if not tracks and item.get("has_subtitle") and item.get("subtitle_path"):
+            path = item.get("subtitle_path") or ""
+            lang = (item.get("subtitle_lang") or "en").lower()
+            if lang in ("en", "id"):
+                tracks = [{"language": lang, "is_embedded": path.startswith("embedded://"),
+                           "subtitle_path": path, "verified": True}]
+        item["subtitle_tracks"] = [
+            {"language": row.get("language"),
+             "source": "embedded" if row.get("is_embedded") or str(row.get("subtitle_path") or "").startswith("embedded://") else "external"}
+            for row in tracks if row.get("language") in ("en", "id")
+        ]
+
+
+def _resolve_runtime_playlist_path(playlist: Dict[str, Any]) -> str:
+    """Relocate a generated playlist file into the current OS playlist directory if needed."""
+    stored = str(playlist.get("file_path") or "").strip()
+    if stored and os.path.isfile(stored):
+        return stored
+    file_name = str(playlist.get("file_name") or "").strip()
+    if not file_name and stored:
+        file_name = stored.replace("\\", "/").rsplit("/", 1)[-1]
+    if not file_name:
+        file_name = f"playlist_{playlist.get('id', 'unknown')}.m3u"
+    os.makedirs(db.PLAYLIST_DIR, exist_ok=True)
+    runtime_path = os.path.join(db.PLAYLIST_DIR, os.path.basename(file_name))
+    if stored != runtime_path:
+        with db.get_connection() as conn:
+            conn.execute("UPDATE playlists SET file_path=? WHERE id=?", (runtime_path, playlist.get("id")))
+            conn.commit()
+        playlist["file_path"] = runtime_path
+    return runtime_path
+
+
+def _read_m3u_media_entries(file_path: str) -> List[Dict[str, Any]]:
+    """Read media URI/path lines and their stable media IDs from a generated M3U."""
+    entries: List[Dict[str, Any]] = []
+    current_media_id: Optional[int] = None
+    with open(file_path, "r", encoding="utf-8-sig") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if line.startswith("#TBH-MEDIA-ID:"):
+                try:
+                    current_media_id = int(line.split(":", 1)[1])
+                except (TypeError, ValueError):
+                    current_media_id = None
+            elif line and not line.startswith("#"):
+                entries.append({"media_id": current_media_id, "target": line})
+                current_media_id = None
+    return entries
 
 
 def _generate_m3u_content(
@@ -1382,7 +2074,7 @@ def _generate_m3u_content(
     elif progress_cb and total_items > 0:
         progress_cb(total_items, total_items, f"Prepared {total_items} local stream(s).")
 
-    lines = ["#EXTM3U", f"#PLAYLIST:{name}"]
+    lines = ["#EXTM3U", "#TBH-PLAYLIST-VERSION:6B5", f"#PLAYLIST:{name}"]
     skipped_count = 0
 
     for idx, it in enumerate(items):
@@ -1398,13 +2090,17 @@ def _generate_m3u_content(
         elif it.get("season_num") is not None and it.get("episode_num") is not None:
             disp_title = f"{disp_title} - S{int(it['season_num']):02d}E{int(it['episode_num']):02d}"
 
+        lines.append(f"#TBH-MEDIA-ID:{it.get('id', '')}")
         lines.append(f"#EXTINF:{dur},{disp_title}")
-        sp = it.get("subtitle_path") or ""
-        if sp and not sp.startswith("embedded://") and os.path.isfile(sp):
+        subtitle_rows = _get_item_subtitle_tracks(it)
+        vlc_track = dual_subs.vlc_playback_track(subtitle_rows)
+        if vlc_track:
+            language = vlc_track.get("language") or "en"
+            sp = vlc_track.get("subtitle_path") or ""
             if remote_base_url:
-                sub_url = f"{remote_base_url.rstrip('/')}/api/media/{it['id']}/subtitle-file"
+                sub_url = f"{remote_base_url.rstrip('/')}/api/media/{it['id']}/subtitle-file/{language}"
                 lines.append(f"#EXTVLCOPT:sub-file={sub_url}")
-            else:
+            elif sp and os.path.isfile(sp):
                 lines.append(f"#EXTVLCOPT:sub-file={sp}")
         lines.append(target_uri)
 
@@ -1440,6 +2136,10 @@ def _is_m3u_file_fresh(file_path: Optional[str], ttl_seconds: int = M3U_FRESH_TT
     try:
         if os.path.getsize(file_path) < 20:
             return False
+        with open(file_path, "r", encoding="utf-8-sig") as handle:
+            header = handle.read(512)
+        if "#TBH-PLAYLIST-VERSION:6B5" not in header:
+            return False
         age = time.time() - os.path.getmtime(file_path)
         return 0 <= age <= ttl_seconds
     except OSError:
@@ -1472,9 +2172,10 @@ def _resolve_player_binary(settings: Dict[str, str]) -> Tuple[str, str, Optional
     if raw_path and os.path.isfile(raw_path):
         return player_type, display_name, raw_path, extra_args
 
-    which_bin = (shutil.which(raw_path) if raw_path else None) or (
-        shutil.which(player_type) if player_type in ("vlc", "mpv") else None
-    )
+    which_bin = platform_env.resolve_executable(
+        player_type if player_type in ("vlc", "mpv") else raw_path,
+        configured_path=raw_path,
+    ) if raw_path or player_type in ("vlc", "mpv") else None
     if which_bin:
         return player_type, display_name, which_bin, extra_args
 
@@ -1836,8 +2537,8 @@ def _search_universal_torrent_candidates(
             except Exception:
                 pass
 
-    # C. JAV & ENGLISH ADULT
-    elif category in ("jav", "english_adult"):
+    # C. JAV ONLY — English Adult providers are not torrent-indexer fallbacks.
+    elif category == "jav":
         if clean_q:
             try:
                 sukebei_url = f"https://sukebei.nyaa.si/?page=rss&c=2_2&q={quote_plus(clean_q)}"
@@ -1948,6 +2649,12 @@ def index():
     return render_template("index.html", app_version=APP_VERSION)
 
 
+@app.route("/v2")
+def index_v2():
+    """Netflix/Prime-style UI preview. Tidak menggantikan index.html."""
+    return render_template("home_v2.html", app_version=APP_VERSION)
+
+
 @app.route("/api/bootstrap", methods=["GET"])
 def api_bootstrap():
     db.verify_subtitle_files()
@@ -1962,7 +2669,9 @@ def api_bootstrap():
         genre=request.args.get("genre", ""),
         sort_by=request.args.get("sort_by", "newest"),
         playlist_scope=pl_scope,
+        classification_status=request.args.get("classification_status", "all"),
     )
+    _attach_subtitle_track_summaries(items)
     return jsonify(
         {
             "ok": True,
@@ -1983,12 +2692,15 @@ def api_discover():
     category = (request.args.get("category") or "general_movie").strip().lower()
     feed = (request.args.get("feed") or "trending").strip().lower()
     query = (request.args.get("query") or "").strip()
+    provider = (request.args.get("provider") or "all").strip().lower()
+    if provider not in ("all", "eporner", "theporndb", "xhamster"):
+        provider = "all"
     try:
-        limit = min(max(int(request.args.get("limit") or 50), 1), 100)
+        limit = min(max(int(request.args.get("limit") or 50), 1), 300)
     except ValueError:
         limit = 50
 
-    cache_key = f"{category}:{feed}:{query.lower()}:{limit}"
+    cache_key = f"{category}:{provider}:{feed}:{query.lower()}:{limit}"
     now_ts = time.time()
     with _DISCOVER_CACHE_LOCK:
         cached_entry = _DISCOVER_CACHE.get(cache_key)
@@ -1998,6 +2710,7 @@ def api_discover():
                 "ok": True,
                 "category": category,
                 "feed": feed,
+                "provider": provider,
                 "count": len(cached_results),
                 "results": cached_results,
                 "cached": True,
@@ -2009,7 +2722,15 @@ def api_discover():
     results: List[Dict[str, Any]] = []
 
     try:
-        # 1. GENERAL MOVIE & TV SHOW (TMDb Paginated up to 50 items)
+        # Phase 8.4.0: Indo is a local keyword-classified catalog; provider adapters
+        # are added in subsequent phases. Never invoke metadata or subtitle services.
+        if category == "indo":
+            # Phase 8.4.1: provider results are classified locally using only
+            # title/tags/description/original URL. No metadata or subtitle calls.
+            # The provider adapter is introduced in Phase 8.4.2.
+            results = indo_eng.filter_indo_items([])
+
+        # 1. GENERAL MOVIE & TV SHOW (TMDb paginated, capped at 300 items)
         if category in ("general_movie", "tv_show"):
             if not tmdb_key:
                 return jsonify({"ok": False, "error": "TMDb API Key is not configured in Settings."}), 400
@@ -2073,7 +2794,7 @@ def api_discover():
                 if page >= total_pages:
                     break
 
-        # 2. ANIME & DONGHUA (AniList GraphQL perPage=50)
+        # 2. ANIME & DONGHUA (AniList GraphQL paginated, capped at 300 items)
         elif category in ("anime", "donghua"):
             country_code = "CN" if category == "donghua" else "JP"
             sort_enum = "SEARCH_MATCH" if query else (
@@ -2082,8 +2803,9 @@ def api_discover():
                 )
             )
             gql = """
-            query ($search: String, $country: CountryCode, $sort: [MediaSort], $perPage: Int) {
-              Page(page: 1, perPage: $perPage) {
+            query ($search: String, $country: CountryCode, $sort: [MediaSort], $perPage: Int, $page: Int) {
+              Page(page: $page, perPage: $perPage) {
+                pageInfo { hasNextPage }
                 media(type: ANIME, search: $search, countryOfOrigin: $country, sort: $sort, isAdult: false) {
                   id
                   title { romaji english }
@@ -2096,21 +2818,27 @@ def api_discover():
               }
             }
             """
-            variables: Dict[str, Any] = {
-                "country": country_code,
-                "sort": [sort_enum],
-                "perPage": min(limit, 50),
-            }
-            if query:
-                variables["search"] = query
-            r = meta_eng.HTTP_SESSION.post(
-                "https://graphql.anilist.co",
-                json={"query": gql, "variables": variables},
-                timeout=12,
-            )
-            if r.status_code == 200:
-                media_list = (((r.json().get("data") or {}).get("Page") or {}).get("media") or [])
-                for m in media_list[:limit]:
+            per_page = 50
+            max_pages = (limit + per_page - 1) // per_page
+            for page_no in range(1, max_pages + 1):
+                variables: Dict[str, Any] = {
+                    "country": country_code,
+                    "sort": [sort_enum],
+                    "perPage": per_page,
+                    "page": page_no,
+                }
+                if query:
+                    variables["search"] = query
+                r = meta_eng.HTTP_SESSION.post(
+                    "https://graphql.anilist.co",
+                    json={"query": gql, "variables": variables},
+                    timeout=12,
+                )
+                if r.status_code != 200:
+                    break
+                page_data = (r.json().get("data") or {}).get("Page") or {}
+                media_list = page_data.get("media") or []
+                for m in media_list:
                     t_obj = m.get("title") or {}
                     title_val = t_obj.get("english") or t_obj.get("romaji") or ""
                     score = m.get("averageScore")
@@ -2130,21 +2858,30 @@ def api_discover():
                             "search_query": title_val,
                         }
                     )
+                    if len(results) >= limit:
+                        break
+                if len(results) >= limit or not (page_data.get("pageInfo") or {}).get("hasNextPage"):
+                    break
 
         # 3. JAV (Multi-Provider: MissAV + JAVDatabase + TPDB JAV + Sukebei RSS up to 50 items)
         elif category == "jav":
             results = fetch_jav_discover(feed=feed, query=query, limit=limit, tpdb_key=tpdb_key)
 
-        # 4. ENGLISH ADULT (ThePornDB Paginated API up to 50 items + Sukebei XXX fallback)
+        # 4. ENGLISH ADULT (ThePornDB + Eporner + XHamster; no JAV/Sukebei fallback)
         elif category == "english_adult":
-            if tpdb_key:
-                scenes = fetch_tpdb_scenes(tpdb_key, query=query, feed=feed, limit=limit)
+            # Each provider can be selected independently; "all" distributes the requested
+            # result budget across providers so an early source cannot starve later sources.
+            adult_provider_quota = max(1, (limit + (2 if tpdb_key else 1)) // (3 if tpdb_key else 2))
+            if provider in ("all", "theporndb") and tpdb_key:
+                scenes = fetch_tpdb_scenes(tpdb_key, query=query, feed=feed, limit=limit if provider == "theporndb" else adult_provider_quota)
                 for sc in scenes[:limit]:
                     sc_title = sc.get("title") or ""
-                    site_name = (sc.get("site") or {}).get("name") or ""
+                    site_obj = sc.get("site") or {}
+                    site_name = site_obj.get("name") or ""
                     date_str = sc.get("date") or ""
                     year_val = int(date_str[:4]) if len(date_str) >= 4 and date_str[:4].isdigit() else None
                     q_str = f"{site_name} {sc_title}".strip() if site_name else sc_title
+                    scene_url = str(sc.get("url") or sc.get("scene_url") or "").strip()
                     results.append(
                         {
                             "id": f"tpdb:{sc.get('id')}",
@@ -2154,45 +2891,31 @@ def api_discover():
                             "poster_url": sc.get("poster") or sc.get("image") or "",
                             "overview": (sc.get("description") or "")[:240],
                             "category": "english_adult",
+                            "source_provider": "ThePornDB",
+                            "original_url": scene_url if scene_url.startswith("https://") else "",
                             "search_query": q_str,
                         }
                     )
 
-            if len(results) < limit:
-                remaining = limit - len(results)
-                seen_adult_titles = {r.get("title", "").lower() for r in results}
-                q_term = query if query else "1080p"
-                rss_url = f"https://sukebei.nyaa.si/?page=rss&c=2_2&q={quote_plus(q_term)}"
-                try:
-                    r = meta_eng.HTTP_SESSION.get(rss_url, timeout=10)
-                    if r.status_code == 200 and "<item>" in r.text:
-                        soup = BeautifulSoup(r.text, "xml")
-                        for idx, item in enumerate(soup.find_all("item")[: remaining + 10], start=1):
-                            t_txt = item.title.get_text(strip=True) if item.title else ""
-                            if not t_txt or t_txt.lower() in seen_adult_titles:
-                                continue
-                            seen_adult_titles.add(t_txt.lower())
-                            ih_tag = item.find("nyaa:infoHash")
-                            ih = ih_tag.get_text(strip=True) if ih_tag else ""
-                            size_tag = item.find("nyaa:size")
-                            size_txt = size_tag.get_text(strip=True) if size_tag else ""
-                            results.append(
-                                {
-                                    "id": f"adult:{ih or idx}",
-                                    "title": t_txt,
-                                    "year": None,
-                                    "rating": 0.0,
-                                    "poster_url": "",
-                                    "overview": f"Release Size: {size_txt}" if size_txt else "Public XXX Release",
-                                    "category": "english_adult",
-                                    "search_query": t_txt[:45],
-                                    "direct_hash": ih,
-                                }
-                            )
-                            if len(results) >= limit:
-                                break
-                except Exception:
-                    pass
+            if provider in ("all", "eporner"):
+                eporner_results = fetch_eporner_videos(query=query, feed=feed, limit=limit if provider == "eporner" else adult_provider_quota)
+                seen_adult_ids = {str(item.get("id") or "").lower() for item in results}
+                for item in eporner_results:
+                    if str(item.get("id") or "").lower() not in seen_adult_ids:
+                        results.append(item)
+                        seen_adult_ids.add(str(item.get("id") or "").lower())
+                    if len(results) >= limit:
+                        break
+
+            if provider in ("all", "xhamster") and len(results) < limit:
+                xhamster_results = fetch_xhamster_videos(query=query, feed=feed, limit=limit if provider == "xhamster" else adult_provider_quota)
+                seen_adult_ids = {str(item.get("id") or "").lower() for item in results}
+                for item in xhamster_results:
+                    if str(item.get("id") or "").lower() not in seen_adult_ids:
+                        results.append(item)
+                        seen_adult_ids.add(str(item.get("id") or "").lower())
+                    if len(results) >= limit: break
+
 
         final_results = results[:limit]
         if final_results:
@@ -2206,11 +2929,36 @@ def api_discover():
             "ok": True,
             "category": category,
             "feed": feed,
+            "provider": provider,
             "count": len(final_results),
             "results": final_results,
         })
     except Exception as exc:
         return jsonify({"ok": False, "error": f"Discovery feed error: {exc}"}), 500
+
+
+_PROXY_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+_PROXY_MAX_REDIRECTS = 5
+
+
+def _poster_host_allowed(host: str) -> bool:
+    """Optional suffix allowlist via TBH_POSTER_HOST_ALLOWLIST (comma separated).
+
+    Off by default so provider CDN changes cannot silently break every cover.
+    Set it to the provider and CDN suffixes you actually rely on to shrink the
+    proxy from "any public image" to "these hosts only".
+    """
+    configured = (os.environ.get("TBH_POSTER_HOST_ALLOWLIST") or "").strip()
+    if not configured:
+        return True
+    host = (host or "").lower().rstrip(".")
+    if not host:
+        return False
+    for entry in configured.split(","):
+        candidate = entry.strip().lower().lstrip("*.").rstrip(".")
+        if candidate and (host == candidate or host.endswith("." + candidate)):
+            return True
+    return False
 
 
 @app.route("/api/discover/poster-proxy", methods=["GET"])
@@ -2223,9 +2971,15 @@ def api_discover_poster_proxy():
     if not raw_url or not raw_url.startswith(("http://", "https://")):
         return abort(400)
 
+    allowed, _reason = meta_eng._poster_url_is_public(raw_url)
+    if not allowed:
+        return abort(403)
+    if not _poster_host_allowed(urlparse(raw_url).hostname or ""):
+        return abort(403)
+
     parsed = urlparse(raw_url)
     host = (parsed.hostname or "").lower()
-    if not host or host in {"localhost", "127.0.0.1", "0.0.0.0"}:
+    if not host:
         return abort(403)
 
     cache_dir = os.path.join(db.CACHE_DIR, "discover_posters")
@@ -2255,24 +3009,67 @@ def api_discover_poster_proxy():
         "Referer": referer,
     }
 
+    current_url = raw_url
+    resp = None
+    # One-shot session: poster hosts vary per cover, so keeping them in the shared
+    # HTTP_SESSION pool only accumulates idle sockets. Covers are cached for a day,
+    # so the extra handshake is negligible.
+    session = requests.Session()
     try:
-        resp = meta_eng.HTTP_SESSION.get(raw_url, headers=headers, timeout=12)
+        for _hop in range(_PROXY_MAX_REDIRECTS + 1):
+            allowed, _reason = meta_eng._poster_url_is_public(current_url)
+            if not allowed:
+                return abort(403)
+            if not _poster_host_allowed(urlparse(current_url).hostname or ""):
+                return abort(403)
+            resp = session.get(
+                current_url, headers=headers, timeout=(6, 12),
+                allow_redirects=False, stream=True,
+            )
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = (resp.headers.get("Location") or "").strip()
+                resp.close()
+                resp = None
+                if not location:
+                    return abort(502)
+                # Each hop is re-validated: a public host may redirect to metadata.
+                current_url = urljoin(current_url, location)
+                continue
+            break
+        else:
+            return abort(502)
+
         if resp.status_code != 200:
             return abort(404)
         content_type = (resp.headers.get("Content-Type") or "image/jpeg").lower()
         if "image" not in content_type and "octet-stream" not in content_type:
             return abort(415)
 
-        ext = ".webp" if "webp" in content_type else (".png" if "png" in content_type else ".jpg")
-        out_file = os.path.join(cache_dir, f"{url_hash}{ext}")
-        data = resp.content
+        declared = (resp.headers.get("Content-Length") or "").strip()
+        if declared.isdigit() and int(declared) > _PROXY_IMAGE_MAX_BYTES:
+            return abort(413)
+
+        data, _read_error = meta_eng._read_poster_response(resp, max_bytes=_PROXY_IMAGE_MAX_BYTES)
+        if data is None:
+            return abort(413)
         if len(data) < 256:
             return abort(404)
+
+        ext = ".webp" if "webp" in content_type else (".png" if "png" in content_type else ".jpg")
+        out_file = os.path.join(cache_dir, f"{url_hash}{ext}")
         with open(out_file, "wb") as f:
             f.write(data)
         return send_file(out_file, mimetype=content_type.split(";")[0], max_age=86400)
+    except HTTPException:
+        raise
+    except (RequestException, Timeout):
+        return abort(502)
     except Exception:
         return abort(502)
+    finally:
+        if resp is not None:
+            resp.close()
+        session.close()
 
 
 @app.route("/api/discover/search-cache", methods=["POST"])
@@ -2433,6 +3230,7 @@ def api_series_episodes_status():
         if int(it.get("season_num") or 1) == active_season
     ]
     season_items.sort(key=lambda x: (int(x.get("episode_num") or 9999), x.get("file_name") or ""))
+    _attach_subtitle_track_summaries(season_items)
 
     present_ep_nums = sorted({int(it["episode_num"]) for it in season_items if it.get("episode_num") is not None})
     official_total = int(season_info.get("episode_count") or 0)
@@ -2542,6 +3340,140 @@ def api_series_check_torbox_cache():
             "results": results[:20],
         }
     )
+
+
+@app.route("/api/torbox/webdl/hosters", methods=["GET"])
+def api_torbox_webdl_hosters():
+    """Return TorBox's live WebDL hoster catalogue for diagnostics/UI."""
+    settings = db.get_settings()
+    api_key = (settings.get("torbox_api_key") or "").strip()
+    if not api_key:
+        return jsonify({"ok": False, "error": "TorBox API Key is not configured."}), 400
+    try:
+        resp = meta_eng.HTTP_SESSION.get(
+            f"{TORBOX_API_BASE}/webdl/hosters",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=(8, 20),
+        )
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {"detail": resp.text[:300]}
+        if resp.status_code != 200 or (isinstance(body, dict) and body.get("success") is False):
+            detail = body.get("detail") if isinstance(body, dict) else ""
+            return jsonify({"ok": False, "error": detail or f"TorBox HTTP {resp.status_code}"}), 502
+        hosters = body.get("data", body) if isinstance(body, dict) else body
+        return jsonify({"ok": True, "hosters": hosters})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Could not retrieve TorBox hosters: {exc}"}), 502
+
+
+@app.route("/api/torbox/webdl/batch", methods=["POST"])
+def api_torbox_webdl_batch():
+    """Submit up to 10 selected provider page/direct URLs to TorBox Web Downloads."""
+    payload = request.get_json(silent=True) or {}
+    items = payload.get("items") or []
+    if not isinstance(items, list) or not items:
+        return jsonify({"ok": False, "error": "Select at least one link."}), 400
+    if len(items) > 10:
+        return jsonify({"ok": False, "error": "Maximum 10 links per batch. Submit another batch for the rest."}), 400
+
+    settings = db.get_settings()
+    api_key = (settings.get("torbox_api_key") or "").strip()
+    if not api_key:
+        return jsonify({"ok": False, "error": "TorBox API Key is not configured."}), 400
+
+    # Known source domains. Additional providers are enabled only after their adapter
+    # returns canonical page URLs and TorBox hoster compatibility is verified.
+    allowed_domains = {
+        "eporner.com", "pornhub.com", "xvideos.com", "xhamster.com",
+        "xnxx.com", "youporn.com", "redtube.com", "tube8.com",
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+    results: List[Dict[str, Any]] = []
+    for idx, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            results.append({"index": idx, "ok": False, "error": "Invalid item."})
+            continue
+        link = str(item.get("url") or "").strip()
+        name = re.sub(r"\s+", " ", str(item.get("name") or "TorBox Web Download")).strip()[:180]
+        provider_name = str(item.get("provider") or "").strip()[:40]
+        requested_category = str(item.get("category") or "english_adult").strip().lower()
+        if requested_category not in db.VALID_CATEGORIES - {"uncategorized"}:
+            requested_category = "english_adult"
+        poster_url = str(item.get("poster_url") or "").strip()
+        if poster_url and (not poster_url.startswith("https://") or len(poster_url) > 2048):
+            poster_url = ""
+        parsed = urlparse(link)
+        host = (parsed.hostname or "").lower().rstrip(".")
+        domain_ok = any(host == domain or host.endswith("." + domain) for domain in allowed_domains)
+        if parsed.scheme != "https" or not host or parsed.username or parsed.password or not domain_ok:
+            results.append({"index": idx, "name": name, "provider": provider_name, "ok": False, "error": "URL must be a canonical HTTPS page from a supported provider domain."})
+            continue
+        used, wait_seconds = _webdl_rate_state()
+        if used >= _WEB_DL_MAX_REQUESTS:
+            results.append({"index": idx, "name": name, "provider": provider_name, "url": link, "ok": False, "rate_limited": True, "error": "Local WebDL hourly limit reached; wait for the countdown."})
+            # Preserve remaining unsubmitted items as pending in the response.
+            for pending_idx, pending in enumerate(items[idx:], start=idx + 1):
+                results.append({"index": pending_idx, "name": str((pending or {}).get("name") or "Pending")[:180], "ok": False, "pending": True, "error": "Not submitted because the hourly limit was reached."})
+            break
+        try:
+            _webdl_record_request()
+            form_fields = {
+                "link": (None, link),
+                "name": (None, name),
+                "as_queued": (None, "false"),
+                "add_only_if_cached": (None, "false"),
+            }
+            resp = meta_eng.HTTP_SESSION.post(
+                f"{TORBOX_API_BASE}/webdl/createwebdownload",
+                headers=headers,
+                files=form_fields,
+                timeout=(8, 35),
+            )
+            try:
+                body = resp.json() if resp.content else {}
+            except ValueError:
+                body = {"detail": resp.text[:250]}
+            ok = resp.status_code in (200, 201) and body.get("success", True) is not False
+            data_obj = body.get("data") or {}
+            if resp.status_code == 429:
+                retry_after = resp.headers.get("Retry-After", "")
+                try:
+                    retry_seconds = max(1, int(retry_after))
+                except (TypeError, ValueError):
+                    retry_seconds = 3600
+                results.append({"index": idx, "name": name, "provider": provider_name, "url": link, "ok": False, "rate_limited": True, "retry_after_seconds": retry_seconds, "error": "TorBox rate limit (HTTP 429)."})
+                for pending_idx, pending in enumerate(items[idx:], start=idx + 1):
+                    results.append({"index": pending_idx, "name": str((pending or {}).get("name") or "Pending")[:180], "ok": False, "pending": True, "error": "Not submitted because TorBox rate limit was reached."})
+                break
+            webdl_id = data_obj.get("web_id") or data_obj.get("webdl_id") or data_obj.get("id")
+            if ok and webdl_id:
+                TORBOX_MONITOR.track(
+                    kind="webdl",
+                    item_id=str(webdl_id),
+                    title=name,
+                    category=requested_category,
+                    poster_url=poster_url,
+                )
+            results.append({
+                "index": idx,
+                "name": name,
+                "provider": provider_name,
+                "url": link,
+                "ok": bool(ok),
+                "webdl_id": webdl_id,
+                "message": body.get("detail") or ("Submitted to TorBox Web Downloads." if ok else "TorBox rejected this link."),
+                "error": "" if ok else (body.get("detail") or body.get("error") or f"TorBox HTTP {resp.status_code}"),
+            })
+        except Exception as exc:
+            results.append({"index": idx, "name": name, "provider": provider_name, "url": link, "ok": False, "error": str(exc)[:250]})
+
+    succeeded = sum(1 for row in results if row.get("ok"))
+    rate_limited = any(row.get("rate_limited") for row in results)
+    _, wait_seconds = _webdl_rate_state()
+    retry_seconds = max([int(row.get("retry_after_seconds") or 0) for row in results] + [wait_seconds])
+    return jsonify({"ok": succeeded > 0, "submitted": succeeded, "failed": len(results) - succeeded, "rate_limited": rate_limited, "retry_after_seconds": retry_seconds, "remaining_local": max(0, _WEB_DL_MAX_REQUESTS - _webdl_rate_state()[0]), "results": results}), (429 if rate_limited and succeeded == 0 else 200)
 
 
 @app.route("/api/torbox/add-cached", methods=["POST"])
@@ -2762,6 +3694,140 @@ def api_system_list_fs():
     return jsonify({"ok": True, "current_path": abs_path, "parent_path": parent_path, "entries": entries})
 
 
+
+@app.route("/api/subtitle-quality/audit", methods=["POST"])
+def api_subtitle_quality_audit():
+    """Audit one media item synchronously for the Individual Detail Card."""
+    payload = request.get_json(silent=True) or {}
+    raw_ids = payload.get("media_ids") or []
+    if not isinstance(raw_ids, list) or len(raw_ids) > 1:
+        return jsonify({"ok": False, "error": "Individual audit accepts exactly one media ID."}), 400
+    if not raw_ids:
+        return jsonify({"ok": False, "error": "A media ID is required."}), 400
+    result = _audit_one_media_item(raw_ids[0])
+    if result is None:
+        return jsonify({"ok": False, "error": "Media item not found."}), 404
+    return jsonify({"ok": True, "results": [result], "audited": 1})
+
+
+def _audit_one_media_item(raw_id: Any) -> Optional[Dict[str, Any]]:
+    try:
+        media_id = int(raw_id)
+    except (TypeError, ValueError):
+        return None
+    item = db.get_media_item(media_id)
+    if not item:
+        return None
+    tracks = _get_item_subtitle_tracks(item)
+    track_reports = []
+    for track in tracks:
+        path = str(track.get("subtitle_path") or "")
+        language = str(track.get("language") or "").lower()
+        if track.get("is_embedded") or path.startswith("embedded://"):
+            track_reports.append({"language": language, "source": "embedded", "status": "not_applicable", "issues": ["embedded_track_not_file_audited"]})
+            continue
+        if not path or not os.path.isfile(path):
+            track_reports.append({"language": language, "source": "external", "status": "invalid", "issues": ["subtitle_file_missing"]})
+            continue
+        report = subtitle_audit.audit_subtitle_file(path, expected_language=language)
+        report.pop("path", None)
+        track_reports.append({"language": language, "source": "external", **report})
+
+    external = [r for r in track_reports if r.get("source") == "external"]
+    if not external:
+        overall = "not_applicable" if track_reports else "not_available"
+    elif any(r.get("status") == "invalid" for r in external):
+        overall = "invalid"
+    elif any(r.get("status") in ("warning", "unsupported") for r in external):
+        overall = "warning"
+    else:
+        overall = "healthy"
+    return {
+        "media_id": media_id,
+        "title": item.get("title") or item.get("file_name") or f"Media {media_id}",
+        "status": overall,
+        "tracks": track_reports,
+        "db_has_subtitle": bool(item.get("has_subtitle")),
+        "verified_track_count": len(tracks),
+    }
+
+
+def _subtitle_quality_audit_worker(media_ids: List[int]) -> None:
+    global _SUBTITLE_AUDIT_BATCH_RESULTS, _SUBTITLE_AUDIT_BATCH_SUMMARY
+    results: List[Dict[str, Any]] = []
+    counts = {key: 0 for key in ("healthy", "warning", "invalid", "not_applicable", "not_available")}
+    db_flagged = 0
+    track_backed = 0
+    db_flag_only = 0
+    track_only = 0
+    total = len(media_ids)
+    try:
+        TASK_MGR.update(total=total, current=0, message=f"Subtitle Quality Audit (0/{total})...")
+        for index, media_id in enumerate(media_ids, start=1):
+            result = _audit_one_media_item(media_id)
+            if result is not None:
+                results.append(result)
+                counts[result["status"]] = counts.get(result["status"], 0) + 1
+                has_verified_tracks = result["verified_track_count"] > 0
+                db_flagged += int(result["db_has_subtitle"])
+                track_backed += int(has_verified_tracks)
+                db_flag_only += int(result["db_has_subtitle"] and not has_verified_tracks)
+                track_only += int(has_verified_tracks and not result["db_has_subtitle"])
+            TASK_MGR.update(
+                current=index,
+                total=total,
+                message=f"Subtitle Quality Audit ({index}/{total}): {result['title'] if result else 'Media unavailable'}",
+                log_line=f"{index}/{total} | {result['status'] if result else 'SKIPPED'} | {result['title'] if result else media_id}",
+            )
+        summary = {
+            "counts": counts,
+            "audited": len(results),
+            "db_has_subtitle_count": db_flagged,
+            "verified_track_media_count": track_backed,
+            "db_flag_without_verified_tracks": db_flag_only,
+            "verified_tracks_without_db_flag": track_only,
+        }
+        with _SUBTITLE_AUDIT_BATCH_LOCK:
+            _SUBTITLE_AUDIT_BATCH_RESULTS = results
+            _SUBTITLE_AUDIT_BATCH_SUMMARY = summary
+        TASK_MGR.finish(
+            f"Subtitle Quality Audit completed: {len(results)} media | "
+            f"{counts['healthy']} healthy, {counts['warning']} warning, {counts['invalid']} invalid, "
+            f"{counts['not_applicable']} embedded-only, {counts['not_available']} without subtitle tracks."
+        )
+    except Exception as exc:
+        TASK_MGR.finish(f"Subtitle Quality Audit failed: {exc}")
+
+
+@app.route("/api/subtitle-quality/audit-visible", methods=["POST"])
+def api_subtitle_quality_audit_visible():
+    payload = request.get_json(silent=True) or {}
+    raw_ids = payload.get("media_ids") or []
+    if not isinstance(raw_ids, list) or not raw_ids or len(raw_ids) > 500:
+        return jsonify({"ok": False, "error": "media_ids must contain 1 to 500 IDs."}), 400
+    media_ids = []
+    for value in raw_ids:
+        try:
+            media_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    if not media_ids:
+        return jsonify({"ok": False, "error": "No valid media IDs were supplied."}), 400
+    if not TASK_MGR.start("subtitle_quality_audit", "Starting Subtitle Quality Audit...", total=len(media_ids)):
+        return jsonify({"ok": False, "error": "Another background task is already running."}), 409
+    with _SUBTITLE_AUDIT_BATCH_LOCK:
+        _SUBTITLE_AUDIT_BATCH_RESULTS = []
+        _SUBTITLE_AUDIT_BATCH_SUMMARY = {}
+    threading.Thread(target=_subtitle_quality_audit_worker, args=(media_ids,), daemon=True).start()
+    return jsonify({"ok": True, "task": TASK_MGR.status()})
+
+
+@app.route("/api/subtitle-quality/audit-visible/results", methods=["GET"])
+def api_subtitle_quality_audit_visible_results():
+    with _SUBTITLE_AUDIT_BATCH_LOCK:
+        return jsonify({"ok": True, "results": list(_SUBTITLE_AUDIT_BATCH_RESULTS), "summary": dict(_SUBTITLE_AUDIT_BATCH_SUMMARY)})
+
+
 @app.route("/api/media", methods=["GET"])
 def api_media_list():
     pl_scope = request.args.get("playlist_scope", "unassigned")
@@ -2777,7 +3843,9 @@ def api_media_list():
         genre=request.args.get("genre", ""),
         sort_by=request.args.get("sort_by", "newest"),
         playlist_scope=pl_scope,
+        classification_status=request.args.get("classification_status", "all"),
     )
+    _attach_subtitle_track_summaries(items)
     return jsonify({"ok": True, "items": items, "stats": db.get_telemetry_stats()})
 
 
@@ -2787,9 +3855,101 @@ def api_media_poster(media_id: int):
     if not item:
         return ("", 404)
     lp = item.get("local_poster_path")
-    if lp and os.path.isfile(lp) and os.path.getsize(lp) > 1500:
+    if lp and item.get("has_poster"):
         return send_file(lp, max_age=120)
     return ("", 404)
+
+
+@app.route("/api/media/<int:media_id>/poster/retry", methods=["POST"])
+def api_media_poster_retry(media_id: int):
+    item = db.get_media_item(media_id)
+    if not item:
+        return jsonify({"ok": False, "error": "Media not found."}), 404
+
+    poster_url = item.get("poster_url")
+    result = None
+    source = item.get("poster_source") or item.get("metadata_source") or "metadata_provider"
+    if poster_url:
+        result = meta_eng.download_poster_image_result(
+            poster_url, item.get("unique_key") or str(media_id), force_download=True
+        )
+    if not poster_url or (result and result.get("poster_status") != "found" and not item.get("poster_is_manual")):
+        # If the saved URL is stale or missing, refresh provider metadata but persist poster fields only.
+        settings = db.get_settings()
+        probe_ready_item = _attach_cloud_stream_for_probe(item, settings)
+        enriched = meta_eng.enrich_media_item(probe_ready_item, settings)
+        refreshed_url = enriched.get("poster_url")
+        refreshed_result = {
+            "local_poster_path": enriched.get("local_poster_path"),
+            "poster_status": enriched.get("poster_status") or "missing",
+            "poster_error": enriched.get("poster_error"),
+        }
+        if refreshed_result.get("poster_status") == "found" or not result or refreshed_url != poster_url:
+            result = refreshed_result
+            poster_url = refreshed_url
+            source = enriched.get("poster_source") or enriched.get("metadata_source") or "metadata_provider"
+
+    if result.get("poster_status") == "found" and result.get("local_poster_path"):
+        db.update_media_poster_state(
+            media_id, poster_url=poster_url,
+            local_poster_path=result.get("local_poster_path"),
+            status="manual" if item.get("poster_is_manual") else "found",
+            error=None, source=source,
+            allow_manual_overwrite=bool(item.get("poster_is_manual")),
+            replace_url=(poster_url != item.get("poster_url")),
+        )
+    else:
+        db.update_media_poster_state(
+            media_id, poster_url=poster_url,
+            status=result.get("poster_status") or "unreachable",
+            error=result.get("poster_error"), source=source,
+            allow_manual_overwrite=bool(item.get("poster_is_manual")),
+            replace_url=(poster_url != item.get("poster_url")),
+        )
+    updated = db.get_media_item(media_id)
+    return jsonify({"ok": result.get("poster_status") == "found", "result": result, "item": updated})
+
+
+@app.route("/api/media/<int:media_id>/poster/manual", methods=["POST"])
+def api_media_poster_manual(media_id: int):
+    item = db.get_media_item(media_id)
+    if not item:
+        return jsonify({"ok": False, "error": "Media not found."}), 404
+    payload = request.get_json(silent=True) or {}
+    poster_url = str(payload.get("poster_url") or "").strip()
+    if not poster_url:
+        return jsonify({"ok": False, "error": "Poster URL is required."}), 400
+    result = meta_eng.download_poster_image_result(
+        poster_url, item.get("unique_key") or str(media_id), force_download=True
+    )
+    if result.get("poster_status") != "found" or not result.get("local_poster_path"):
+        return jsonify({"ok": False, "error": result.get("poster_error") or "Poster could not be validated.", "result": result}), 400
+    db.update_media_poster_state(
+        media_id, poster_url=poster_url,
+        local_poster_path=result["local_poster_path"],
+        status="manual", error=None, source="manual",
+        is_manual=True, allow_manual_overwrite=True,
+    )
+    return jsonify({"ok": True, "item": db.get_media_item(media_id)})
+
+
+@app.route("/api/media/<int:media_id>/poster/automatic", methods=["POST"])
+def api_media_poster_automatic(media_id: int):
+    if not db.get_media_item(media_id):
+        return jsonify({"ok": False, "error": "Media not found."}), 404
+    if not db.clear_manual_poster_selection(media_id):
+        return jsonify({"ok": False, "error": "Unable to clear manual poster selection."}), 500
+    return api_media_poster_retry(media_id)
+
+
+@app.route("/api/media/<int:media_id>/poster/load-error", methods=["POST"])
+def api_media_poster_load_error(media_id: int):
+    if not db.get_media_item(media_id):
+        return jsonify({"ok": False, "error": "Media not found."}), 404
+    db.update_media_poster_state(
+        media_id, status="load_error", error="Browser failed to render the cached poster.", source="browser"
+    )
+    return jsonify({"ok": True})
 
 
 @app.route("/api/media/<int:media_id>/stream", methods=["GET"])
@@ -2811,9 +3971,35 @@ def api_media_http_subtitle(media_id: int):
     if not item:
         return ("Media not found", 404)
     sp = item.get("subtitle_path") or ""
+    sp = dual_subs.resolve_external_path(sp, db.CACHE_DIR)
     if not sp or sp.startswith("embedded://") or not os.path.isfile(sp):
         return ("Subtitle file not available", 404)
     return send_file(sp, mimetype="text/plain; charset=utf-8", as_attachment=False)
+
+
+@app.route("/api/media/<int:media_id>/subtitle-file/<language>", methods=["GET"])
+def api_media_http_subtitle_language(media_id: int, language: str):
+    """Serve one verified external subtitle track by language for compatible players."""
+    language = (language or "").strip().lower()
+    if language not in ("en", "id"):
+        return ("Unsupported subtitle language", 400)
+    item = db.get_media_item(media_id)
+    if not item:
+        return ("Media not found", 404)
+    track = next((row for row in db.get_media_subtitles(media_id)
+                  if row.get("language") == language and row.get("verified")), None)
+    if not track:
+        return ("Subtitle language not available", 404)
+    sp = track.get("subtitle_path") or ""
+    sp = dual_subs.resolve_external_path(sp, db.CACHE_DIR)
+    if not sp or sp.startswith("embedded://") or not os.path.isfile(sp):
+        return ("External subtitle file not available", 404)
+    return send_file(sp, mimetype="text/plain; charset=utf-8", as_attachment=False)
+
+
+def _get_playback_subtitle_tracks(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return verified per-language tracks, including embedded source metadata."""
+    return _get_item_subtitle_tracks(item)
 
 
 @app.route("/api/media/<int:media_id>/remote-m3u", methods=["GET"])
@@ -2832,25 +4018,83 @@ def api_media_remote_m3u(media_id: int):
     )
 
 
+@app.route("/api/media/<int:media_id>/classification/preview", methods=["POST"])
+def api_media_classification_preview(media_id: int):
+    item = db.get_media_item(media_id)
+    if not item:
+        return jsonify({"ok": False, "error": "Media not found."}), 404
+    payload = request.get_json(silent=True) or {}
+    normalized_title = (payload.get("normalized_title") or "").strip() or None
+    result = class_eng.classify_media(
+        item.get("file_name") or "",
+        item.get("parent_name") or "",
+        normalized_title=normalized_title,
+    )
+    return jsonify({"ok": True, "result": result, "current_category": item.get("content_category"),
+                    "classification_locked": bool(item.get("classification_locked"))})
+
+
+@app.route("/api/media/<int:media_id>/classification/apply", methods=["POST"])
+def api_media_classification_apply(media_id: int):
+    payload = request.get_json(silent=True) or {}
+    category = (payload.get("category") or "").strip().lower()
+    normalized_title = (payload.get("normalized_title") or "").strip()
+    note = (payload.get("note") or "Manual confirmation from Needs Review workflow").strip()
+    lock = bool(payload.get("lock", True))
+    try:
+        updated = db.apply_manual_classification(
+            media_id, category=category, normalized_title=normalized_title,
+            note=note, lock=lock,
+        )
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    if not updated:
+        return jsonify({"ok": False, "error": "Media not found."}), 404
+    return jsonify({"ok": True, "item": updated, "history": db.get_classification_history(media_id, 10),
+                    "stats": db.get_telemetry_stats()})
+
+
+@app.route("/api/media/<int:media_id>/classification/history", methods=["GET"])
+def api_media_classification_history(media_id: int):
+    if not db.get_media_item(media_id):
+        return jsonify({"ok": False, "error": "Media not found."}), 404
+    return jsonify({"ok": True, "history": db.get_classification_history(media_id)})
+
+
 @app.route("/api/media/<int:media_id>/enrich", methods=["POST"])
 def api_media_enrich_single(media_id: int):
     item = db.get_media_item(media_id)
     if not item:
         return jsonify({"ok": False, "error": "Media not found."}), 404
-    lp = item.get("local_poster_path")
-    if lp and os.path.isfile(lp):
-        try:
-            os.remove(lp)
-        except OSError:
-            pass
-    settings = db.get_settings()
-    probe_ready_item = _attach_cloud_stream_for_probe(item, settings)
-    enriched = meta_eng.enrich_media_item(probe_ready_item, settings)
-    enriched["unique_key"] = item["unique_key"]
-    enriched["file_name"] = item["file_name"]
-    enriched["_force_meta"] = True
-    db.upsert_media_item(enriched)
-    return jsonify({"ok": True, "item": db.get_media_item(media_id), "stats": db.get_telemetry_stats()})
+    try:
+        # Keep the current poster until a replacement has been downloaded and validated.
+        settings = db.get_settings()
+        probe_ready_item = _attach_cloud_stream_for_probe(item, settings)
+        enriched = meta_eng.enrich_media_item(probe_ready_item, settings)
+        enriched["unique_key"] = item["unique_key"]
+        enriched["file_name"] = item["file_name"]
+        enriched["_force_meta"] = True
+        db.upsert_media_item(enriched)
+        if enriched.get("poster_status"):
+            db.update_media_poster_state(
+                media_id,
+                poster_url=enriched.get("poster_url"),
+                local_poster_path=enriched.get("local_poster_path"),
+                status=enriched.get("poster_status"),
+                error=enriched.get("poster_error"),
+                source=enriched.get("poster_source") or enriched.get("metadata_source"),
+                replace_url=True,
+            )
+        updated = db.get_media_item(media_id)
+        lookup = enriched.get("_lookup") or {}
+        app.logger.info(
+            "Single-item enrichment media_id=%s provider=%s status=%s query=%s poster_status=%s",
+            media_id, lookup.get("provider"), lookup.get("status"), lookup.get("query"), lookup.get("poster_status")
+        )
+        return jsonify({"ok": True, "item": updated, "lookup": lookup, "stats": db.get_telemetry_stats()})
+    except Exception as exc:
+        app.logger.exception("Single-item metadata enrichment failed for media_id=%s", media_id)
+        return jsonify({"ok": False, "error": f"Metadata enrichment failed: {exc}"}), 500
 
 
 @app.route("/api/media/<int:media_id>/manual", methods=["POST"])
@@ -2887,6 +4131,44 @@ def api_media_rating(media_id: int):
     payload = request.get_json(silent=True) or {}
     db.update_media_rating(media_id, int(payload.get("rating_star", 0)))
     return jsonify({"ok": True, "item": db.get_media_item(media_id), "stats": db.get_telemetry_stats()})
+
+
+@app.route("/api/media/<int:media_id>/subtitle/<language>", methods=["POST"])
+def api_media_subtitle_language(media_id: int, language: str):
+    """Find or download exactly one requested subtitle language."""
+    language = (language or "").lower().strip()
+    if language not in ("en", "id"):
+        return jsonify({"ok": False, "error": "Language must be en or id."}), 400
+    item = db.get_media_item(media_id)
+    if not item:
+        return jsonify({"ok": False, "error": "Media not found."}), 404
+
+    existing = next((x for x in db.get_media_subtitles(media_id) if x.get("language") == language), None)
+    if existing:
+        return jsonify({"ok": True, "already_available": True, "subtitle": existing,
+                        "item": db.get_media_item(media_id)})
+
+    settings = db.get_settings()
+    torbox_key = (settings.get("torbox_api_key") or "").strip()
+    try:
+        result = sub_eng.fetch_subtitle_for_language(item, language, torbox_api_key=torbox_key)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    except Exception as exc:
+        app.logger.exception("Language-specific subtitle lookup failed: media_id=%s language=%s", media_id, language)
+        return jsonify({"ok": False, "error": f"Subtitle lookup failed: {exc}"}), 500
+
+    if not result or not result.get("subtitle_path") or result.get("subtitle_lang") != language:
+        return jsonify({"ok": False, "language": language,
+                        "error": f"No verified {'English' if language == 'en' else 'Indonesian'} subtitle found."}), 404
+
+    db.upsert_media_subtitle(
+        media_id, language, result["subtitle_path"], result.get("subtitle_source") or "auto",
+        is_embedded=bool(result.get("is_embedded", False)),
+        stream_index=result.get("stream_index"), verified=True,
+    )
+    return jsonify({"ok": True, "already_available": False, "subtitle": result,
+                    "item": db.get_media_item(media_id), "stats": db.get_telemetry_stats()})
 
 
 @app.route("/api/media/<int:media_id>/subtitle", methods=["POST"])
@@ -2949,8 +4231,11 @@ def _launch_items_in_player(items: List[Dict[str, Any]], label_title: str) -> Tu
         if not target:
             return False, "Media stream URL/path is unavailable.", 400
 
-        sp = item.get("subtitle_path") or ""
-        has_ext_sub = bool(sp and not sp.startswith("embedded://") and os.path.isfile(sp))
+        subtitle_tracks = _get_playback_subtitle_tracks(item)
+        # Load only the language missing from embedded tracks; if neither is embedded, load both.
+        primary_external = dual_subs.vlc_playback_track(subtitle_tracks)
+        sp = primary_external.get("subtitle_path") if primary_external else ""
+        has_ext_sub = bool(sp)
 
         if bin_path.startswith("android://"):
             base_url = request.host_url.rstrip("/")
@@ -2959,7 +4244,8 @@ def _launch_items_in_player(items: List[Dict[str, Any]], label_title: str) -> Tu
                 if item.get("source_type") == "local"
                 else target
             )
-            sub_http = f"{base_url}/api/media/{item['id']}/subtitle-file" if has_ext_sub else None
+            sub_http = (f"{base_url}/api/media/{item['id']}/subtitle-file/{primary_external.get('language', 'en')}"
+                        if has_ext_sub and primary_external else None)
             ok, msg = _launch_android_intent(android_target, bin_path, sub_url=sub_http)
             return ok, msg, (200 if ok else 500)
 
@@ -2976,16 +4262,17 @@ def _launch_items_in_player(items: List[Dict[str, Any]], label_title: str) -> Tu
         is_mpc_like = "mpc-hc" in lower_bin or "mpc-be" in lower_bin
         is_pot_like = "potplayer" in lower_bin
 
-        if has_ext_sub:
-            if is_mpv_like:
-                mpv_sub = sp.replace("\\", "/")
-                cmd.extend([f"--sub-file={mpv_sub}", "--sid=1", "--sub-visibility=yes"])
-            elif is_vlc_like:
+        if is_mpv_like:
+            # mpv supports multiple external subtitle tracks; selectable via its subtitle menu/hotkeys.
+            cmd.extend(dual_subs.mpv_subtitle_arguments(subtitle_tracks))
+        elif has_ext_sub:
+            # VLC and common DirectShow players accept one explicit external subtitle on launch.
+            # Prefer English; Indonesian remains available when English is absent. Embedded tracks
+            # in the video remain selectable natively inside these players.
+            if is_vlc_like:
                 cmd.append(f"--sub-file={sp}")
             elif is_mpc_like or is_pot_like:
                 cmd.extend(["/sub", sp])
-        elif is_mpv_like:
-            cmd.append("--sub-auto=fuzzy")
 
         cmd.append(target)
         try:
@@ -3007,7 +4294,15 @@ def _launch_items_in_player(items: List[Dict[str, Any]], label_title: str) -> Tu
             cmd.extend(shlex.split(extra_args, posix=(os.name != "nt")))
         except Exception:
             cmd.extend(extra_args.split())
-    cmd.append(temp_m3u)
+    lower_bin = os.path.basename(bin_path).lower()
+    is_mpv_like = player_type == "mpv" or "mpv" in lower_bin or "iina" in lower_bin or "celluloid" in lower_bin
+    if is_mpv_like:
+        entries = _read_m3u_media_entries(temp_m3u)
+        tracks_by_media = {int(item["id"]): _get_playback_subtitle_tracks(item)
+                           for item in items if item.get("id") is not None}
+        cmd.extend(dual_subs.mpv_playlist_arguments(entries, tracks_by_media))
+    else:
+        cmd.append(temp_m3u)
     try:
         _launch_player_process(cmd)
         return True, f"Playing '{label_title}' ({len(items)} episodes) in {player_label}.", 200
@@ -3039,7 +4334,12 @@ def api_task_sync_torbox():
     payload = request.get_json(silent=True) or {}
     auto_enrich = bool(payload.get("auto_enrich", False))
     if not TASK_MGR.start("sync_torbox", "Starting TorBox Cloud sync..."):
-        return jsonify({"ok": False, "error": "Another background task is already running."}), 409
+        active = TASK_MGR.status()
+        return jsonify({
+            "ok": False,
+            "error": f"Sync not started: background task '{active.get('task_type')}' is still running.",
+            "active_task": active,
+        }), 409
     threading.Thread(target=_sync_torbox_cloud_worker, args=(auto_enrich,), daemon=True).start()
     return jsonify({"ok": True, "task": TASK_MGR.status()})
 
@@ -3051,6 +4351,14 @@ def api_task_scan_local():
     if not TASK_MGR.start("scan_local", "Starting local folder scan..."):
         return jsonify({"ok": False, "error": "Another background task is already running."}), 409
     threading.Thread(target=_scan_local_folders_worker, args=(auto_enrich,), daemon=True).start()
+    return jsonify({"ok": True, "task": TASK_MGR.status()})
+
+
+@app.route("/api/tasks/classify-pending", methods=["POST"])
+def api_task_classify_pending():
+    if not TASK_MGR.start("classify_pending", "Starting classification of new uncategorized media..."):
+        return jsonify({"ok": False, "error": "Another background task is already running."}), 409
+    threading.Thread(target=_classify_pending_worker, daemon=True).start()
     return jsonify({"ok": True, "task": TASK_MGR.status()})
 
 
@@ -3072,9 +4380,33 @@ def api_task_batch_subtitle():
     return jsonify({"ok": True, "task": TASK_MGR.status()})
 
 
+_TASK_STATS_TTL_SECONDS = 3.0
+_task_stats_cache: Dict[str, Any] = {}
+_task_stats_lock = threading.Lock()
+
+
+def _task_telemetry_stats() -> Dict[str, Any]:
+    """Telemetry counters for the progress banner.
+
+    The banner polls every 1.2 s and get_telemetry_stats() costs ~6.5 ms because it
+    opens a fresh SQLite connection per call. A short cache removes most of that.
+    Scope is this endpoint only: write endpoints still compute their own stats, so
+    their responses never go stale.
+    """
+    now = time.monotonic()
+    with _task_stats_lock:
+        cached = _task_stats_cache.get("value")
+        if cached and now - cached[0] < _TASK_STATS_TTL_SECONDS:
+            return cached[1]
+    stats = db.get_telemetry_stats()
+    with _task_stats_lock:
+        _task_stats_cache["value"] = (now, stats)
+    return stats
+
+
 @app.route("/api/task/status", methods=["GET"])
 def api_task_status():
-    return jsonify({"ok": True, "task": TASK_MGR.status(), "stats": db.get_telemetry_stats()})
+    return jsonify({"ok": True, "task": TASK_MGR.status(), "stats": _task_telemetry_stats()})
 
 
 def _create_playlist_worker(name: str, media_ids: List[int]) -> None:
@@ -3191,8 +4523,9 @@ def api_playlist_play(playlist_id: int):
     if not bin_path:
         return jsonify({"ok": False, "error": f"{player_label} not found. Configure or Auto-Detect in Settings."}), 400
 
-    if not _is_m3u_file_fresh(pl.get("file_path")):
-        _generate_m3u_file(pl["name"], pl["items"], existing_file_path=pl["file_path"])
+    runtime_playlist_path = _resolve_runtime_playlist_path(pl)
+    if not _is_m3u_file_fresh(runtime_playlist_path):
+        _generate_m3u_file(pl["name"], pl["items"], existing_file_path=runtime_playlist_path)
 
     if bin_path.startswith("android://"):
         base_url = request.host_url.rstrip("/")
@@ -3211,20 +4544,13 @@ def api_playlist_play(playlist_id: int):
     is_mpv_like = player_type == "mpv" or "mpv" in lower_bin or "iina" in lower_bin or "celluloid" in lower_bin
 
     if is_mpv_like:
-        sub_files = []
-        for it in pl.get("items") or []:
-            sp = it.get("subtitle_path") or ""
-            if sp and not sp.startswith("embedded://") and os.path.isfile(sp):
-                sub_files.append(sp.replace("\\", "/"))
-        cmd.extend(["--sub-auto=fuzzy", "--sid=1", "--sub-visibility=yes"])
-        if len(sub_files) == 1:
-            cmd.append(f"--sub-file={sub_files[0]}")
-        elif len(sub_files) > 1:
-            sep = ";" if os.name == "nt" else ":"
-            cmd.append(f"--sub-files={sep.join(sub_files)}")
-        cmd.append(pl["file_path"])
+        entries = _read_m3u_media_entries(runtime_playlist_path)
+        items = pl.get("items") or []
+        tracks_by_media = {int(item["id"]): _get_playback_subtitle_tracks(item)
+                           for item in items if item.get("id") is not None}
+        cmd.extend(dual_subs.mpv_playlist_arguments(entries, tracks_by_media))
     else:
-        cmd.append(pl["file_path"])
+        cmd.append(runtime_playlist_path)
 
     try:
         _launch_player_process(cmd)
@@ -3239,6 +4565,8 @@ def api_settings():
         return jsonify({
             "ok": True,
             "settings": db.get_masked_settings(),
+            "subtitle_preferences": db.get_subtitle_preferences(),
+            "subtitle_language_stats": db.get_subtitle_language_stats(),
             "backups": db.list_db_backups(),
             "default_paths": db.get_default_player_paths(),
             "detected_players": detect_installed_players(),
@@ -3247,7 +4575,10 @@ def api_settings():
         })
     payload = request.get_json(silent=True) or {}
     saved = db.save_settings(payload)
-    return jsonify({"ok": True, "settings": saved})
+    subtitle_preferences = db.get_subtitle_preferences()
+    if "indonesian_enabled" in payload:
+        subtitle_preferences = db.save_subtitle_preferences(bool(payload.get("indonesian_enabled")))
+    return jsonify({"ok": True, "settings": saved, "subtitle_preferences": subtitle_preferences})
 
 
 @app.route("/api/db/backup", methods=["POST"])
@@ -3285,6 +4616,15 @@ def api_db_erase_all():
 
 if __name__ == "__main__":
     db.init_db()
+    from roxxy_download_engine import start_library_task_worker
+    start_library_task_worker()
     host = os.environ.get("TBH_HOST", "127.0.0.1")
     port = int(os.environ.get("TBH_PORT", "5050"))
+    if host not in _LOOPBACK_HOSTS:
+        print(
+            f"[WARN] Listening on {host}:{port}. There is no authentication: any client that can\n"
+            "       reach this port can control downloads, delete files, and read settings.\n"
+            "       Keep it on loopback, or put it behind a reverse proxy that authenticates.\n",
+            flush=True,
+        )
     app.run(host=host, port=port, debug=False, threaded=True)

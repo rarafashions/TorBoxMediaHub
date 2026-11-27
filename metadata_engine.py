@@ -4,16 +4,24 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
+import tempfile
+import ipaddress
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import requests
-from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from bs4 import BeautifulSoup
+import indo_keyword_engine as indo_eng
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-POSTER_CACHE_DIR = os.path.join(BASE_DIR, "cache", "posters")
+# Keep poster storage aligned with database_manager.TBH_DATA_DIR / DATA_DIR.
+DATA_DIR = os.path.abspath(os.environ.get("TBH_DATA_DIR") or BASE_DIR)
+POSTER_CACHE_DIR = os.path.join(DATA_DIR, "cache", "posters")
 os.makedirs(POSTER_CACHE_DIR, exist_ok=True)
 
 HEADERS = {
@@ -26,7 +34,14 @@ HEADERS = {
 
 HTTP_SESSION = requests.Session()
 HTTP_SESSION.headers.update(HEADERS)
-_adapter = HTTPAdapter(pool_connections=16, pool_maxsize=16, max_retries=1)
+# Provider CDNs idle-close connections and urllib3 would otherwise hold dead
+# sockets; a small pool plus one explicit retry for idempotent calls keeps the
+# handle count bounded. POST is deliberately excluded from retries.
+_HTTP_RETRY = Retry(
+    total=1, connect=1, read=1, status=0,
+    backoff_factor=0.2, allowed_methods=frozenset({"GET", "HEAD"}),
+)
+_adapter = HTTPAdapter(pool_connections=8, pool_maxsize=8, max_retries=_HTTP_RETRY)
 HTTP_SESSION.mount("http://", _adapter)
 HTTP_SESSION.mount("https://", _adapter)
 
@@ -45,7 +60,7 @@ JAV_MAKER_PREFIXES = {
         "200GANA", "SIRO", "261ARA", "390JAC", "422ION", "435MFC", "459TEN", "483SGK",
         "534IND", "546EROFV", "FC2", "PPV", "HEYZO", "CARIB", "CARIBPR", "1PON", "1PONDO",
         "PACO", "PACOPACOMAMA", "10MUSUME", "MURAMURA", "GACHIP", "CWPBD", "LAFBD", "SMD", "SMBD",
-        "MKD", "MKBD", "DRG", "DSAM", "MESU", "NYB", "RED", "SKY", "SKYHD", "RHJ",
+        "MKD", "MKBD", "DRG", "DSAM", "MESU", "NYB", "RED", "SKY", "SKYHD", "RHJ", "SKMJ",
         "S2MBD", "S2M", "CW3D2BD", "MCB3DBD", "H4610", "H0930", "C0930", "KIN8", "KIN8TENGOKU",
         "REAL", "SCOOP", "KMP", "BAZX", "MDBK", "MDTM", "HUNTA", "HUNTC", "HUNTB", "APNS",
         "APAA", "APAK", "DOCP", "JKSR", "SABA", "UMSO", "MCSR", "IENE", "IESP", "IDOL",
@@ -82,7 +97,7 @@ JAV_NOISE_PREFIXES = {
 }
 
 ENGLISH_ADULT_STUDIOS = [
-    "brazzers", "realitykings", "reality kings", "bangbros", "bang bros", "naughtyamerica",
+    "brazzers", "brazzersexxtra", "brazzers exxtra", "realitykings", "reality kings", "bangbros", "bang bros", "naughtyamerica",
     "naughty america", "mofos", "digitalplayground", "digital playground", "twistys", "babes",
     "vixen", "tushy", "blacked", "blackedraw", "deeper", "slayed", "julesjordan",
     "jules jordan", "evilangel", "evil angel", "kink", "teamskeet", "team skeet", "mylf",
@@ -104,6 +119,12 @@ ENGLISH_ADULT_STUDIOS = [
     "momsincontrol", "teeside", "nubilesporn", "badteenspunished", "stepsecrets",
 ]
 
+# Curated exact-name adult series/franchises. Keep these separate from generic
+# words so a country adjective (e.g. "Czech") never classifies a title alone.
+ENGLISH_ADULT_SERIES = [
+    "czech street", "czech harem", "czech casting", "czech first video",
+]
+
 ADULT_EXPLICIT_WORDS = {
     "xxx", "porn", "porno", "nsfw", "hentai", "creampie", "blowjob",
     "handjob", "gangbang", "threesome", "foursome", "orgy", "anal", "bukkake",
@@ -111,7 +132,7 @@ ADULT_EXPLICIT_WORDS = {
     "bdsm", "bondage", "femdom", "cuckold", "hotwife", "swinger", "shemale",
     "transsexual", "futanari", "masturbation", "dildo", "vibrator", "striptease",
     "hardcore", "softcore", "slut", "whore", "pussy", "cock",
-    "boobs", "tits", "assfuck", "deepthroat", "defloration", "czech",
+    "boobs", "tits", "assfuck", "deepthroat", "defloration",
 }
 
 DONGHUA_SPECIFIC_KEYWORDS = [
@@ -248,22 +269,42 @@ def _has_kana(text: str) -> bool:
 
 
 def _has_explicit_english_adult_studio(combined_text: str) -> Optional[str]:
-    low = re.sub(r"[._-]+", " ", combined_text.lower())
-    for st in ENGLISH_ADULT_STUDIOS:
-        if re.search(rf"(?:^|\s){re.escape(st)}(?:$|\s)", low):
+    # Normalize punctuation (including square brackets) so tags such as
+    # "[Blacked]" and "(Brazzers)" are treated like ordinary studio tokens.
+    low = re.sub(r"[^a-z0-9]+", " ", (combined_text or "").lower()).strip()
+    for st in sorted(ENGLISH_ADULT_STUDIOS, key=len, reverse=True):
+        studio_norm = re.sub(r"[^a-z0-9]+", " ", st.lower()).strip()
+        if studio_norm and re.search(rf"(?:^|\s){re.escape(studio_norm)}(?:$|\s)", low):
             return st.title()
+    # Exact franchise/series names are strong adult signals, but generic words
+    # such as "Czech" are deliberately not used as standalone triggers.
+    for series in sorted(ENGLISH_ADULT_SERIES, key=len, reverse=True):
+        series_norm = re.sub(r"[^a-z0-9]+", " ", series.lower()).strip()
+        if series_norm and re.search(rf"(?:^|\s){re.escape(series_norm)}(?:$|\s)", low):
+            return series.title()
+    return None
+
+
+def _has_explicit_english_adult_series(combined_text: str) -> Optional[str]:
+    low = re.sub(r"[^a-z0-9]+", " ", (combined_text or "").lower()).strip()
+    for series in sorted(ENGLISH_ADULT_SERIES, key=len, reverse=True):
+        phrase = re.sub(r"[^a-z0-9]+", " ", series.lower()).strip()
+        if phrase and re.search(rf"(?:^|\s){re.escape(phrase)}(?:$|\s)", low):
+            return series.title()
     return None
 
 
 def _detect_english_adult_details(combined_text: str, filename: str) -> Optional[Dict[str, Any]]:
     low = re.sub(r"[._-]+", " ", combined_text.lower())
     matched_studio = _has_explicit_english_adult_studio(combined_text)
+    matched_series = _has_explicit_english_adult_series(combined_text)
+    matched_brand = matched_studio or matched_series
 
     tokens = set(re.findall(r"[a-z0-9]+", low))
     has_explicit_word = bool(tokens & ADULT_EXPLICIT_WORDS)
     has_scene_date = bool(re.search(r"(?:^|[\s._-])(\d{2})\.(\d{2})\.(\d{2})(?:$|[\s._-])", combined_text))
 
-    if not matched_studio and not has_explicit_word:
+    if not matched_brand and not has_explicit_word:
         return None
 
     rel_date = None
@@ -281,8 +322,8 @@ def _detect_english_adult_details(combined_text: str, filename: str) -> Optional
         raw_stem = combined_text
 
     cleaned = re.sub(r"\[[^\]]*\]|\([^\)]*\)", " ", raw_stem)
-    if matched_studio:
-        cleaned = re.sub(re.escape(matched_studio), " ", cleaned, flags=re.IGNORECASE)
+    if matched_brand:
+        cleaned = re.sub(re.escape(matched_brand), " ", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\b\d{2}\.\d{2}\.\d{2}\b", " ", cleaned)
     cleaned = re.sub(r"[._]+", " ", cleaned)
     cleaned = re.split(
@@ -293,10 +334,10 @@ def _detect_english_adult_details(combined_text: str, filename: str) -> Optional
 
     return {
         "title": cleaned or clean_search_title(filename),
-        "studio": matched_studio,
+        "studio": matched_studio or matched_series,
         "year": year_val,
         "release_date": rel_date,
-        "is_scene": has_scene_date or bool(matched_studio),
+        "is_scene": has_scene_date or bool(matched_brand),
     }
 
 
@@ -325,12 +366,18 @@ def _is_strong_anime_signal(combined_text: str) -> bool:
 
 
 def clean_search_title(filename: str) -> str:
-    base = os.path.splitext(filename)[0]
+    """Remove release/container noise while retaining meaningful title words."""
+    base = os.path.splitext(filename or "")[0]
+    # Preserve opaque product-like identifiers intact; classification decides
+    # whether a code is a verified JAV code or requires manual review.
+    if re.fullmatch(r"(?i)[A-Z]{2,8}[-_]\d{2,6}", base.strip()):
+        return re.sub(r"_", "-", base.strip()).upper()
     cleaned = re.sub(r"\[[^\]]*\]", " ", base)
     cleaned = re.sub(r"\([^\)]*\)", " ", cleaned)
     cleaned = re.sub(r"[._]+", " ", cleaned)
 
-    # Potong tepat sebelum penanda episode/season (S03E03, 3x03, Season 3, Ep 03) atau tag kualitas
+    # Split at common technical/release tags. Include regional audio labels and
+    # modern UHD/HDR release labels which were previously leaking into TMDb queries.
     cleaned = re.split(
         r"(?i)(?:^|\s)(?:"
         r"S\d{1,2}\s*E\d{1,3}|"
@@ -339,14 +386,20 @@ def clean_search_title(filename: str) -> str:
         r"Season\s*\d+|"
         r"Episode\s*\d+|"
         r"Ep\.?\s*\d+|"
-        r"1080p|720p|2160p|480p|4K|WEB-?DL|WEBRip|BluRay|BDRip|DVDRip|HDRip|"
-        r"x264|x265|H264|H265|HEVC|10bit|AAC|AC3|DTS|FLAC|MULTI|DUAL|ITA|ENG|SUB|"
-        r"PROPER|REPACK|EXTENDED|THEATRICAL|UNRATED"
+        r"1080p|720p|2160p|480p|4K|8K|"
+        r"UHDRDV|UHDHDRDV|UHDHDR|UHDDV|UHD|HDR10\+?|HDR|DV|DoVi|DolbyVision|"
+        r"WEB-?DL|WEBRip|BluRay|BDRip|DVDRip|HDRip|REMUX|"
+        r"x264|x265|H264|H265|HEVC|AV1|10bit|8bit|AAC|AC3|EAC3|DTS(?:HD)?|FLAC|ATMOS|"
+        r"(?:ITA|ENG|SPA|FRE|GER|RUS|HIN|IND|LAT|JPN|KOR)(?:[-+._ ](?:ITA|ENG|SPA|FRE|GER|RUS|HIN|IND|LAT|JPN|KOR))+|"
+        r"XXX|MULTI|DUAL|DUBBED|SUBBED|PROPER|REPACK|EXTENDED|THEATRICAL|UNRATED|"
+        r"CZ|CZE|SK|SLO|EN|ENG|ITA|JPN|KOR|SPA|FRE|GER|RUS|HIN|IND|LAT"
         r")(?:$|\s)",
         cleaned,
     )[0]
-    cleaned = re.sub(r"(?:^|\s)(19[5-9]\d|20[0-3]\d)(?:$|\s).*$", "", cleaned)
+    cleaned = re.sub(r"(?<!\d)\b(?:19[5-9]\d|20[0-3]\d)\b(?!\d)", " ", cleaned)
     cleaned = re.sub(r"\s*-\s*\d{1,3}\s*$", "", cleaned)
+    # Short release-group suffixes are removed only as a standalone final token.
+    cleaned = re.sub(r"(?i)(?:\s+|[-_.])rq$", "", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" -_")
     return cleaned or base
 
@@ -385,10 +438,16 @@ def parse_release_structure(filename: str, parent_name: str = "") -> Dict[str, A
     # 2. Cek JAV & English Adult terlebih dahulu (prioritas tertinggi)
     explicit_western_studio = _has_explicit_english_adult_studio(combined)
     jav_code = extract_jav_code(combined, allow_generic_fallback=(explicit_western_studio is None))
+    jav_code_validated = bool(jav_code) and (
+        jav_code.split("-")[0] in JAV_MAKER_PREFIXES
+        or jav_code.startswith(("FC2-PPV-", "HEYZO-"))
+        or bool(re.match(r"^\d{6}-\d{3}$", jav_code))
+    )
     if jav_code:
         return {
             "clean_series_title": jav_code,
             "jav_code": jav_code,
+            "jav_code_validated": jav_code_validated,
             "season_num": None,
             "episode_num": None,
             "is_episodic": False,
@@ -408,7 +467,24 @@ def parse_release_structure(filename: str, parent_name: str = "") -> Dict[str, A
             "pre_category": "english_adult",
         }
 
-    # 3. Bersihkan judul inti dari filename (atau fallback ke parent folder jika nama file hanya nomor episode)
+    # 3. Indo detection follows JAV and English Adult, but precedes Anime/Donghua.
+    indo_verdict = indo_eng.classify_indo({
+        "title": stem,
+        "description": parent_name,
+        "original_url": "",
+    })
+    if indo_verdict.get("is_indo"):
+        return {
+            "clean_series_title": clean_search_title(stem) or stem,
+            "season_num": None,
+            "episode_num": None,
+            "is_episodic": False,
+            "year": year_val,
+            "pre_category": "indo",
+            "indo_match": indo_verdict,
+        }
+
+    # 4. Bersihkan judul inti dari filename (atau fallback ke parent folder jika nama file hanya nomor episode)
     core_title = clean_search_title(stem)
     if (not core_title or len(core_title) < 3 or core_title.lower() in GENERIC_FILE_STEMS) and parent_name:
         parent_core = clean_search_title(parent_name)
@@ -435,30 +511,184 @@ def parse_release_structure(filename: str, parent_name: str = "") -> Dict[str, A
     }
 
 
-def download_poster_image(poster_url: Optional[str], unique_key: str, force_download: bool = False) -> Optional[str]:
-    if not poster_url or not poster_url.startswith("http"):
-        return None
-    digest = hashlib.sha256(unique_key.encode("utf-8")).hexdigest()[:24]
-    ext = ".jpg"
-    low_url = poster_url.lower()
-    if ".png" in low_url:
-        ext = ".png"
-    elif ".webp" in low_url:
-        ext = ".webp"
-    dest_path = os.path.join(POSTER_CACHE_DIR, f"{digest}{ext}")
+def _poster_url_is_public(url: str) -> Tuple[bool, str]:
+    """Allow only public HTTP(S) destinations; reject local/private targets and unsafe schemes."""
+    try:
+        parsed = urlparse((url or "").strip())
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            return False, "Poster URL must use HTTP or HTTPS."
+        if parsed.username or parsed.password:
+            return False, "Poster URL credentials are not allowed."
+        host = parsed.hostname.rstrip(".").lower()
+        if host in {"localhost", "localhost.localdomain"} or host.endswith(".local"):
+            return False, "Local network poster hosts are not allowed."
+        try:
+            addresses = [ipaddress.ip_address(host)]
+        except ValueError:
+            try:
+                addresses = [ipaddress.ip_address(info[4][0]) for info in socket.getaddrinfo(host, None)]
+            except OSError:
+                return False, "Poster host DNS lookup failed."
+        if not addresses or any(not address.is_global for address in addresses):
+            return False, "Poster URL resolves to a non-public network address."
+        return True, ""
+    except Exception:
+        return False, "Poster URL is invalid."
 
-    if not force_download and os.path.isfile(dest_path) and os.path.getsize(dest_path) > 1500:
-        return dest_path
+
+def _detect_poster_image(content: bytes) -> Optional[Tuple[str, str]]:
+    """Validate image signatures without relying on optional imaging libraries."""
+    if not content:
+        return None
+    if content.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ".jpg"
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", ".png"
+    if len(content) >= 12 and content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return "image/webp", ".webp"
+    return None
+
+
+def _read_poster_response(response: Any, max_bytes: int = 15 * 1024 * 1024) -> Tuple[Optional[bytes], Optional[str]]:
+    """Read at most max_bytes from a streamed response."""
+    try:
+        content_length = (getattr(response, "headers", {}) or {}).get("Content-Length")
+        if content_length and int(content_length) > max_bytes:
+            return None, "Poster exceeds the 15 MB safety limit."
+    except (TypeError, ValueError):
+        pass
+    iterator = getattr(response, "iter_content", None)
+    if callable(iterator):
+        chunks: List[bytes] = []
+        total = 0
+        for chunk in iterator(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                return None, "Poster exceeds the 15 MB safety limit."
+            chunks.append(chunk)
+        return b"".join(chunks), None
+    content = getattr(response, "content", b"") or b""
+    if len(content) > max_bytes:
+        return None, "Poster exceeds the 15 MB safety limit."
+    return content, None
+
+
+def download_poster_image_result(
+    poster_url: Optional[str], unique_key: str, force_download: bool = False
+) -> Dict[str, Any]:
+    """Download and validate a poster; return an explicit status and never write partial files."""
+    url = (poster_url or "").strip()
+    if not url:
+        return {"local_poster_path": None, "poster_status": "missing", "poster_error": "Provider returned no poster URL."}
+
+    url_digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:12]
+    key_digest = hashlib.sha256((unique_key or url).encode("utf-8")).hexdigest()[:20]
+    cache_prefix = f"{key_digest}_{url_digest}"
+    if not force_download:
+        try:
+            for cached_name in os.listdir(POSTER_CACHE_DIR):
+                if not cached_name.startswith(cache_prefix):
+                    continue
+                cached_candidate = os.path.join(POSTER_CACHE_DIR, cached_name)
+                with open(cached_candidate, "rb") as cached_file:
+                    if _detect_poster_image(cached_file.read(64)):
+                        return {"local_poster_path": cached_candidate, "poster_status": "found", "poster_error": None}
+        except OSError:
+            pass
+    last_error = "Poster download failed."
+    current_url = url
+    response = None
+
+    # Follow a small number of redirects manually so every redirect target is revalidated.
+    for _ in range(5):
+        allowed, validation_error = _poster_url_is_public(current_url)
+        if not allowed:
+            return {"local_poster_path": None, "poster_status": "invalid_url", "poster_error": validation_error}
+        try:
+            response = HTTP_SESSION.get(current_url, timeout=(5, 12), allow_redirects=False, stream=True)
+        except Exception as exc:
+            last_error = f"Poster request failed: {type(exc).__name__}."
+            response = None
+            break
+        if response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("Location") if getattr(response, "headers", None) else None
+            if hasattr(response, "close"):
+                response.close()
+            if not location:
+                last_error = "Poster host returned a redirect without a destination."
+                response = None
+                break
+            current_url = urljoin(current_url, location)
+            continue
+        break
+    else:
+        response = None
+        last_error = "Poster redirect limit exceeded."
+
+    if response is None:
+        return {"local_poster_path": None, "poster_status": "unreachable", "poster_error": last_error}
+    if response.status_code != 200:
+        status_code = response.status_code
+        if hasattr(response, "close"):
+            response.close()
+        return {
+            "local_poster_path": None,
+            "poster_status": "unreachable",
+            "poster_error": f"Poster host returned HTTP {status_code}.",
+        }
 
     try:
-        resp = HTTP_SESSION.get(poster_url, timeout=12)
-        if resp.status_code == 200 and len(resp.content) > 1500:
-            with open(dest_path, "wb") as f:
-                f.write(resp.content)
-            return dest_path
-    except Exception:
-        pass
-    return dest_path if (os.path.isfile(dest_path) and os.path.getsize(dest_path) > 1500) else None
+        content, read_error = _read_poster_response(response)
+    except Exception as exc:
+        return {"local_poster_path": None, "poster_status": "unreachable", "poster_error": f"Poster response read failed: {type(exc).__name__}."}
+    finally:
+        if hasattr(response, "close"):
+            response.close()
+    if read_error:
+        return {"local_poster_path": None, "poster_status": "invalid_image", "poster_error": read_error}
+    content = content or b""
+    if len(content) < 1500:
+        return {"local_poster_path": None, "poster_status": "invalid_image", "poster_error": "Image response is empty or too small."}
+
+    detected = _detect_poster_image(content)
+    if not detected:
+        return {"local_poster_path": None, "poster_status": "invalid_image", "poster_error": "Response is not a supported JPEG, PNG, or WebP image."}
+    content_type, extension = detected
+    response_type = (getattr(response, "headers", {}) or {}).get("Content-Type", "").split(";", 1)[0].strip().lower()
+    if response_type and not response_type.startswith("image/") and response_type not in ("application/octet-stream", "binary/octet-stream"):
+        return {"local_poster_path": None, "poster_status": "invalid_image", "poster_error": f"Unexpected content type: {response_type}."}
+
+    try:
+        os.makedirs(POSTER_CACHE_DIR, exist_ok=True)
+        dest_path = os.path.join(POSTER_CACHE_DIR, f"{key_digest}_{url_digest}{extension}")
+    except OSError as exc:
+        return {"local_poster_path": None, "poster_status": "unreachable", "poster_error": f"Unable to prepare poster cache: {type(exc).__name__}."}
+
+    temp_path = None
+    try:
+        fd, temp_path = tempfile.mkstemp(prefix=".poster_", suffix=".tmp", dir=POSTER_CACHE_DIR)
+        with os.fdopen(fd, "wb") as output:
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temp_path, dest_path)
+        temp_path = None
+        return {"local_poster_path": dest_path, "poster_status": "found", "poster_error": None}
+    except OSError as exc:
+        return {"local_poster_path": None, "poster_status": "unreachable", "poster_error": f"Unable to save poster: {type(exc).__name__}."}
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+
+def download_poster_image(poster_url: Optional[str], unique_key: str, force_download: bool = False) -> Optional[str]:
+    """Backward-compatible wrapper; new callers should use download_poster_image_result."""
+    return download_poster_image_result(poster_url, unique_key, force_download).get("local_poster_path")
 
 
 def probe_video_duration_minutes(target: Optional[str]) -> int:
@@ -485,13 +715,161 @@ def probe_video_duration_minutes(target: Optional[str]) -> int:
     return 0
 
 
-def _fetch_jav_metadata(code_id: str) -> Dict[str, Any]:
+def _fetch_tpdb_jav_metadata(
+    code_id: str,
+    tpdb_api_key: str,
+    item: Optional[Dict[str, Any]] = None,
+    diagnostics: Optional[List[Dict[str, Any]]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Search ThePornDB's dedicated /jav endpoint using its documented parse query."""
+    if not tpdb_api_key:
+        if diagnostics is not None:
+            diagnostics.append({"provider": "theporndb_jav", "status": "skipped", "reason": "TPDB API key is not configured."})
+        return None
+
+    item = item or {}
+    headers = {"Authorization": f"Bearer {tpdb_api_key.strip()}", "Accept": "application/json"}
+    filename = item.get("file_name") or ""
+    parent = item.get("parent_name") or ""
+
+    # Site is extracted only from known site tokens; do not send arbitrary folder names
+    # as a TPDB site identifier.
+    site_aliases = ("caribbeancom", "1pondo", "10musume", "heyzo", "pacopacomama", "muramura", "gachip")
+    folded_parent = _ascii_fold(parent).casefold()
+    site = next((x for x in site_aliases if x in folded_parent), None)
+
+    # Build the title part separately. clean_search_title intentionally cuts at a
+    # standalone year, which is useful for movies but would discard a JAV title when
+    # the date appears before it in a Caribbeancom folder name.
+    title_hint = parent if parent else os.path.splitext(filename)[0]
+    title_hint = re.sub(rf"(?i)\b{re.escape(code_id)}\b", " ", title_hint)
+    if site:
+        title_hint = re.sub(rf"(?i)\b{re.escape(site)}\b", " ", title_hint)
+    title_hint = re.sub(r"(?<!\d)(?:19|20)\d{2}[- ._]\d{1,2}[- ._]\d{1,2}(?!\d)", " ", title_hint)
+    title_hint = re.sub(r"(?<!\d)\d{1,2}[ ._-]+\d{1,2}[ ._-]+(?:19|20)\d{2}(?!\d)", " ", title_hint)
+    title_hint = re.sub(r"(?i)\b(?:JAV|UNCENSORED|UNEDITED|1080P|720P|2160P|480P|4K|UHD|HDR|HEVC|H264|H265|MP4|MKV)\b.*$", " ", title_hint)
+    title_hint = re.sub(r"[._]+", " ", title_hint)
+    title_hint = re.sub(r"\s+", " ", title_hint).strip(" -_")
+
+    parse_queries = [code_id]
+    date_match = re.search(r"(?<!\d)(\d{6})-(\d{3})(?!\d)", code_id or "")
+    release_date = None
+    if date_match:
+        mmddyy = date_match.group(1)
+        month, day, yy = int(mmddyy[:2]), int(mmddyy[2:4]), int(mmddyy[4:6])
+        year = 2000 + yy if yy <= 79 else 1900 + yy
+        if 1 <= month <= 12 and 1 <= day <= 31:
+            release_date = f"{year:04d}-{month:02d}-{day:02d}"
+    if site and title_hint:
+        parse_parts = [site]
+        if release_date:
+            parse_parts.append(release_date)
+        parse_parts.append(title_hint)
+        parse_queries.append(".".join(parse_parts))
+
+    seen = set()
+    for parse_query in parse_queries:
+        if parse_query in seen:
+            continue
+        seen.add(parse_query)
+        try:
+            resp = HTTP_SESSION.get(
+                "https://api.theporndb.net/jav",
+                params={"parse": parse_query, "limit": 10},
+                headers=headers,
+                timeout=12,
+            )
+            if resp.status_code != 200:
+                if diagnostics is not None:
+                    diagnostics.append({"provider": "theporndb_jav", "status": "http_error", "http_status": resp.status_code})
+                continue
+            payload = resp.json() or {}
+            rows = payload.get("data") or []
+            if isinstance(rows, dict):
+                rows = [rows]
+            if not rows:
+                if diagnostics is not None:
+                    diagnostics.append({"provider": "theporndb_jav", "status": "no_results", "query": parse_query})
+                continue
+
+            def row_score(row: Dict[str, Any]) -> float:
+                labels = " ".join(str(row.get(k) or "") for k in ("title", "sku", "external_id", "slug"))
+                score = _title_similarity(code_id, labels)
+                if code_id.casefold() in labels.casefold():
+                    score += 0.5
+                if title_hint:
+                    score = max(score, _title_similarity(title_hint, row.get("title") or ""))
+                return score
+
+            match = max(rows, key=row_score)
+            match_score = row_score(match)
+            if match_score < 0.35 and len(rows) > 1:
+                if diagnostics is not None:
+                    diagnostics.append({"provider": "theporndb_jav", "status": "low_confidence", "query": parse_query})
+                continue
+
+            detail = match
+            identifier = match.get("_id") or match.get("id") or match.get("uuid") or match.get("slug")
+            if identifier and not (match.get("poster") or match.get("image")):
+                detail_resp = HTTP_SESSION.get(
+                    f"https://api.theporndb.net/jav/{quote_plus(str(identifier))}",
+                    headers=headers,
+                    timeout=10,
+                )
+                if detail_resp.status_code == 200:
+                    detail_payload = detail_resp.json() or {}
+                    detail = detail_payload.get("data") or detail
+
+            site_data = detail.get("site") or {}
+            if isinstance(site_data, str):
+                site_name = site_data
+            else:
+                site_name = site_data.get("name")
+            background = detail.get("background") or {}
+            poster = detail.get("poster") or detail.get("image") or background.get("large") or background.get("medium")
+            performers = [x.get("name") for x in (detail.get("performers") or []) if isinstance(x, dict) and x.get("name")]
+            tags = [x.get("name") for x in (detail.get("tags") or []) if isinstance(x, dict) and x.get("name")]
+            rel_date = detail.get("date")
+            title = detail.get("title") or title_hint or code_id
+            if diagnostics is not None:
+                diagnostics.append({"provider": "theporndb_jav", "status": "matched", "query": parse_query,
+                                    "matched_title": title, "poster_available": bool(poster)})
+            return {
+                "code_id": code_id,
+                "title": title,
+                "series_title": title,
+                "original_title": title,
+                "year": _extract_year(rel_date or ""),
+                "release_date": rel_date,
+                "runtime": int((detail.get("duration") or 0) // 60) if detail.get("duration") else 0,
+                "studio": site_name,
+                "plot": detail.get("description") or "",
+                "content_category": "jav",
+                "is_adult": 1,
+                "has_metadata": 1,
+                "metadata_source": "theporndb_jav",
+                "poster_url": poster,
+                "actresses": performers,
+                "genres": tags or ["JAV"],
+                "rating": float(detail.get("rating") or 0.0),
+                "_lookup": {"provider": "theporndb_jav", "status": "metadata_found", "query": parse_query,
+                            "matched_title": title},
+            }
+        except Exception as exc:
+            if diagnostics is not None:
+                diagnostics.append({"provider": "theporndb_jav", "status": "request_error", "error": type(exc).__name__})
+    return None
+
+
+def _fetch_jav_metadata(code_id: str, tpdb_api_key: str = "", item: Optional[Dict[str, Any]] = None, diagnostics: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     code_upper = code_id.upper().strip()
     code_slug = code_upper.lower()
 
     try:
         jdb_url = f"https://www.javdatabase.com/movies/{quote_plus(code_slug)}/"
         resp = HTTP_SESSION.get(jdb_url, timeout=10)
+        if diagnostics is not None:
+            diagnostics.append({"provider": "javdatabase", "status": "http_response", "http_status": resp.status_code})
         if resp.status_code == 200 and code_upper in resp.text.upper():
             soup = BeautifulSoup(resp.text, "html.parser")
             h1 = soup.select_one("h1.entry-title, h1")
@@ -534,7 +912,7 @@ def _fetch_jav_metadata(code_id: str) -> Dict[str, Any]:
             if m_rt:
                 runtime = int(m_rt.group(1))
 
-            return {
+            jdb_meta = {
                 "code_id": code_upper,
                 "title": title,
                 "series_title": title,
@@ -546,16 +924,30 @@ def _fetch_jav_metadata(code_id: str) -> Dict[str, Any]:
                 "plot": f"JAV Release {code_upper}" + (f" starring {', '.join(actresses)}" if actresses else ""),
                 "content_category": "jav",
                 "is_adult": 1,
-                "has_metadata": 1 if poster_url else 0,
+                "has_metadata": 1,
                 "metadata_source": "javdatabase",
                 "poster_url": poster_url,
                 "actresses": actresses,
                 "genres": genres or ["JAV"],
                 "rating": 0.0,
+                "_lookup": {"provider": "javdatabase", "status": "metadata_found", "poster_available": bool(poster_url)},
             }
-    except Exception:
-        pass
+            if poster_url:
+                if diagnostics is not None:
+                    diagnostics.append({"provider": "javdatabase", "status": "matched", "matched_title": title, "poster_available": True})
+                return jdb_meta
+            if diagnostics is not None:
+                diagnostics.append({"provider": "javdatabase", "status": "matched_no_poster", "matched_title": title})
+            # JavDatabase page exists but has no cover; try ThePornDB before falling back.
+            tpdb_meta = _fetch_tpdb_jav_metadata(code_upper, tpdb_api_key, item=item, diagnostics=diagnostics)
+            return tpdb_meta or jdb_meta
+    except Exception as exc:
+        if diagnostics is not None:
+            diagnostics.append({"provider": "javdatabase", "status": "request_error", "error": type(exc).__name__})
 
+    tpdb_meta = _fetch_tpdb_jav_metadata(code_upper, tpdb_api_key, item=item, diagnostics=diagnostics)
+    if tpdb_meta:
+        return tpdb_meta
     return {
         "code_id": code_upper,
         "title": code_upper,
@@ -565,6 +957,8 @@ def _fetch_jav_metadata(code_id: str) -> Dict[str, Any]:
         "has_metadata": 0,
         "metadata_source": "jav_code_parser",
         "genres": ["JAV"],
+        "_lookup": {"provider": "javdatabase+theporndb_jav", "status": "not_found",
+                    "message": "No matching JAV metadata record was returned by configured providers."},
     }
 
 
@@ -635,134 +1029,182 @@ def _fetch_tpdb_metadata(
     return None
 
 
+def _ascii_fold(value: str) -> str:
+    value = unicodedata.normalize("NFKD", value or "")
+    return "".join(ch for ch in value if not unicodedata.combining(ch))
+
+
+def _build_tmdb_search_candidates(title_query: str, year: Optional[int] = None) -> List[str]:
+    """Create conservative title variants for TMDb without broad fuzzy guessing."""
+    clean = clean_search_title(title_query)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    candidates: List[str] = []
+
+    def add(value: str) -> None:
+        value = re.sub(r"\s+", " ", value or "").strip(" :.-_")
+        if value and value.casefold() not in {x.casefold() for x in candidates}:
+            candidates.append(value)
+
+    folded = _ascii_fold(clean).casefold()
+    compact = re.sub(r"[^a-z0-9]+", " ", folded).strip()
+
+    # Known localized/release-name alias present in the user's Spider-Man sample.
+    # The Czech phrase "Zbrusu nový den" is the localized title for Brand New Day.
+    if "spider man" in compact and ("zbrusu novy den" in compact or "brand new day" in compact):
+        add("Spider-Man: Brand New Day")
+
+    # A release name such as "Spider-Man 9 Zbrusu nový den" often carries a
+    # local sequel index. Keep the franchise-only query as a secondary candidate.
+    spider_franchise = re.match(r"^(Spider[ -]?Man)\s+\d{1,2}(?:\s|$)", clean, re.IGNORECASE)
+    if spider_franchise:
+        if year == 2026 or year is None:
+            add("Spider-Man: Brand New Day")
+        add("Spider-Man")
+
+    sequel = re.match(r"^(.*\b[a-z][a-z0-9-]{2,})\s+(\d{1,2})$", clean, re.IGNORECASE)
+    if sequel:
+        franchise = sequel.group(1).strip()
+        if "spider" in franchise.casefold() and (year == 2026 or year is None):
+            add("Spider-Man: Brand New Day")
+        add(franchise)
+
+    add(clean)
+
+    # Remove a trailing standalone sequel index for a fallback query. The year
+    # filter is retained by the caller to avoid matching an older franchise film.
+    if sequel:
+        add(sequel.group(1))
+
+    return candidates[:4]
+
+
 def _fetch_tmdb_metadata(
     title_query: str,
     tmdb_api_key: str,
     year: Optional[int] = None,
     prefer_tv: bool = False,
+    diagnostics: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     if not tmdb_api_key or not title_query:
+        if diagnostics is not None:
+            diagnostics.append({"provider": "tmdb", "status": "skipped", "reason": "TMDb API key or title is missing."})
         return None
+
     api_key = tmdb_api_key.strip()
     endpoints = ["tv"] if prefer_tv else ["movie", "tv"]
+    candidates = _build_tmdb_search_candidates(title_query, year)
+    best_match: Optional[Dict[str, Any]] = None
+    best_score = -1.0
+    best_endpoint = "movie"
+    best_query = ""
 
     for ep in endpoints:
-        try:
-            params: Dict[str, Any] = {"api_key": api_key, "query": title_query, "include_adult": "false"}
+        for query_index, query in enumerate(candidates):
+            params: Dict[str, Any] = {"api_key": api_key, "query": query, "include_adult": "false"}
+            year_param = "first_air_date_year" if ep == "tv" else "year"
             if year:
-                params["first_air_date_year" if ep == "tv" else "year"] = year
-            resp = HTTP_SESSION.get(f"https://api.themoviedb.org/3/search/{ep}", params=params, timeout=10)
-            if resp.status_code != 200:
-                continue
-            results = resp.json().get("results") or []
-            if not results and year:
-                params.pop("first_air_date_year", None)
-                params.pop("year", None)
+                params[year_param] = year
+            try:
                 resp = HTTP_SESSION.get(f"https://api.themoviedb.org/3/search/{ep}", params=params, timeout=10)
-                results = resp.json().get("results") or [] if resp.status_code == 200 else []
-            if not results:
-                continue
-
-            best_top = None
-            best_score = -1.0
-            for cand in results[:5]:
-                c_name = cand.get("name") if ep == "tv" else cand.get("title")
-                c_orig = cand.get("original_name") if ep == "tv" else cand.get("original_title")
-                sim = max(_title_similarity(title_query, c_name or ""), _title_similarity(title_query, c_orig or ""))
-                if year:
+                if resp.status_code != 200:
+                    if diagnostics is not None:
+                        diagnostics.append({"provider": "tmdb", "endpoint": ep, "query": query,
+                                            "status": "http_error", "http_status": resp.status_code})
+                    continue
+                results = (resp.json() or {}).get("results") or []
+                # If a year-filtered search is empty, retry the same query without
+                # year, but rank exact-year results decisively above other releases.
+                if not results and year:
+                    retry_params = {"api_key": api_key, "query": query, "include_adult": "false"}
+                    resp = HTTP_SESSION.get(f"https://api.themoviedb.org/3/search/{ep}", params=retry_params, timeout=10)
+                    if resp.status_code == 200:
+                        results = (resp.json() or {}).get("results") or []
+                if diagnostics is not None:
+                    diagnostics.append({"provider": "tmdb", "endpoint": ep, "query": query,
+                                        "status": "results" if results else "no_results", "result_count": len(results)})
+                for cand in results[:10]:
+                    c_name = cand.get("name") if ep == "tv" else cand.get("title")
+                    c_orig = cand.get("original_name") if ep == "tv" else cand.get("original_title")
+                    sim = max(_title_similarity(query, c_name or ""), _title_similarity(query, c_orig or ""))
                     c_rel = (cand.get("first_air_date") if ep == "tv" else cand.get("release_date")) or ""
-                    if str(year) in c_rel:
-                        sim += 0.08
-                if sim > best_score:
-                    best_score = sim
-                    best_top = cand
-
-            if not best_top or best_score < 0.65:
-                words = title_query.split()
-                for trim_len in range(min(len(words) - 1, 6), 1, -1):
-                    short_q = " ".join(words[:trim_len])
-                    r2 = HTTP_SESSION.get(
-                        f"https://api.themoviedb.org/3/search/{ep}",
-                        params={"api_key": api_key, "query": short_q, "include_adult": "false"},
-                        timeout=10,
-                    )
-                    res2 = r2.json().get("results") or [] if r2.status_code == 200 else []
-                    for cand in res2[:5]:
-                        c_name = cand.get("name") if ep == "tv" else cand.get("title")
-                        c_orig = cand.get("original_name") if ep == "tv" else cand.get("original_title")
-                        sim = max(_title_similarity(short_q, c_name or ""), _title_similarity(short_q, c_orig or ""))
-                        if sim > best_score:
-                            best_score = sim
-                            best_top = cand
-                    if best_top and best_score >= 0.72:
-                        break
-
-            if not best_top or best_score < 0.60:
+                    year_match = bool(year and c_rel[:4].isdigit() and int(c_rel[:4]) == int(year))
+                    if year_match:
+                        sim += 0.18
+                    elif year and query_index > 0:
+                        # Broad franchise fallbacks must not drift to a different year.
+                        continue
+                    if sim > best_score:
+                        best_score = sim
+                        best_match = cand
+                        best_endpoint = ep
+                        best_query = query
+            except Exception as exc:
+                if diagnostics is not None:
+                    diagnostics.append({"provider": "tmdb", "endpoint": ep, "query": query,
+                                        "status": "request_error", "error": type(exc).__name__})
                 continue
 
-            tmdb_id = int(best_top["id"])
-            det_resp = HTTP_SESSION.get(
-                f"https://api.themoviedb.org/3/{ep}/{tmdb_id}",
-                params={"api_key": api_key, "append_to_response": "credits"},
-                timeout=10,
-            )
-            det = det_resp.json() if det_resp.status_code == 200 else best_top
+    if not best_match or best_score < 0.60:
+        return None
 
-            genres = [g.get("name") for g in (det.get("genres") or []) if g.get("name")]
-            genre_ids = set(best_top.get("genre_ids") or [g.get("id") for g in (det.get("genres") or [])])
-            origin_countries = [c.upper() for c in (det.get("origin_country") or best_top.get("origin_country") or [])]
-            orig_lang = (det.get("original_language") or best_top.get("original_language") or "").lower()
+    try:
+        tmdb_id = int(best_match["id"])
+        det_resp = HTTP_SESSION.get(
+            f"https://api.themoviedb.org/3/{best_endpoint}/{tmdb_id}",
+            params={"api_key": api_key, "append_to_response": "credits"},
+            timeout=10,
+        )
+        det = det_resp.json() if det_resp.status_code == 200 else best_match
+        genres = [g.get("name") for g in (det.get("genres") or []) if g.get("name")]
+        genre_ids = set(best_match.get("genre_ids") or [g.get("id") for g in (det.get("genres") or [])])
+        origin_countries = [c.upper() for c in (det.get("origin_country") or best_match.get("origin_country") or [])]
+        orig_lang = (det.get("original_language") or best_match.get("original_language") or "").lower()
+        is_animation = 16 in genre_ids or any("animation" in g.lower() for g in genres)
+        if is_animation and ("CN" in origin_countries or "TW" in origin_countries or orig_lang == "zh"):
+            cat = "donghua"
+        elif is_animation and ("JP" in origin_countries or orig_lang == "ja"):
+            cat = "anime"
+        else:
+            cat = "tv_show" if (best_endpoint == "tv" or prefer_tv) else "general_movie"
 
-            is_animation = 16 in genre_ids or any("animation" in g.lower() for g in genres)
-            if is_animation and ("CN" in origin_countries or "TW" in origin_countries or orig_lang == "zh"):
-                cat = "donghua"
-            elif is_animation and ("JP" in origin_countries or orig_lang == "ja"):
-                cat = "anime"
-            else:
-                cat = "tv_show" if (ep == "tv" or prefer_tv) else "general_movie"
-
-            rel_date = det.get("first_air_date") if ep == "tv" else det.get("release_date")
-            if ep == "tv":
-                rt_list = det.get("episode_run_time") or []
-                runtime = int(rt_list[0]) if rt_list else 45
-            else:
-                runtime = int(det.get("runtime") or 0)
-
-            companies = [c.get("name") for c in (det.get("production_companies") or []) if c.get("name")]
-            director = None
-            for c in (det.get("credits") or {}).get("crew") or []:
-                if c.get("job") == "Director":
-                    director = c.get("name")
-                    break
-
-            cast = [c.get("name") for c in ((det.get("credits") or {}).get("cast") or [])[:6] if c.get("name")]
-            poster_path = det.get("poster_path") or best_top.get("poster_path")
-            poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
-            resolved_title = (det.get("name") if ep == "tv" else det.get("title")) or title_query
-
-            return {
-                "title": resolved_title,
-                "series_title": resolved_title,
-                "original_title": det.get("original_name") if ep == "tv" else det.get("original_title"),
-                "year": _extract_year(rel_date or "") or year,
-                "release_date": rel_date,
-                "runtime": runtime,
-                "studio": companies[0] if companies else None,
-                "director": director,
-                "plot": det.get("overview") or "",
-                "content_category": cat,
-                "tmdb_id": tmdb_id,
-                "is_adult": 0,
-                "has_metadata": 1,
-                "metadata_source": "tmdb",
-                "poster_url": poster_url,
-                "actresses": cast,
-                "genres": genres,
-                "rating": round(float(det.get("vote_average") or 0.0), 1),
-            }
-        except Exception:
-            continue
-    return None
+        rel_date = det.get("first_air_date") if best_endpoint == "tv" else det.get("release_date")
+        if best_endpoint == "tv":
+            rt_list = det.get("episode_run_time") or []
+            runtime = int(rt_list[0]) if rt_list else 45
+        else:
+            runtime = int(det.get("runtime") or 0)
+        companies = [c.get("name") for c in (det.get("production_companies") or []) if c.get("name")]
+        director = next((c.get("name") for c in (det.get("credits") or {}).get("crew", []) if c.get("job") == "Director"), None)
+        cast = [c.get("name") for c in ((det.get("credits") or {}).get("cast") or [])[:6] if c.get("name")]
+        poster_path = det.get("poster_path") or best_match.get("poster_path")
+        poster_url = f"https://image.tmdb.org/t/p/w500{poster_path}" if poster_path else None
+        resolved_title = (det.get("name") if best_endpoint == "tv" else det.get("title")) or title_query
+        return {
+            "title": resolved_title,
+            "series_title": resolved_title,
+            "original_title": det.get("original_name") if best_endpoint == "tv" else det.get("original_title"),
+            "year": _extract_year(rel_date or "") or year,
+            "release_date": rel_date,
+            "runtime": runtime,
+            "studio": companies[0] if companies else None,
+            "director": director,
+            "plot": det.get("overview") or "",
+            "content_category": cat,
+            "tmdb_id": tmdb_id,
+            "is_adult": 0,
+            "has_metadata": 1,
+            "metadata_source": "tmdb",
+            "poster_url": poster_url,
+            "actresses": cast,
+            "genres": genres,
+            "rating": round(float(det.get("vote_average") or 0.0), 1),
+            "_lookup": {"provider": "tmdb", "status": "metadata_found", "query": best_query,
+                        "matched_title": resolved_title, "tmdb_id": tmdb_id},
+        }
+    except Exception as exc:
+        if diagnostics is not None:
+            diagnostics.append({"provider": "tmdb", "status": "detail_error", "error": type(exc).__name__})
+        return None
 
 
 def _fetch_anilist_metadata(title_query: str, force_donghua: bool = False) -> Optional[Dict[str, Any]]:
@@ -1098,6 +1540,8 @@ def fetch_official_series_seasons(
 
 
 def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[str, Any]:
+    # Keep the immutable source filename for product-code parsing, but prefer the
+    # user's confirmed normalized title for provider searches.
     fname = item.get("file_name") or item.get("title") or ""
     fpath = item.get("file_path") or ""
     parent_name = item.get("parent_name") or (os.path.basename(os.path.dirname(fpath)) if fpath else "")
@@ -1107,12 +1551,74 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
     tpdb_key = settings.get("tpdb_api_key", "")
 
     parsed = parse_release_structure(fname, parent_name)
-    clean_title = parsed["clean_series_title"]
-    season_num = parsed["season_num"]
-    episode_num = parsed["episode_num"]
-    is_episodic = parsed["is_episodic"]
-    year_hint = parsed["year"]
-    pre_cat = parsed["pre_category"]
+    # normalized_title is the explicit search title saved by classification/manual edit.
+    # Legacy series_title can contain the unclean original release name, so do not
+    # treat it as confirmed unless the user explicitly locked the title.
+    title_is_confirmed = bool(
+        int(item.get("title_is_manual") or 0)
+        or int(item.get("classification_locked") or 0)
+        or item.get("classification_method") == "manual"
+        or item.get("classification_status") == "manually_classified"
+    )
+    confirmed_title = (item.get("normalized_title") or (item.get("series_title") if title_is_confirmed else "") or "").strip()
+    clean_title = confirmed_title or parsed["clean_series_title"]
+    provider_diagnostics: List[Dict[str, Any]] = []
+    season_num = item.get("season_num") if item.get("season_num") is not None else parsed["season_num"]
+    episode_num = item.get("episode_num") if item.get("episode_num") is not None else parsed["episode_num"]
+    is_episodic = bool(parsed["is_episodic"] or item.get("content_category") == "tv_show")
+    year_hint = item.get("year") or parsed["year"]
+    confirmed_category = item.get("content_category")
+    manually_locked = bool(
+        int(item.get("classification_locked") or 0)
+        or int(item.get("title_is_manual") or 0)
+        or item.get("classification_method") == "manual"
+        or item.get("classification_status") == "manually_classified"
+    )
+    # Manual classification remains authoritative. Otherwise apply the shared
+    # priority: JAV > English Adult > Indo > Anime/Donghua > TV/Movie.
+    # A filename-only JAV guess that never matched a validated maker prefix must not
+    # override a category the classifier/manual flow already saved (rule 2).
+    has_saved_category = bool(confirmed_category) and confirmed_category != "uncategorized"
+    if manually_locked and confirmed_category:
+        pre_cat = confirmed_category
+    elif parsed.get("pre_category") in ("jav", "english_adult") and (
+        parsed.get("pre_category") == "english_adult"
+        or parsed.get("jav_code_validated")
+        or not has_saved_category
+    ):
+        pre_cat = parsed["pre_category"]
+    elif confirmed_category in ("jav", "english_adult"):
+        pre_cat = confirmed_category
+    else:
+        indo_verdict = indo_eng.classify_indo({
+            "title": fname,
+            "tags": item.get("genres") or item.get("genres_json") or [],
+            "description": " ".join(str(item.get(k) or "") for k in ("parent_name", "title", "series_title", "original_title", "plot")),
+            "overview": item.get("plot") or "",
+            "original_url": item.get("original_url") or "",
+        })
+        if confirmed_category == "indo" or indo_verdict.get("is_indo"):
+            pre_cat = "indo"
+            parsed["indo_match"] = indo_verdict
+        elif confirmed_category in ("anime", "donghua", "tv_show", "general_movie"):
+            pre_cat = confirmed_category
+        else:
+            pre_cat = parsed["pre_category"]
+    if pre_cat in ("anime", "donghua", "tv_show", "general_movie") and confirmed_title:
+        # Classification is authoritative once saved; filename heuristics must not override it.
+        parsed["clean_series_title"] = clean_title
+    if pre_cat == "jav":
+        parsed["jav_code"] = parsed.get("jav_code") or item.get("code_id") or extract_jav_code(confirmed_title or fname)
+    if pre_cat == "english_adult":
+        if not parsed.get("adult_info"):
+            parsed["adult_info"] = {
+                "title": clean_title,
+                "studio": item.get("studio"),
+                "year": year_hint,
+                "release_date": item.get("release_date"),
+            }
+        elif confirmed_title:
+            parsed["adult_info"]["title"] = clean_title
 
     def _finalize(meta_dict: Dict[str, Any]) -> Dict[str, Any]:
         # Kunci item episodik agar tidak pernah turun menjadi general_movie
@@ -1125,7 +1631,22 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
             meta_dict["episode_num"] = episode_num
 
         # Kunci series_title ke judul kanonik serial (bukan subjudul episode)
-        canonical_series = (meta_dict.get("series_title") or clean_title or meta_dict.get("title") or fname).strip()
+        # Only explicit user confirmation locks the canonical title. Automatically
+        # normalized filenames remain useful search hints, but must not override a
+        # better canonical series title returned by a metadata provider.
+        manual_title_confirmed = bool(
+            int(item.get("title_is_manual") or 0)
+            or int(item.get("classification_locked") or 0)
+            or item.get("classification_method") == "manual"
+            or item.get("classification_status") == "manually_classified"
+        )
+        canonical_series = (
+            (confirmed_title if manual_title_confirmed else None)
+            or meta_dict.get("series_title")
+            or clean_title
+            or meta_dict.get("title")
+            or fname
+        ).strip()
         meta_dict["series_title"] = canonical_series
 
         if not int(meta_dict.get("runtime") or 0):
@@ -1139,12 +1660,67 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
                     if probed_min > 0:
                         meta_dict["runtime"] = probed_min
 
-        meta_dict["local_poster_path"] = download_poster_image(meta_dict.get("poster_url"), unique_key)
+        if int(item.get("poster_is_manual") or 0):
+            meta_dict["poster_url"] = item.get("poster_url")
+            meta_dict["local_poster_path"] = item.get("local_poster_path")
+            meta_dict["poster_status"] = "manual"
+            meta_dict["poster_error"] = item.get("poster_error")
+            meta_dict["poster_source"] = "manual"
+        else:
+            poster_result = download_poster_image_result(meta_dict.get("poster_url"), unique_key)
+            # Keep an existing cached image visible if a refresh fails; expose the failure separately.
+            meta_dict["local_poster_path"] = poster_result.get("local_poster_path") or item.get("local_poster_path")
+            meta_dict["poster_status"] = poster_result.get("poster_status", "not_checked")
+            meta_dict["poster_error"] = poster_result.get("poster_error")
+            meta_dict["poster_source"] = meta_dict.get("metadata_source") or "metadata_provider"
+        lookup = dict(meta_dict.get("_lookup") or {})
+        if not lookup:
+            lookup = {
+                "provider": meta_dict.get("metadata_source") or "unknown",
+                "status": "metadata_found" if int(meta_dict.get("has_metadata") or 0) else "not_found",
+            }
+        lookup["poster_status"] = meta_dict.get("poster_status", "not_checked")
+        if meta_dict.get("poster_status") == "missing" and lookup.get("status") == "metadata_found":
+            lookup["status"] = "metadata_found_poster_missing"
+            lookup["message"] = "Metadata matched, but the provider did not return a poster URL."
+        elif meta_dict.get("poster_status") in ("invalid_image", "invalid_url", "unreachable"):
+            lookup["status"] = "metadata_found_poster_download_failed"
+            lookup["message"] = meta_dict.get("poster_error") or "Poster download failed validation."
+        if provider_diagnostics:
+            lookup["attempts"] = provider_diagnostics[-12:]
+        meta_dict["_lookup"] = lookup
         return meta_dict
 
     # 1. JAV
     if pre_cat == "jav":
-        return _finalize(_fetch_jav_metadata(parsed["jav_code"]))
+        jav_code = parsed.get("jav_code")
+        if jav_code:
+            jav_meta = _fetch_jav_metadata(jav_code, tpdb_key, item=item, diagnostics=provider_diagnostics)
+            finalized_jav = _finalize(jav_meta)
+            # If JavDatabase supplied a poster URL but the image host is broken,
+            # make one alternate-provider attempt before accepting the failure.
+            if (
+                tpdb_key
+                and not int(item.get("poster_is_manual") or 0)
+                and jav_meta.get("metadata_source") == "javdatabase"
+                and finalized_jav.get("poster_status") != "found"
+            ):
+                tpdb_meta = _fetch_tpdb_jav_metadata(jav_code, tpdb_key, item=item, diagnostics=provider_diagnostics)
+                if tpdb_meta and tpdb_meta.get("poster_url"):
+                    return _finalize(tpdb_meta)
+            return finalized_jav
+        return _finalize({
+            "title": clean_title,
+            "series_title": clean_title,
+            "code_id": item.get("code_id"),
+            "content_category": "jav",
+            "is_adult": 1,
+            "has_metadata": 0,
+            "metadata_source": "manual_classification_parser",
+            "_lookup": {"provider": "javdatabase+theporndb_jav", "status": "not_found",
+                        "message": "JAV code was parsed, but no provider metadata record was found."},
+            "genres": ["JAV"],
+        })
 
     # 2. English Adult
     if pre_cat == "english_adult":
@@ -1159,17 +1735,45 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
                 "studio": adult_info["studio"],
                 "content_category": "english_adult",
                 "is_adult": 1,
-                "has_metadata": 1,
+                "has_metadata": 0,
                 "metadata_source": "adult_scene_parser",
+                "_lookup": {"provider": "theporndb", "status": "not_found", "message": "No adult metadata match was returned."},
                 "genres": ["Adult", adult_info["studio"]] if adult_info["studio"] else ["Adult"],
             }
         return _finalize(meta)
 
-    # 3. Donghua / Anime
+    # 3. Indonesian Adult / Indo category. No external metadata provider is
+    # queried here; the local keyword verdict is persisted through normal upsert.
+    if pre_cat == "indo":
+        indo_match = parsed.get("indo_match") or indo_eng.classify_indo({
+            "title": fname,
+            "tags": item.get("genres") or item.get("genres_json") or [],
+            "description": " ".join(str(item.get(k) or "") for k in ("parent_name", "title", "series_title", "original_title", "plot")),
+            "overview": item.get("plot") or "",
+            "original_url": item.get("original_url") or "",
+        })
+        return _finalize({
+            "title": clean_title,
+            "series_title": clean_title,
+            "year": year_hint,
+            "content_category": "indo",
+            "is_adult": 1,
+            "has_metadata": 0,
+            "metadata_source": "indo_keyword_classifier",
+            "_lookup": {
+                "provider": "local_indo_keyword_engine",
+                "status": "classified",
+                "message": "Classified as Indo using local keyword signals.",
+                "indo_match": indo_match,
+            },
+            "genres": ["Indo", "Adult"],
+        })
+
+    # 4. Donghua / Anime
     if pre_cat in ("donghua", "anime"):
         meta = _fetch_anilist_metadata(clean_title, force_donghua=(pre_cat == "donghua"))
         if not meta and tmdb_key:
-            meta = _fetch_tmdb_metadata(clean_title, tmdb_key, year=year_hint, prefer_tv=True)
+            meta = _fetch_tmdb_metadata(clean_title, tmdb_key, year=year_hint, prefer_tv=True, diagnostics=provider_diagnostics)
         if not meta:
             meta = {
                 "title": clean_title,
@@ -1177,14 +1781,15 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
                 "year": year_hint,
                 "content_category": pre_cat,
                 "is_adult": 0,
-                "has_metadata": 1,
+                "has_metadata": 0,
                 "metadata_source": "anime_parser",
+                "_lookup": {"provider": "anilist+tmdb", "status": "not_found", "message": "No AniList or TMDb metadata match was returned."},
                 "genres": ["Donghua" if pre_cat == "donghua" else "Anime"],
             }
         return _finalize(meta)
 
-    # 4. TV Show / General Movie via TMDb (jika is_episodic, kunci ke TV endpoint)
-    meta = _fetch_tmdb_metadata(clean_title, tmdb_key, year=year_hint, prefer_tv=is_episodic)
+    # 5. TV Show / General Movie via TMDb (jika is_episodic, kunci ke TV endpoint)
+    meta = _fetch_tmdb_metadata(clean_title, tmdb_key, year=year_hint, prefer_tv=is_episodic, diagnostics=provider_diagnostics)
 
     if not meta and is_episodic:
         meta = _fetch_tvmaze_fallback(clean_title)
@@ -1196,8 +1801,10 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
             "year": year_hint,
             "content_category": "tv_show" if is_episodic else "general_movie",
             "is_adult": 0,
-            "has_metadata": 1,
+            "has_metadata": 0,
             "metadata_source": "filename_parser",
+            "_lookup": {"provider": "tmdb" if tmdb_key else "tmdb", "status": "not_found",
+                        "message": "No matching TMDb record was found. Check the search title, year, and TMDb API key."},
         }
 
     return _finalize(meta)

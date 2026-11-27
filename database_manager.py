@@ -1,6 +1,8 @@
 import json
 import os
 import platform
+
+import platform_support
 import re
 import sqlite3
 from datetime import datetime
@@ -20,6 +22,7 @@ VALID_CATEGORIES = {
     "uncategorized",
     "jav",
     "english_adult",
+    "indo",
     "general_movie",
     "tv_show",
     "anime",
@@ -27,46 +30,39 @@ VALID_CATEGORIES = {
 }
 
 
+VALID_CLASSIFICATION_STATUSES = {
+    "pending",
+    "classified",
+    "needs_review",
+    "manually_classified",
+}
+CLASSIFICATION_MIGRATION_ID = "tbh_v1_2_phase2_classification_schema"
+POSTER_MIGRATION_ID = "tbh_v1_2_phase4_poster_reliability"
+TITLE_OVERRIDE_MIGRATION_ID = "tbh_v1_2_manual_title_override"
+DUAL_SUBTITLE_MIGRATION_ID = "tbh_v1_2_phase6b_dual_subtitles"
+VALID_POSTER_STATUSES = {"not_checked", "found", "missing", "invalid_url", "invalid_image", "unreachable", "load_error", "manual"}
+
+
 def detect_runtime_os() -> str:
-    """Detects 'windows', 'darwin', 'android', or 'linux'."""
-    if os.environ.get("ANDROID_ROOT") or "com.termux" in os.environ.get("PREFIX", ""):
-        return "android"
-    sys_name = platform.system().lower()
-    if sys_name.startswith("win"):
-        return "windows"
-    if sys_name == "darwin":
-        return "darwin"
-    return "linux"
+    """Detects the current runtime OS, including Android/Termux."""
+    return platform_support.detect_runtime_os()
 
 
 def get_default_player_paths() -> Dict[str, str]:
+    """Return discovered player paths, falling back to conventional install paths."""
     os_name = detect_runtime_os()
-    if os_name == "windows":
-        return {
-            "vlc": r"C:\Program Files\VideoLAN\VLC\vlc.exe",
-            "mpv": r"C:\Program Files\mpv\mpv.exe",
-            "potplayer": r"C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe",
-            "mpchc": r"C:\Program Files\MPC-HC\mpc-hc64.exe",
-            "custom": "",
-        }
-    if os_name == "darwin":
-        return {
-            "vlc": "/Applications/VLC.app/Contents/MacOS/VLC",
-            "mpv": "/opt/homebrew/bin/mpv",
-            "iina": "/Applications/IINA.app/Contents/MacOS/iina-cli",
-            "custom": "",
-        }
     if os_name == "android":
-        return {
-            "vlc": "android://org.videolan.vlc",
-            "mpv": "android://is.xyz.mpv",
-            "custom": "android://auto",
-        }
-    return {
-        "vlc": "/usr/bin/vlc",
-        "mpv": "/usr/bin/mpv",
+        return {"vlc": "android://org.videolan.vlc", "mpv": "android://is.xyz.mpv", "custom": "android://auto"}
+    defaults = {
+        "vlc": platform_support.resolve_executable("vlc") or (r"C:\Program Files\VideoLAN\VLC\vlc.exe" if os_name == "windows" else ("/Applications/VLC.app/Contents/MacOS/VLC" if os_name == "darwin" else "/usr/bin/vlc")),
+        "mpv": platform_support.resolve_executable("mpv") or (r"C:\Program Files\mpv\mpv.exe" if os_name == "windows" else ("/opt/homebrew/bin/mpv" if os_name == "darwin" else "/usr/bin/mpv")),
         "custom": "",
     }
+    if os_name == "windows":
+        defaults.update({"potplayer": r"C:\Program Files\DAUM\PotPlayer\PotPlayerMini64.exe", "mpchc": r"C:\Program Files\MPC-HC\mpc-hc64.exe"})
+    if os_name == "darwin":
+        defaults["iina"] = "/Applications/IINA.app/Contents/MacOS/iina-cli"
+    return defaults
 
 
 _DEFAULT_PATHS = get_default_player_paths()
@@ -109,9 +105,24 @@ def derive_series_title(raw_title: str) -> str:
     return t or (raw_title or "Untitled Series")
 
 
+class ClosingSQLiteConnection(sqlite3.Connection):
+    """SQLite connection that also closes when used as a context manager.
+
+    sqlite3.Connection.__exit__ commits or rolls back, but does not close the
+    connection. Closing here prevents Windows file locks from surviving a
+    ``with get_connection()`` block while preserving normal transaction rules.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            return super().__exit__(exc_type, exc_value, traceback)
+        finally:
+            self.close()
+
+
 def get_connection() -> sqlite3.Connection:
     os.makedirs(DB_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn = sqlite3.connect(DB_PATH, timeout=30, factory=ClosingSQLiteConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 30000;")
     conn.execute("PRAGMA foreign_keys = ON;")
@@ -280,12 +291,94 @@ def consolidate_series_groups(conn: Optional[sqlite3.Connection] = None) -> int:
     return updated_rows
 
 
+def _classification_migration_already_applied() -> bool:
+    """Return True for a new/empty DB or when the Phase 2 migration is recorded."""
+    if not os.path.isfile(DB_PATH):
+        return True
+    probe = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        media_table = probe.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_items'"
+        ).fetchone()
+        if not media_table:
+            return True
+        migrations_table = probe.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        if not migrations_table:
+            return False
+        return probe.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+            (CLASSIFICATION_MIGRATION_ID,),
+        ).fetchone() is not None
+    finally:
+        probe.close()
+
+
+def _poster_migration_already_applied() -> bool:
+    """Return True when the Phase 4 poster reliability migration is recorded."""
+    if not os.path.isfile(DB_PATH):
+        return True
+    probe = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        media_table = probe.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_items'"
+        ).fetchone()
+        if not media_table:
+            return True
+        migrations_table = probe.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        if not migrations_table:
+            return False
+        return probe.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+            (POSTER_MIGRATION_ID,),
+        ).fetchone() is not None
+    finally:
+        probe.close()
+
+
+def _title_override_migration_already_applied() -> bool:
+    """Return True when the manual-title override migration is recorded."""
+    if not os.path.isfile(DB_PATH):
+        return True
+    probe = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        media_table = probe.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_items'"
+        ).fetchone()
+        if not media_table:
+            return True
+        migrations_table = probe.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        if not migrations_table:
+            return False
+        return probe.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+            (TITLE_OVERRIDE_MIGRATION_ID,),
+        ).fetchone() is not None
+    finally:
+        probe.close()
+
+
 def init_db() -> None:
     os.makedirs(DB_DIR, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
     os.makedirs(CACHE_DIR, exist_ok=True)
     os.makedirs(PLAYLIST_DIR, exist_ok=True)
     os.makedirs(STATIC_DIR, exist_ok=True)
+
+    # Back up an existing v1.1 database before the first schema mutation.
+    if not (
+        _classification_migration_already_applied()
+        and _poster_migration_already_applied()
+        and _title_override_migration_already_applied()
+    ):
+        backup_result = create_db_backup()
+        if not backup_result or not backup_result.get("backup_file"):
+            raise RuntimeError("Schema migration aborted: pre-migration database backup failed.")
 
     with get_connection() as conn:
         conn.execute("PRAGMA journal_mode = WAL;")
@@ -371,6 +464,33 @@ def init_db() -> None:
                 value TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS torbox_import_hints (
+                torbox_kind TEXT NOT NULL,
+                torbox_item_id TEXT NOT NULL,
+                content_category TEXT NOT NULL DEFAULT 'uncategorized',
+                poster_url TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (torbox_kind, torbox_item_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS roxxy_library_tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_key TEXT NOT NULL UNIQUE,
+                download_job_id TEXT NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'queued',
+                priority INTEGER NOT NULL DEFAULT 100,
+                file_path TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                stream_json TEXT NOT NULL DEFAULT '{}',
+                file_size INTEGER NOT NULL DEFAULT 0,
+                validation_json TEXT NOT NULL DEFAULT '{}',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_media_category ON media_items(content_category);
             CREATE INDEX IF NOT EXISTS idx_media_has_meta ON media_items(has_metadata);
             CREATE INDEX IF NOT EXISTS idx_media_has_sub ON media_items(has_subtitle);
@@ -386,11 +506,525 @@ def init_db() -> None:
         if "anilist_id" not in cols:
             conn.execute("ALTER TABLE media_items ADD COLUMN anilist_id INTEGER;")
 
+        # Additive, idempotent migration. Existing content_category values are not rewritten.
+        migrate_classification_schema(conn)
+        migrate_poster_schema(conn)
+        migrate_manual_title_override_schema(conn)
+        migrate_dual_subtitle_schema(conn)
+
         conn.execute("CREATE INDEX IF NOT EXISTS idx_media_series_title ON media_items(series_title);")
 
         # Konsolidasi & perbaiki seluruh grouping serial yang sudah ada di DB
         consolidate_series_groups(conn)
         conn.commit()
+
+
+def migrate_classification_schema(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Apply the additive Phase 2 classification schema exactly once and safely.
+
+    Existing category values and media rows are deliberately left untouched.
+    A savepoint keeps the migration atomic and also permits use inside init_db().
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+
+    savepoint = "tbh_classification_schema_migration"
+    try:
+        conn.execute(f"SAVEPOINT {savepoint}")
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_items'"
+        ).fetchone()
+        if not table:
+            raise RuntimeError("Cannot migrate classification schema: media_items table is missing.")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )
+            """
+        )
+
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(media_items)").fetchall()}
+        additions = [
+            ("normalized_title", "TEXT"),
+            ("classification_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("classification_method", "TEXT"),
+            ("category_confidence", "REAL"),
+            ("classification_signals_json", "TEXT NOT NULL DEFAULT '[]'"),
+            ("classification_locked", "INTEGER NOT NULL DEFAULT 0"),
+            ("classification_updated_at", "TEXT"),
+        ]
+        for name, declaration in additions:
+            if name not in columns:
+                conn.execute(f"ALTER TABLE media_items ADD COLUMN {name} {declaration}")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS media_classification_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_id INTEGER NOT NULL,
+                previous_category TEXT,
+                new_category TEXT,
+                previous_normalized_title TEXT,
+                new_normalized_title TEXT,
+                previous_status TEXT,
+                new_status TEXT,
+                previous_locked INTEGER,
+                new_locked INTEGER,
+                classification_method TEXT,
+                category_confidence REAL,
+                signals_json TEXT NOT NULL DEFAULT '[]',
+                changed_by TEXT NOT NULL DEFAULT 'system',
+                note TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (media_id) REFERENCES media_items(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_classification_status "
+            "ON media_items(classification_status, classification_locked)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_classification_history_media "
+            "ON media_classification_history(media_id, id DESC)"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
+            (CLASSIFICATION_MIGRATION_ID, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if own_conn:
+            conn.commit()
+    except Exception:
+        try:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception:
+            pass
+        if own_conn:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+
+def migrate_poster_schema(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Add poster diagnostics fields without rewriting existing metadata or image files."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    savepoint = "tbh_poster_reliability_migration"
+    try:
+        conn.execute(f"SAVEPOINT {savepoint}")
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_items'"
+        ).fetchone()
+        if not table:
+            raise RuntimeError("Cannot migrate poster schema: media_items table is missing.")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )"""
+        )
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(media_items)").fetchall()}
+        additions = [
+            ("poster_status", "TEXT NOT NULL DEFAULT 'not_checked'"),
+            ("poster_checked_at", "TEXT"),
+            ("poster_error", "TEXT"),
+            ("poster_source", "TEXT"),
+            ("poster_is_manual", "INTEGER NOT NULL DEFAULT 0"),
+        ]
+        for name, declaration in additions:
+            if name not in columns:
+                conn.execute(f"ALTER TABLE media_items ADD COLUMN {name} {declaration}")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_poster_status ON media_items(poster_status, poster_is_manual)"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
+            (POSTER_MIGRATION_ID, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if own_conn:
+            conn.commit()
+    except Exception:
+        try:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception:
+            pass
+        if own_conn:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def migrate_manual_title_override_schema(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Add a durable lock for user-edited media titles and repair prior manual edits.
+
+    Existing rows are only backfilled when metadata_source='manual', which is the
+    marker written by the existing Save Changes workflow. Other rows are untouched.
+    """
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    savepoint = "tbh_manual_title_override_migration"
+    try:
+        conn.execute(f"SAVEPOINT {savepoint}")
+        table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'media_items'"
+        ).fetchone()
+        if not table:
+            raise RuntimeError("Cannot migrate manual title override: media_items table is missing.")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS schema_migrations (
+                migration_id TEXT PRIMARY KEY,
+                applied_at TEXT NOT NULL
+            )"""
+        )
+        already_applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+            (TITLE_OVERRIDE_MIGRATION_ID,),
+        ).fetchone()
+        if already_applied:
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            if own_conn:
+                conn.commit()
+            return
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(media_items)").fetchall()}
+        if "normalized_title" not in columns:
+            conn.execute("ALTER TABLE media_items ADD COLUMN normalized_title TEXT")
+        if "title_is_manual" not in columns:
+            conn.execute("ALTER TABLE media_items ADD COLUMN title_is_manual INTEGER NOT NULL DEFAULT 0")
+
+        # Repair the exact legacy failure mode: Save Changes wrote title/series_title
+        # and metadata_source='manual', but left normalized_title stale.
+        conn.execute(
+            """UPDATE media_items
+               SET normalized_title = CASE
+                   WHEN content_category IN ('tv_show', 'anime', 'donghua')
+                       THEN COALESCE(NULLIF(TRIM(series_title), ''), title)
+                   ELSE title
+               END,
+               title_is_manual = 1
+               WHERE metadata_source = 'manual'
+                 AND title IS NOT NULL AND TRIM(title) <> ''"""
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
+            (TITLE_OVERRIDE_MIGRATION_ID, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if own_conn:
+            conn.commit()
+    except Exception:
+        try:
+            conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        except Exception:
+            pass
+        if own_conn:
+            conn.rollback()
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def update_media_poster_state(
+    media_id: int,
+    *,
+    poster_url: Optional[str] = None,
+    local_poster_path: Optional[str] = None,
+    status: str = "not_checked",
+    error: Optional[str] = None,
+    source: Optional[str] = None,
+    is_manual: Optional[bool] = None,
+    allow_manual_overwrite: bool = False,
+    replace_url: bool = False,
+) -> bool:
+    """Persist poster-only state. Manual selections are protected from automated updates."""
+    status = str(status or "not_checked").strip().lower()
+    if status not in VALID_POSTER_STATUSES:
+        raise ValueError(f"Invalid poster status: {status}")
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT poster_is_manual FROM media_items WHERE id = ?", (media_id,)
+        ).fetchone()
+        if not row:
+            return False
+        currently_manual = bool(row["poster_is_manual"])
+        if currently_manual and not allow_manual_overwrite and is_manual is not True:
+            # A client-side load error may be recorded without changing the chosen image/source.
+            if status == "load_error":
+                conn.execute(
+                    "UPDATE media_items SET poster_status = ?, poster_error = ?, poster_checked_at = ? WHERE id = ?",
+                    (status, error, now, media_id),
+                )
+            return True
+        conn.execute(
+            """UPDATE media_items SET
+                poster_url = CASE WHEN ? = 1 THEN ? ELSE COALESCE(?, poster_url) END,
+                local_poster_path = COALESCE(?, local_poster_path),
+                poster_status = ?, poster_checked_at = ?, poster_error = ?, poster_source = ?,
+                poster_is_manual = COALESCE(?, poster_is_manual),
+                updated_at = ?
+               WHERE id = ?""",
+            (
+                1 if replace_url else 0,
+                poster_url,
+                poster_url,
+                local_poster_path,
+                status,
+                now,
+                error,
+                source,
+                (1 if is_manual else 0) if is_manual is not None else None,
+                now,
+                media_id,
+            ),
+        )
+    return True
+
+
+def clear_manual_poster_selection(media_id: int) -> bool:
+    """Release a manual poster lock so future metadata enrichment may choose a poster."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        cur = conn.execute(
+            """UPDATE media_items SET poster_url = NULL, local_poster_path = NULL,
+               poster_is_manual = 0, poster_status = 'not_checked', poster_checked_at = ?,
+               poster_error = NULL, poster_source = NULL, updated_at = ? WHERE id = ?""",
+            (now, now, media_id),
+        )
+        return cur.rowcount > 0
+
+def _classification_json(value: Any) -> str:
+    try:
+        return json.dumps(value if value is not None else [], ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "[]"
+
+
+def save_classification_result(
+    media_id: int,
+    result: Dict[str, Any],
+    *,
+    changed_by: str = "classifier",
+    note: Optional[str] = None,
+    force: bool = False,
+) -> Optional[Dict[str, Any]]:
+    """Persist a classifier result; Needs Review never overwrites the current category."""
+    status = str(result.get("classification_status") or "").strip().lower()
+    if status not in ("classified", "needs_review"):
+        raise ValueError("Classifier status must be 'classified' or 'needs_review'.")
+
+    category = result.get("detected_category")
+    if status == "classified" and category not in VALID_CATEGORIES - {"uncategorized"}:
+        raise ValueError("A classified result must contain a valid detected_category.")
+    if status == "needs_review":
+        category = None
+
+    normalized_title = (result.get("normalized_title") or "").strip() or None
+    method = (result.get("classification_method") or "classifier").strip()
+    confidence = result.get("category_confidence")
+    confidence = float(confidence) if confidence is not None else None
+    signals_json = _classification_json(result.get("signals", []))
+    now = datetime.now().isoformat(timespec="seconds")
+
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM media_items WHERE id = ?", (media_id,)).fetchone()
+        if not row:
+            return None
+        old = dict(row)
+        if int(old.get("classification_locked") or 0) and not force:
+            raise PermissionError("This media classification is locked for manual review.")
+
+        new_category = category if category is not None else old["content_category"]
+        new_status = status
+        conn.execute(
+            """UPDATE media_items SET
+                normalized_title = ?,
+                content_category = ?,
+                is_adult = ?,
+                classification_status = ?,
+                classification_method = ?,
+                category_confidence = ?,
+                classification_signals_json = ?,
+                classification_updated_at = ?,
+                updated_at = ?
+            WHERE id = ?""",
+            (normalized_title, new_category,
+             int(new_category in ("jav", "english_adult", "indo")), new_status, method, confidence,
+             signals_json, now, now, media_id),
+        )
+        changed = (
+            old.get("content_category") != new_category
+            or old.get("normalized_title") != normalized_title
+            or old.get("classification_status") != new_status
+            or old.get("classification_method") != method
+            or old.get("category_confidence") != confidence
+            or old.get("classification_signals_json", "[]") != signals_json
+        )
+        if changed:
+            conn.execute(
+                """INSERT INTO media_classification_history (
+                    media_id, previous_category, new_category,
+                    previous_normalized_title, new_normalized_title,
+                    previous_status, new_status, previous_locked, new_locked,
+                    classification_method, category_confidence, signals_json,
+                    changed_by, note, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (media_id, old.get("content_category"), new_category,
+                 old.get("normalized_title"), normalized_title,
+                 old.get("classification_status"), new_status,
+                 int(old.get("classification_locked") or 0),
+                 int(old.get("classification_locked") or 0),
+                 method, confidence, signals_json, changed_by, note, now),
+            )
+        conn.commit()
+    return get_media_item(media_id)
+
+
+def apply_manual_classification(
+    media_id: int,
+    *,
+    category: str,
+    normalized_title: str,
+    note: Optional[str] = None,
+    lock: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """Apply a user-confirmed category and optionally lock it against auto-classification."""
+    if category not in VALID_CATEGORIES - {"uncategorized"}:
+        raise ValueError("Manual classification requires a supported content category.")
+    clean_title = (normalized_title or "").strip()
+    if not clean_title:
+        raise ValueError("A normalized title is required for manual classification.")
+
+    now = datetime.now().isoformat(timespec="seconds")
+    signals_json = _classification_json(["manual_user_override"])
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM media_items WHERE id = ?", (media_id,)).fetchone()
+        if not row:
+            return None
+        old = dict(row)
+        conn.execute(
+            """UPDATE media_items SET
+                normalized_title = ?, content_category = ?, is_adult = ?,
+                classification_status = 'manually_classified',
+                classification_method = 'manual', category_confidence = 1.0,
+                classification_signals_json = ?, classification_locked = ?,
+                classification_updated_at = ?, updated_at = ?
+            WHERE id = ?""",
+            (clean_title, category, int(category in ("jav", "english_adult", "indo")),
+             signals_json, 1 if lock else 0, now, now, media_id),
+        )
+        conn.execute(
+            """INSERT INTO media_classification_history (
+                media_id, previous_category, new_category,
+                previous_normalized_title, new_normalized_title,
+                previous_status, new_status, previous_locked, new_locked,
+                classification_method, category_confidence, signals_json,
+                changed_by, note, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'manual', 1.0, ?, 'user', ?, ?)""",
+            (media_id, old.get("content_category"), category,
+             old.get("normalized_title"), clean_title,
+             old.get("classification_status"), "manually_classified",
+             int(old.get("classification_locked") or 0), 1 if lock else 0,
+             signals_json, note, now),
+        )
+        conn.commit()
+    return get_media_item(media_id)
+
+
+def set_classification_lock(media_id: int, locked: bool) -> Optional[Dict[str, Any]]:
+    """Lock or unlock a record; the change is included in classification history."""
+    now = datetime.now().isoformat(timespec="seconds")
+    new_locked = 1 if locked else 0
+    with get_connection() as conn:
+        row = conn.execute("SELECT * FROM media_items WHERE id = ?", (media_id,)).fetchone()
+        if not row:
+            return None
+        old = dict(row)
+        old_locked = int(old.get("classification_locked") or 0)
+        if old_locked != new_locked:
+            conn.execute(
+                "UPDATE media_items SET classification_locked = ?, updated_at = ? WHERE id = ?",
+                (new_locked, now, media_id),
+            )
+            conn.execute(
+                """INSERT INTO media_classification_history (
+                    media_id, previous_category, new_category,
+                    previous_normalized_title, new_normalized_title,
+                    previous_status, new_status, previous_locked, new_locked,
+                    classification_method, category_confidence, signals_json,
+                    changed_by, note, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'user', ?, ?)""",
+                (media_id, old.get("content_category"), old.get("content_category"),
+                 old.get("normalized_title"), old.get("normalized_title"),
+                 old.get("classification_status"), old.get("classification_status"),
+                 old_locked, new_locked, old.get("classification_method"),
+                 old.get("category_confidence"), old.get("classification_signals_json") or "[]",
+                 "classification lock changed", now),
+            )
+        conn.commit()
+    return get_media_item(media_id)
+
+
+def get_classification_history(media_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+    safe_limit = max(1, min(int(limit), 500))
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM media_classification_history WHERE media_id = ? ORDER BY id DESC LIMIT ?",
+            (media_id, safe_limit),
+        ).fetchall()
+    result = [dict(r) for r in rows]
+    for item in result:
+        item["signals"] = _safe_json_loads(item.get("signals_json"), [])
+    return result
+
+
+def get_classification_queue(status: str = "needs_review", limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+    if status not in VALID_CLASSIFICATION_STATUSES:
+        raise ValueError("Unsupported classification status.")
+    safe_limit = max(1, min(int(limit), 500))
+    safe_offset = max(0, int(offset))
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM media_items
+               WHERE classification_status = ? AND classification_locked = 0
+               ORDER BY classification_updated_at ASC, id ASC
+               LIMIT ? OFFSET ?""",
+            (status, safe_limit, safe_offset),
+        ).fetchall()
+        pl_map = _get_media_playlist_map(conn)
+    return [serialize_row(r, pl_map) for r in rows]
+
+
+def get_pending_classification_candidates(limit: int = 500) -> List[Dict[str, Any]]:
+    """Return only pending, uncategorized records; legacy categorized media are excluded."""
+    safe_limit = max(1, min(int(limit), 5000))
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM media_items
+               WHERE classification_status = 'pending'
+                 AND classification_locked = 0
+                 AND content_category = 'uncategorized'
+               ORDER BY id ASC LIMIT ?""",
+            (safe_limit,),
+        ).fetchall()
+        pl_map = _get_media_playlist_map(conn)
+    return [serialize_row(r, pl_map) for r in rows]
 
 
 def get_cached_series_seasons(series_key: str) -> Optional[Dict[str, Any]]:
@@ -527,7 +1161,15 @@ def _is_valid_poster_file(path: Optional[str]) -> bool:
     if not path or not os.path.isfile(path):
         return False
     try:
-        return os.path.getsize(path) > 1500
+        if os.path.getsize(path) <= 1500:
+            return False
+        with open(path, "rb") as image_file:
+            header = image_file.read(16)
+        return (
+            header.startswith(b"\xff\xd8\xff")
+            or header.startswith(b"\x89PNG\r\n\x1a\n")
+            or (len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP")
+        )
     except OSError:
         return False
 
@@ -540,6 +1182,12 @@ def serialize_row(row: sqlite3.Row, playlist_map: Optional[Dict[int, List[str]]]
     d["actresses"] = _safe_json_loads(d.get("actresses_json"), [])
     d["genres"] = _safe_json_loads(d.get("genres_json"), [])
     d["has_poster"] = _is_valid_poster_file(d.get("local_poster_path"))
+    d["poster_status"] = d.get("poster_status") or "not_checked"
+    if d["has_poster"] and d["poster_status"] == "not_checked":
+        d["poster_status"] = "manual" if d.get("poster_is_manual") else "found"
+    elif not d["has_poster"] and d["poster_status"] in ("found", "manual"):
+        d["poster_status"] = "load_error"
+        d["poster_error"] = d.get("poster_error") or "Cached poster file is missing or invalid."
     pls = (playlist_map or {}).get(d["id"], [])
     d["playlist_names"] = pls
     d["in_playlist"] = len(pls) > 0
@@ -559,6 +1207,196 @@ def _get_media_playlist_map(conn: sqlite3.Connection) -> Dict[int, List[str]]:
     for r in rows:
         mp.setdefault(int(r["media_id"]), []).append(r["name"])
     return mp
+
+
+
+def save_torbox_import_hint(kind: str, item_id: str, category: str, poster_url: str = "") -> None:
+    """Persist Discovery category/poster hints until the matching TorBox item is imported."""
+    if not kind or not item_id:
+        return
+    safe_category = category if category in VALID_CATEGORIES else "uncategorized"
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO torbox_import_hints (torbox_kind, torbox_item_id, content_category, poster_url)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(torbox_kind, torbox_item_id) DO UPDATE SET
+                 content_category=excluded.content_category, poster_url=excluded.poster_url""",
+            (str(kind), str(item_id), safe_category, poster_url or None),
+        )
+        conn.commit()
+
+
+def get_torbox_import_hint(kind: str, item_id: str) -> Dict[str, Any]:
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT content_category, poster_url FROM torbox_import_hints WHERE torbox_kind=? AND torbox_item_id=?",
+            (str(kind), str(item_id)),
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def enqueue_roxxy_library_task(download_job_id: str, file_path: str,
+                                metadata: Dict[str, Any], stream: Dict[str, Any]) -> int:
+    """Persist a completed Roxxy download for serialized post-download processing."""
+    import hashlib
+    now = datetime.now().isoformat(timespec="seconds")
+    normalized_path = os.path.normcase(os.path.abspath(file_path))
+    task_key = hashlib.sha256(normalized_path.encode("utf-8", errors="replace")).hexdigest()
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO roxxy_library_tasks
+               (task_key,download_job_id,status,file_path,metadata_json,stream_json,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(task_key) DO UPDATE SET
+                 metadata_json=CASE WHEN roxxy_library_tasks.status IN ('failed','validated') THEN excluded.metadata_json ELSE roxxy_library_tasks.metadata_json END,
+                 stream_json=CASE WHEN roxxy_library_tasks.status IN ('failed','validated') THEN excluded.stream_json ELSE roxxy_library_tasks.stream_json END,
+                 updated_at=excluded.updated_at""",
+            (task_key, str(download_job_id), "queued", normalized_path,
+             json.dumps(metadata or {}, ensure_ascii=False), json.dumps(stream or {}, ensure_ascii=False), now, now),
+        )
+        row = conn.execute("SELECT id FROM roxxy_library_tasks WHERE task_key=?", (task_key,)).fetchone()
+        return int(row["id"])
+
+
+def recover_roxxy_library_tasks() -> int:
+    """Recover interrupted D1 validation and D3 registration work after restart."""
+    now = datetime.now().isoformat(timespec="seconds")
+    recovered = 0
+    with get_connection() as conn:
+        cur = conn.execute(
+            """UPDATE roxxy_library_tasks SET status='queued',
+               error='Recovered after application restart', updated_at=?
+               WHERE status='validating'""",
+            (now,),
+        )
+        recovered += int(cur.rowcount or 0)
+        cur = conn.execute(
+            """UPDATE roxxy_library_tasks SET status='identified',
+               error='D3 registration recovered after application restart', updated_at=?
+               WHERE status='registering'""",
+            (now,),
+        )
+        recovered += int(cur.rowcount or 0)
+        return recovered
+
+
+def claim_roxxy_registration_task() -> Optional[Dict[str, Any]]:
+    """Atomically claim one D2-identified task for idempotent D3 Library registration."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT * FROM roxxy_library_tasks
+               WHERE status='identified'
+               ORDER BY priority ASC, id ASC LIMIT 1"""
+        ).fetchone()
+        if not row:
+            conn.commit()
+            return None
+        conn.execute(
+            """UPDATE roxxy_library_tasks SET status='registering',
+               attempts=attempts+1, error=NULL, updated_at=? WHERE id=?""",
+            (now, row["id"]),
+        )
+        task = dict(row)
+        task["status"] = "registering"
+        task["attempts"] = int(task.get("attempts") or 0) + 1
+        conn.commit()
+    for key in ("metadata_json", "stream_json", "validation_json"):
+        try:
+            task[key.replace("_json", "")] = json.loads(task.get(key) or "{}")
+        except Exception:
+            task[key.replace("_json", "")] = {}
+    return task
+
+
+def promote_roxxy_validated_tasks_for_identification() -> int:
+    """Queue tasks not yet processed by the current D2 classifier revision."""
+    now = datetime.now().isoformat(timespec="seconds")
+    classifier_version = "d2-multicat-4"
+    promoted = 0
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT id, status, validation_json FROM roxxy_library_tasks "
+            "WHERE status IN ('validated','identified','needs_review','duplicate')"
+        ).fetchall()
+        for row in rows:
+            try:
+                payload = json.loads(row["validation_json"] or "{}")
+            except Exception:
+                payload = {}
+            identification = payload.get("d2_identification") or {}
+            if identification.get("classifier_version") != classifier_version:
+                conn.execute(
+                    "UPDATE roxxy_library_tasks SET status='queued', error=NULL, updated_at=? WHERE id=?",
+                    (now, int(row["id"])),
+                )
+                promoted += 1
+    return promoted
+
+
+def claim_roxxy_library_task() -> Optional[Dict[str, Any]]:
+    """Atomically claim the oldest queued/retryable task."""
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """SELECT * FROM roxxy_library_tasks
+               WHERE status IN ('queued','retry')
+               ORDER BY priority ASC, id ASC LIMIT 1"""
+        ).fetchone()
+        if not row:
+            conn.commit()
+            return None
+        conn.execute(
+            """UPDATE roxxy_library_tasks SET status='validating', attempts=attempts+1,
+               error=NULL, updated_at=? WHERE id=?""", (now, row["id"])
+        )
+        task = dict(row)
+        task["status"] = "validating"
+        task["attempts"] = int(task.get("attempts") or 0) + 1
+        conn.commit()
+    for key in ("metadata_json", "stream_json", "validation_json"):
+        try:
+            task[key.replace("_json", "")] = json.loads(task.get(key) or "{}")
+        except Exception:
+            task[key.replace("_json", "")] = {}
+    return task
+
+
+def update_roxxy_library_task(task_id: int, status: str, file_size: int = 0,
+                              validation: Optional[Dict[str, Any]] = None,
+                              error: Optional[str] = None) -> None:
+    now = datetime.now().isoformat(timespec="seconds")
+    completed = now if status in ("validated", "completed", "failed", "duplicate", "needs_review") else None
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE roxxy_library_tasks SET status=?, file_size=?,
+               validation_json=?, error=?, updated_at=?, completed_at=COALESCE(?,completed_at)
+               WHERE id=?""",
+            (status, int(file_size or 0), json.dumps(validation or {}, ensure_ascii=False),
+             (str(error)[:500] if error else None), now, completed, int(task_id)),
+        )
+
+
+def list_roxxy_library_tasks(limit: int = 100) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute(
+            "SELECT * FROM roxxy_library_tasks ORDER BY id DESC LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        for key in ("metadata_json", "stream_json", "validation_json"):
+            try:
+                item[key.replace("_json", "")] = json.loads(item.get(key) or "{}")
+            except Exception:
+                item[key.replace("_json", "")] = {}
+        item.pop("metadata_json", None)
+        item.pop("stream_json", None)
+        result.append(item)
+    return result
 
 
 def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] = None) -> int:
@@ -605,12 +1443,18 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 rating = ex["rating"]
             else:
                 code_id = data.get("code_id") if data.get("code_id") is not None else ex["code_id"]
-                title = data.get("title") or ex["title"]
-                series_title = (
-                    data.get("series_title")
-                    or ex.get("series_title")
-                    or derive_series_title(title)
-                )
+                # A user-edited title is authoritative even when metadata is force-refreshed.
+                # Provider fields (plot, poster, runtime, IDs, etc.) may still be refreshed.
+                if force_meta and int(ex.get("title_is_manual") or 0):
+                    title = ex["title"]
+                    series_title = ex.get("series_title") or derive_series_title(title)
+                else:
+                    title = data.get("title") or ex["title"]
+                    series_title = (
+                        data.get("series_title")
+                        or ex.get("series_title")
+                        or derive_series_title(title)
+                    )
                 original_title = data.get("original_title") if data.get("original_title") is not None else ex["original_title"]
                 year = data.get("year") if data.get("year") is not None else ex["year"]
                 release_date = data.get("release_date") if data.get("release_date") is not None else ex["release_date"]
@@ -625,11 +1469,19 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 episode_num = data.get("episode_num") if data.get("episode_num") is not None else ex["episode_num"]
                 tmdb_id = data.get("tmdb_id") if data.get("tmdb_id") is not None else ex.get("tmdb_id")
                 anilist_id = data.get("anilist_id") if data.get("anilist_id") is not None else ex.get("anilist_id")
-                is_adult = int(data.get("is_adult", ex["is_adult"]))
+                is_adult = int(
+                    data.get("is_adult")
+                    if data.get("is_adult") is not None
+                    else (1 if content_category in ("jav", "english_adult", "indo") else ex["is_adult"])
+                )
                 has_metadata = int(data.get("has_metadata", ex["has_metadata"]))
                 metadata_source = data.get("metadata_source") or ex["metadata_source"]
-                poster_url = data.get("poster_url") if data.get("poster_url") is not None else ex["poster_url"]
-                local_poster_path = data.get("local_poster_path") if data.get("local_poster_path") is not None else ex["local_poster_path"]
+                if int(ex.get("poster_is_manual") or 0):
+                    poster_url = ex.get("poster_url")
+                    local_poster_path = ex.get("local_poster_path")
+                else:
+                    poster_url = data.get("poster_url") if data.get("poster_url") is not None else ex["poster_url"]
+                    local_poster_path = data.get("local_poster_path") if data.get("local_poster_path") is not None else ex["local_poster_path"]
                 samples_json = json.dumps(data.get("samples", [])) if "samples" in data else ex["samples_json"]
                 actresses_json = json.dumps(data.get("actresses", [])) if "actresses" in data else ex["actresses_json"]
                 genres_json = json.dumps(data.get("genres", [])) if "genres" in data else ex["genres_json"]
@@ -776,7 +1628,11 @@ def upsert_media_item(data: Dict[str, Any], conn: Optional[sqlite3.Connection] =
                 data.get("episode_num"),
                 data.get("tmdb_id"),
                 data.get("anilist_id"),
-                int(data.get("is_adult", 0)),
+                int(
+                    data.get("is_adult")
+                    if data.get("is_adult") is not None
+                    else cat_insert in ("jav", "english_adult", "indo")
+                ),
                 int(data.get("has_metadata", 0)),
                 data.get("metadata_source", "none"),
                 data.get("poster_url"),
@@ -850,6 +1706,7 @@ def query_media_items(
     only_unassigned: bool = False,
     needs_enrichment: bool = False,
     missing_subtitle_only: bool = False,
+    classification_status: str = "all",
 ) -> List[Dict[str, Any]]:
     clauses = ["1=1"]
     params: List[Any] = []
@@ -897,6 +1754,10 @@ def query_media_items(
     elif watched_status == "unwatched":
         clauses.append("is_watched = 0")
 
+    if classification_status in VALID_CLASSIFICATION_STATUSES:
+        clauses.append("classification_status = ?")
+        params.append(classification_status)
+
     sort_map = {
         "newest": "updated_at DESC, id DESC",
         "title_asc": "COALESCE(series_title, title) COLLATE NOCASE ASC, COALESCE(season_num, 1) ASC, COALESCE(episode_num, 0) ASC, title COLLATE NOCASE ASC",
@@ -924,7 +1785,7 @@ def query_media_items(
             for it in items
             if it.get("has_metadata") != 1
             or it.get("content_category") == "uncategorized"
-            or not it.get("has_poster")
+            or (not it.get("has_poster") and not int(it.get("poster_is_manual") or 0))
             or int(it.get("runtime") or 0) <= 0
         ]
     return items
@@ -935,12 +1796,17 @@ def update_media_manual(media_id: int, payload: Dict[str, Any]) -> Optional[Dict
     cat = payload.get("content_category") or "general_movie"
     if cat not in VALID_CATEGORIES:
         cat = "general_movie"
-    is_adult = 1 if cat in ("jav", "english_adult") else 0
+    is_adult = 1 if cat in ("jav", "english_adult", "indo") else 0
     year_val = int(payload["year"]) if str(payload.get("year") or "").strip().isdigit() else None
     runtime_raw = str(payload.get("runtime") or "").strip()
     runtime_val = int(runtime_raw) if runtime_raw.isdigit() else 0
     title_val = (payload.get("title") or "").strip() or "Untitled"
     series_title_val = (payload.get("series_title") or "").strip() or derive_series_title(title_val)
+
+    # Use the series title for episodic catalogues and the media title for films/adult titles.
+    metadata_search_title = (
+        series_title_val if cat in ("tv_show", "anime", "donghua") else title_val
+    )
 
     season_raw = str(payload.get("season_num") if payload.get("season_num") is not None else "").strip()
     season_val = int(season_raw) if season_raw.isdigit() else None
@@ -949,10 +1815,11 @@ def update_media_manual(media_id: int, payload: Dict[str, Any]) -> Optional[Dict
 
     with get_connection() as conn:
         conn.execute(
-            """
-            UPDATE media_items SET
+            """UPDATE media_items SET
                 title = ?,
                 series_title = ?,
+                normalized_title = ?,
+                title_is_manual = 1,
                 code_id = ?,
                 content_category = ?,
                 season_num = COALESCE(?, season_num),
@@ -970,6 +1837,7 @@ def update_media_manual(media_id: int, payload: Dict[str, Any]) -> Optional[Dict
             (
                 title_val,
                 series_title_val,
+                metadata_search_title,
                 (payload.get("code_id") or "").strip() or None,
                 cat,
                 season_val,
@@ -1026,6 +1894,135 @@ def update_media_subtitle(media_id: int, sub_path: str, sub_lang: str, sub_sourc
         conn.commit()
 
 
+
+def migrate_dual_subtitle_schema(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Add non-destructive per-language subtitle storage and migrate legacy slots."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    savepoint = "tbh_phase6b_dual_subtitle_migration"
+    try:
+        conn.execute(f"SAVEPOINT {savepoint}")
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS media_subtitles (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_id INTEGER NOT NULL,
+                language TEXT NOT NULL CHECK(language IN ('en','id')),
+                subtitle_path TEXT NOT NULL,
+                subtitle_source TEXT NOT NULL DEFAULT 'unknown',
+                is_embedded INTEGER NOT NULL DEFAULT 0,
+                stream_index INTEGER,
+                verified INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(media_id, language),
+                FOREIGN KEY(media_id) REFERENCES media_items(id) ON DELETE CASCADE
+            )"""
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_media_subtitles_media ON media_subtitles(media_id)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS subtitle_preferences (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL
+        )""")
+        conn.execute("INSERT OR IGNORE INTO subtitle_preferences(key,value) VALUES('english_required','1')")
+        conn.execute("INSERT OR IGNORE INTO subtitle_preferences(key,value) VALUES('indonesian_enabled','1')")
+        conn.execute(
+            """INSERT OR IGNORE INTO media_subtitles
+               (media_id,language,subtitle_path,subtitle_source,is_embedded,verified,created_at,updated_at)
+               SELECT id, CASE WHEN lower(COALESCE(subtitle_lang,'')) IN ('id','ind','indonesian') THEN 'id' ELSE 'en' END,
+                      subtitle_path, COALESCE(NULLIF(subtitle_source,''),'legacy'),
+                      CASE WHEN subtitle_path LIKE 'embedded://%' THEN 1 ELSE 0 END, 1,
+                      COALESCE(created_at,?), COALESCE(updated_at,?)
+               FROM media_items WHERE has_subtitle=1 AND subtitle_path IS NOT NULL AND TRIM(subtitle_path)<>''""",
+            (datetime.now().isoformat(timespec="seconds"), datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(migration_id,applied_at) VALUES(?,?)",
+            (DUAL_SUBTITLE_MIGRATION_ID, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if own_conn:
+            conn.commit()
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    finally:
+        if own_conn:
+            conn.close()
+
+
+def upsert_media_subtitle(media_id: int, language: str, subtitle_path: str, source: str,
+                          is_embedded: bool = False, stream_index: Optional[int] = None,
+                          verified: bool = True) -> None:
+    lang = (language or '').lower()
+    if lang not in ('en','id'):
+        raise ValueError("Only English ('en') and Indonesian ('id') subtitles are supported.")
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        conn.execute(
+            """INSERT INTO media_subtitles(media_id,language,subtitle_path,subtitle_source,is_embedded,stream_index,verified,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(media_id,language) DO UPDATE SET subtitle_path=excluded.subtitle_path,
+               subtitle_source=excluded.subtitle_source,is_embedded=excluded.is_embedded,
+               stream_index=excluded.stream_index,verified=excluded.verified,updated_at=excluded.updated_at""",
+            (media_id,lang,subtitle_path,source,int(is_embedded),stream_index,int(verified),now,now),
+        )
+        rows = conn.execute("SELECT language FROM media_subtitles WHERE media_id=? AND verified=1", (media_id,)).fetchall()
+        langs = {r['language'] for r in rows}
+        legacy = conn.execute("SELECT language,subtitle_path,subtitle_source FROM media_subtitles WHERE media_id=? AND verified=1 ORDER BY CASE language WHEN 'en' THEN 0 ELSE 1 END LIMIT 1", (media_id,)).fetchone()
+        conn.execute(
+            "UPDATE media_items SET has_subtitle=?,subtitle_path=?,subtitle_lang=?,subtitle_source=?,updated_at=? WHERE id=?",
+            (int(bool(langs)), legacy['subtitle_path'] if legacy else None, legacy['language'] if legacy else None, legacy['subtitle_source'] if legacy else 'none', now, media_id),
+        )
+        conn.commit()
+
+
+def get_media_subtitles(media_id: int) -> List[Dict[str, Any]]:
+    with get_connection() as conn:
+        rows = conn.execute("SELECT * FROM media_subtitles WHERE media_id=? AND verified=1 ORDER BY CASE language WHEN 'en' THEN 0 ELSE 1 END", (media_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+
+
+def get_subtitle_preferences() -> Dict[str, bool]:
+    """Read Phase 6B language preferences; English is always required."""
+    with get_connection() as conn:
+        rows = conn.execute("SELECT key,value FROM subtitle_preferences").fetchall()
+    values = {r["key"]: r["value"] for r in rows}
+    return {"english_required": True, "indonesian_enabled": values.get("indonesian_enabled", "1") == "1"}
+
+
+def save_subtitle_preferences(indonesian_enabled: bool) -> Dict[str, bool]:
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        conn.execute("INSERT INTO subtitle_preferences(key,value) VALUES('english_required','1') ON CONFLICT(key) DO UPDATE SET value='1'")
+        conn.execute("INSERT INTO subtitle_preferences(key,value) VALUES('indonesian_enabled',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if indonesian_enabled else "0",))
+        conn.commit()
+    return get_subtitle_preferences()
+
+
+def get_subtitle_language_stats(indonesian_enabled: Optional[bool] = None) -> Dict[str, int]:
+    prefs = get_subtitle_preferences()
+    if indonesian_enabled is None:
+        indonesian_enabled = prefs["indonesian_enabled"]
+    with get_connection() as conn:
+        rows = conn.execute("""SELECT m.id,
+            MAX(CASE WHEN s.language='en' AND s.verified=1 THEN 1 ELSE 0 END) AS has_en,
+            MAX(CASE WHEN s.language='id' AND s.verified=1 THEN 1 ELSE 0 END) AS has_id
+            FROM media_items m LEFT JOIN media_subtitles s ON s.media_id=m.id GROUP BY m.id""").fetchall()
+    stats = {"complete":0,"ready":0,"partial":0,"not_ready":0}
+    for row in rows:
+        en, ident = bool(row["has_en"]), bool(row["has_id"])
+        if not en:
+            stats["partial" if ident else "not_ready"] += 1
+        elif indonesian_enabled and not ident:
+            stats["ready"] += 1
+        elif indonesian_enabled and ident:
+            stats["complete"] += 1
+        else:
+            stats["ready"] += 1
+    return stats
+
 def get_telemetry_stats() -> Dict[str, Any]:
     with get_connection() as conn:
         row = conn.execute(
@@ -1047,7 +2044,11 @@ def get_telemetry_stats() -> Dict[str, Any]:
                 SUM(CASE WHEN content_category = 'tv_show' THEN 1 ELSE 0 END) AS series_count,
                 SUM(CASE WHEN content_category = 'anime' THEN 1 ELSE 0 END) AS anime_count,
                 SUM(CASE WHEN content_category = 'donghua' THEN 1 ELSE 0 END) AS donghua_count,
-                SUM(CASE WHEN is_watched = 1 THEN 1 ELSE 0 END) AS watched_count
+                SUM(CASE WHEN is_watched = 1 THEN 1 ELSE 0 END) AS watched_count,
+                SUM(CASE WHEN classification_status = 'pending' THEN 1 ELSE 0 END) AS classification_pending_count,
+                SUM(CASE WHEN classification_status = 'classified' THEN 1 ELSE 0 END) AS classification_classified_count,
+                SUM(CASE WHEN classification_status = 'needs_review' THEN 1 ELSE 0 END) AS classification_needs_review_count,
+                SUM(CASE WHEN classification_status = 'manually_classified' THEN 1 ELSE 0 END) AS classification_manual_count
             FROM media_items
             """
         ).fetchone()
