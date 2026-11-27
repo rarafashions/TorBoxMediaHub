@@ -33,6 +33,18 @@ _library_worker_lock = threading.Lock()
 _registration_worker_started = False
 DEFAULT_PATH = r"E:\01 Imaulana\01 Isa Maulana\03 Ionos\Movies"
 VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".ts", ".m4v", ".mpg", ".mpeg"}
+CONTENT_TYPE_EXTS = {
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+    "video/x-matroska": ".mkv",
+}
+YTDLP_FRAGMENT_CONCURRENCY = 4
+ARIA2C_MAX_CONNECTIONS = 4
+ARIA2C_MIN_SPLIT_SIZE = "1M"
+ARIA2C_MAX_TRIES = 3
+ARIA2C_RETRY_WAIT = 2
+RETRY_LIMIT = 3
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "TorBoxMediaHub-Roxxy/1.3", "Accept": "*/*"})
 
@@ -162,7 +174,9 @@ def _inspect(url: str) -> Dict[str, Any]:
         elif chosen_ext == ".mkv" or "matroska" in ctype or "hevc" in cd_name.lower() or "h265" in cd_name.lower():
             engine, kind = "aria2c", "file"
         elif chosen_ext == ".mp4" or ctype in {"video/mp4", "video/webm", "video/quicktime"}:
-            engine, kind = "yt-dlp", "media"
+            # Direct media files are downloaded with aria2c multi-connection;
+            # yt-dlp remains the fallback and the only HLS/DASH handler.
+            engine, kind = "aria2c", "file"
         elif ctype.startswith("video/") or ctype in {"application/octet-stream", "binary/octet-stream"} or chosen_ext in VIDEO_EXTS:
             engine, kind = "aria2c", "file"
         else:
@@ -203,6 +217,87 @@ def _find_completed_file(output_dir: str, requested_filename: str, engine: str, 
     if not candidates:
         return ""
     return max(candidates, key=lambda p: os.path.getmtime(p))
+
+
+def _ytdlp_command(exe: str, target: str, url: str) -> List[str]:
+    template = os.path.splitext(target)[0] + ".%(ext)s"
+    return [
+        exe, "--newline", "--no-playlist", "--continue", "--part",
+        "--concurrent-fragments", str(YTDLP_FRAGMENT_CONCURRENCY),
+        "--fragment-retries", "10",
+        "--progress-template", "download:%(progress._percent_str)s",
+        "-o", template, url,
+    ]
+
+
+def _aria2c_command(exe: str, output_dir: str, filename: str, url: str) -> List[str]:
+    return [
+        exe, "--continue=true", "--allow-overwrite=false", "--auto-file-renaming=true",
+        f"--max-connection-per-server={ARIA2C_MAX_CONNECTIONS}",
+        f"--split={ARIA2C_MAX_CONNECTIONS}",
+        f"--min-split-size={ARIA2C_MIN_SPLIT_SIZE}",
+        "--file-allocation=none",
+        f"--max-tries={ARIA2C_MAX_TRIES}",
+        f"--retry-wait={ARIA2C_RETRY_WAIT}",
+        "--summary-interval=1", "--console-log-level=notice",
+        "--dir", output_dir, "--out", filename, url,
+    ]
+
+
+def _engine_command(engine: str, exe: str, target: str, output_dir: str, url: str) -> List[str]:
+    if engine == "yt-dlp":
+        return _ytdlp_command(exe, target, url)
+    if engine == "aria2c":
+        # Use the collision-resolved basename, not the requested filename.
+        return _aria2c_command(exe, output_dir, os.path.basename(target), url)
+    raise RuntimeError("Engine lokal tidak dapat ditentukan secara aman.")
+
+
+def _engine_sequence(engine: str) -> List[str]:
+    # aria2c accelerates direct files; yt-dlp is kept as the fallback so a
+    # provider that rejects Range requests still completes the download.
+    return ["aria2c", "yt-dlp"] if engine == "aria2c" else ["yt-dlp"]
+
+
+def _remove_incomplete_output(target: str) -> None:
+    """Drop partial output before switching engines.
+
+    aria2c writes directly to the target file, while yt-dlp would skip an
+    existing target it did not create. Removing the partial file and its
+    control files prevents a corrupt "completed" download.
+    """
+    for path in (target, target + ".aria2", target + ".part"):
+        try:
+            if os.path.isfile(path):
+                os.remove(path)
+        except OSError:
+            pass
+
+
+def _run_download_process(job_id: str, engine: str, cmd: List[str]) -> int:
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace",
+                            bufsize=1, creationflags=creationflags)
+    with _lock:
+        _jobs[job_id]["pid"] = proc.pid
+    for line in proc.stdout or []:
+        line = line.strip()
+        pct = None
+        if engine == "yt-dlp":
+            m = re.search(r"(\d+(?:\.\d+)?)%", line)
+            if m:
+                pct = float(m.group(1))
+        else:
+            m = re.search(r"\((\d+(?:\.\d+)?)%\)", line)
+            if m:
+                pct = float(m.group(1))
+        if pct is not None:
+            _set(job_id, progress=max(0.0, min(100.0, pct)))
+        # Keep only a short sanitized tail; never store URL/command.
+        if line and not line.startswith(("http://", "https://")):
+            _set(job_id, message=line[:180])
+    return proc.wait()
 
 
 def _validate_completed_file(path: str) -> Dict[str, Any]:
@@ -468,64 +563,57 @@ def start_library_task_worker() -> None:
             _registration_worker_started = True
 
 
-def _run_job(job_id: str, engine: str, url: str, output_dir: str, filename: str) -> None:
+def _run_job(job_id: str, engine: str, url: str, output_dir: str, filename: str,
+             resume: bool = False, target_path: str | None = None) -> None:
     with _workers:
         _set(job_id, status="downloading", message="Downloader dimulai.")
         try:
             os.makedirs(output_dir, exist_ok=True)
-            target = os.path.join(output_dir, filename)
-            stem, ext = os.path.splitext(target)
-            n = 1
-            while os.path.exists(target):
-                target = f"{stem} ({n}){ext}"
-                n += 1
-            if engine == "yt-dlp":
-                exe = shutil.which("yt-dlp")
+            target = target_path or os.path.join(output_dir, filename)
+            if os.path.dirname(os.path.abspath(target)) != os.path.abspath(output_dir):
+                target = os.path.join(output_dir, filename)
+            if not resume:
+                stem, ext = os.path.splitext(target)
+                n = 1
+                while os.path.exists(target):
+                    target = f"{stem} ({n}){ext}"
+                    n += 1
+            _set(job_id, target_path=target)
+            attempted: List[str] = []
+            final_engine = engine
+            succeeded = False
+            plan = _engine_sequence(engine)
+            for index, current in enumerate(plan):
+                exe = shutil.which(current)
                 if not exe:
-                    raise RuntimeError("yt-dlp belum terpasang atau tidak ditemukan di PATH.")
-                template = os.path.splitext(target)[0] + ".%(ext)s"
-                cmd = [exe, "--newline", "--no-playlist", "--continue", "--part",
-                       "--progress-template", "download:%(progress._percent_str)s",
-                       "-o", template, url]
-            elif engine == "aria2c":
-                exe = shutil.which("aria2c")
-                if not exe:
-                    raise RuntimeError("aria2c belum terpasang atau tidak ditemukan di PATH.")
-                cmd = [exe, "--continue=true", "--allow-overwrite=false", "--auto-file-renaming=true",
-                       "--summary-interval=1", "--console-log-level=notice", "--dir", output_dir,
-                       "--out", os.path.basename(target), url]
-            else:
-                raise RuntimeError("Engine lokal tidak dapat ditentukan secara aman.")
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    text=True, encoding="utf-8", errors="replace",
-                                    bufsize=1, creationflags=creationflags)
-            with _lock:
-                _jobs[job_id]["pid"] = proc.pid
-            for line in proc.stdout or []:
-                line = line.strip()
-                pct = None
-                if engine == "yt-dlp":
-                    m = re.search(r"(\d+(?:\.\d+)?)%", line)
-                    if m:
-                        pct = float(m.group(1))
-                else:
-                    m = re.search(r"\((\d+(?:\.\d+)?)%\)", line)
-                    if m:
-                        pct = float(m.group(1))
-                if pct is not None:
-                    _set(job_id, progress=max(0.0, min(100.0, pct)))
-                # Keep only a short sanitized tail; never store URL/command.
-                if line and not line.startswith(("http://", "https://")):
-                    _set(job_id, message=line[:180])
-            code = proc.wait()
-            if code != 0:
-                raise RuntimeError(f"{engine} berhenti dengan exit code {code}.")
-            _set(job_id, status="completed", progress=100.0, message="Download selesai.", completed_at=datetime.now().isoformat(timespec="seconds"))
+                    attempted.append(f"{current}: tidak ditemukan")
+                    _set(job_id, message=f"{current} tidak ditemukan; mencoba engine berikutnya.")
+                    continue
+                if index > 0:
+                    # Do not let the next engine resume or skip a partial file
+                    # produced by the previous engine.
+                    _remove_incomplete_output(target)
+                    _set(job_id, progress=0.0, message=f"{plan[index - 1]} gagal, mencoba {current}.")
+                _set(job_id, engine_active=current)
+                cmd = _engine_command(current, exe, target, output_dir, url)
+                exit_code = _run_download_process(job_id, current, cmd)
+                if exit_code == 0:
+                    final_engine = current
+                    succeeded = True
+                    break
+                attempted.append(f"{current}: exit {exit_code}")
+                _set(job_id, message=f"{current} gagal dengan exit code {exit_code}.")
+
+            if not succeeded:
+                raise RuntimeError("; ".join(attempted) or "Tidak ada downloader lokal yang tersedia.")
+
+            _set(job_id, status="completed", progress=100.0, message="Download selesai.",
+                 completed_at=datetime.now().isoformat(timespec="seconds"), engine_active=final_engine)
             with _lock:
                 completed_job = dict(_jobs.get(job_id) or {})
             final_path = _find_completed_file(
-                output_dir, filename, completed_job.get("engine"), float(completed_job.get("started_ts") or 0)
+                output_dir, os.path.basename(target), final_engine,
+                float(completed_job.get("started_ts") or 0)
             )
             if final_path:
                 task_id = db.enqueue_roxxy_library_task(
@@ -567,11 +655,14 @@ def api_local_start():
         if supplied_name:
             filename = _safe_filename(supplied_name)
         else:
-            ext = info.get("extension") or (".mp4" if info["engine"] == "yt-dlp" else ".bin")
+            ext = info.get("extension") or CONTENT_TYPE_EXTS.get(info.get("content_type") or "")
+            if not ext:
+                ext = ".mp4" if info["engine"] == "yt-dlp" else ".bin"
             filename = _fallback_name({**data, "name": stream.get("name"), "meta": data.get("meta")}, ext)
         job_id = uuid.uuid4().hex[:12]
         job = {"id": job_id, "title": str((data.get("meta") or {}).get("name") or stream.get("name") or filename),
-               "filename": filename, "engine": info["engine"], "status": "queued", "progress": 0.0,
+               "filename": filename, "engine": info["engine"], "engine_active": info["engine"],
+               "status": "queued", "progress": 0.0,
                "message": "Menunggu slot downloader.", "output_dir": outdir,
                "created_at": datetime.now().isoformat(timespec="seconds"), "updated_at": datetime.now().isoformat(timespec="seconds"),
                "completed_at": None, "pid": None, "attempts": 0,
@@ -623,6 +714,7 @@ def api_local_queue():
         job.pop("started_ts", None)
         job.pop("meta_snapshot", None)
         job.pop("stream_snapshot", None)
+        job.pop("target_path", None)
     return jsonify({"ok": True, "jobs": jobs})
 
 @localdl_bp.post("/api/roxxy/local/retry/<job_id>")
@@ -637,8 +729,8 @@ def api_local_retry(job_id: str):
     if not url:
         return jsonify({"ok": False, "error": "URL sesi sebelumnya sudah tidak tersedia (aplikasi pernah dimulai ulang). Pilih ulang dari katalog."}), 409
     attempts = int(old.get("attempts") or 0)
-    if attempts >= 3:
-        return jsonify({"ok": False, "error": "Batas 3x percobaan ulang tercapai untuk file ini."}), 409
+    if attempts >= RETRY_LIMIT:
+        return jsonify({"ok": False, "error": f"Batas {RETRY_LIMIT}x percobaan ulang tercapai untuk file ini."}), 409
     try:
         # Re-validate: the stored directory may have been tampered with or removed.
         outdir = _safe_download_dir(old.get("output_dir"))
@@ -649,14 +741,15 @@ def api_local_retry(job_id: str):
         job.update(
             status="queued", progress=0.0, pid=None, completed_at=None,
             message="Menunggu slot downloader (percobaan ulang).",
+            engine_active=old.get("engine"),
             library_status=None, library_task_id=None, library_message=None,
             attempts=attempts + 1, started_ts=time.time(),
             updated_at=datetime.now().isoformat(timespec="seconds"),
         )
-        snapshot = {k: v for k, v in job.items() if k not in {"output_dir", "pid", "url", "started_ts"}}
+        snapshot = {k: v for k, v in job.items() if k not in {"output_dir", "pid", "url", "started_ts", "target_path"}}
     threading.Thread(
         target=_run_job,
-        args=(job_id, old.get("engine"), url, outdir, old.get("filename")),
+        args=(job_id, old.get("engine"), url, outdir, old.get("filename"), True, old.get("target_path")),
         daemon=True,
     ).start()
     return jsonify({"ok": True, "job": snapshot})

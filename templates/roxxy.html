@@ -671,8 +671,12 @@ async function refreshLocalQueue() {
     }
     $('local-queue-list').innerHTML = jobs.map(x => {
       const pct = Math.max(0, Math.min(100, Number(x.progress) || 0));
+      const engineLabel = x.engine_active || x.engine || 'downloader';
       const color = x.status === 'completed' ? 'text-emerald-400' : x.status === 'failed' ? 'text-rose-400' : 'text-sky-400';
       const barColor = x.status === 'completed' ? 'bg-emerald-400' : x.status === 'failed' ? 'bg-rose-500' : 'bg-sky-400';
+      const retry = Number(x.attempts) >= 3
+        ? '<div class="mt-2 rounded-lg border border-rose-500/20 bg-rose-500/5 px-3 py-1 text-[11px] text-rose-300/70">Batas 3x percobaan ulang tercapai. Pilih ulang dari katalog.</div>'
+        : `<button class="mt-2 rounded-lg bg-rose-500/15 px-3 py-1 text-[11px] font-semibold text-rose-300 transition hover:bg-rose-500/25" title="Mulai ulang download dengan engine yang sama" onclick="retryJob('${esc(x.id)}')">&#8635; Coba ulang${Number(x.attempts) > 0 ? ` (${esc(x.attempts)}x)` : ''}</button>`;
       return `
         <article class="rounded-xl border border-white/10 bg-white/[0.03] p-3.5">
           <div class="flex items-start justify-between gap-2">
@@ -683,11 +687,11 @@ async function refreshLocalQueue() {
             <div class="h-full rounded-full ${barColor} transition-all duration-300" style="width:${pct}%"></div>
           </div>
           <div class="mt-2 flex items-center justify-between text-[11px] text-slate-400">
-            <span>${esc(x.engine)} · ${esc(x.message || '')}</span>
+            <span>${esc(engineLabel)} · ${esc(x.message || '')}</span>
           </div>
           ${x.library_status ? `<div class="mt-1 text-[11px] text-emerald-300">Library: ${esc(x.library_message || x.library_status)}</div>` : ''}
           <div class="mt-0.5 truncate text-[10px] text-slate-500">${esc(x.filename || '')}</div>
-          ${x.status === 'failed' ? `<button class="mt-2 rounded-lg bg-rose-500/15 px-3 py-1 text-[11px] font-semibold text-rose-300 transition hover:bg-rose-500/25" onclick="retryJob('${esc(x.id)}')">↻ Coba ulang${Number(x.attempts) > 0 ? ` (${esc(x.attempts)}x)` : ''}</button>` : ''}
+          ${x.status === 'failed' ? retry : ''}
         </article>`;
     }).join('');
   } catch (e) { $('local-queue-list').textContent = 'Gagal membaca antrean lokal: ' + e.message; }
