@@ -1896,7 +1896,7 @@ def api_discover():
             "ok": False,
             "error": (
                 "Discovery hanya mendukung General Movie, TV Show, Anime, dan Donghua. "
-                "Gunakan Roxxy untuk JAV, English Adult, dan Indo."
+                "Gunakan Video Feeds untuk JAV, English Adult, dan Indo."
             ),
         }), 400
     feed = (request.args.get("feed") or "trending").strip().lower()

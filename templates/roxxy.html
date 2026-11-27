@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Roxxy Cinema · TorBox Media Hub</title>
+  <title>TorBox Video Feeds · TorBox Media Hub</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -39,10 +39,10 @@
         </a>
         <div class="h-6 w-px bg-white/10"></div>
         <div class="flex items-center gap-2.5">
-          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-sky-400 to-blue-600 font-black text-slate-950 shadow-lg shadow-sky-500/20">R</div>
+          <div class="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br from-sky-400 to-blue-600 font-black text-slate-950 shadow-lg shadow-sky-500/20">V</div>
           <div>
-            <div class="text-lg font-black tracking-wider text-white leading-none">ROXXY <span class="text-sky-400">CINEMA</span></div>
-            <div class="mt-0.5 text-[9px] font-semibold tracking-[0.25em] text-slate-400 uppercase">TorBox Discovery</div>
+            <div class="text-lg font-black tracking-wider text-white leading-none">TorBox <span class="text-sky-400">Video Feeds</span></div>
+            <div class="mt-0.5 text-[9px] font-semibold tracking-[0.25em] text-slate-400 uppercase">Discovery &amp; Downloads</div>
           </div>
         </div>
       </div>
@@ -110,7 +110,7 @@
       <div class="col-span-full flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.02] py-20 text-center">
         <div class="mb-3 text-3xl">🎬</div>
         <p class="text-sm font-semibold text-slate-300">Katalog Belum Dimuat</p>
-        <p class="mt-1 text-xs text-slate-500">Klik tombol <span class="text-sky-400">↻ Catalogs</span> di atas untuk memuat manifest Roxxy.</p>
+        <p class="mt-1 text-xs text-slate-500">Klik tombol <span class="text-sky-400">↻ Catalogs</span> di atas untuk memuat manifest Video Feeds.</p>
       </div>
     </div>
     <div id="load-more-wrap" class="hidden mt-8 flex justify-center">
@@ -178,7 +178,7 @@
   <aside id="settings-panel" class="fixed inset-y-0 right-0 z-50 hidden w-full max-w-md translate-x-full overflow-y-auto border-l border-white/10 bg-[#0A0F1A] p-6 shadow-2xl transition-transform duration-300">
     <div class="mb-6 flex items-center justify-between">
       <div>
-        <h2 class="text-xl font-extrabold text-white">Roxxy Settings</h2>
+        <h2 class="text-xl font-extrabold text-white">Video Feeds Settings</h2>
         <p class="text-xs text-slate-400">Konfigurasi Manifest & Direktori Lokal</p>
       </div>
       <button onclick="closeSettings()" class="flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-slate-400 hover:bg-white/15 hover:text-white">✕</button>
@@ -317,11 +317,11 @@ async function saveConfig() {
 
 async function loadManifest() {
   try {
-    setStatus('Mengambil manifest Roxxy…');
+    setStatus('Mengambil manifest Video Feeds…');
     const j = await api('/api/roxxy/manifest');
     catalogs = j.catalogs || [];
     $('catalog-select').innerHTML = catalogs.map((c, i) => `<option value="${i}">${esc(c.type)} · ${esc(c.name)}</option>`).join('');
-    setStatus(`Manifest ${j.name || 'Roxxy'} dimuat (${catalogs.length} katalog).`);
+    setStatus(`Manifest Video Feeds dimuat (${catalogs.length} katalog).`);
     selectCatalog();
   } catch (e) { setStatus(e.message); }
 }
@@ -408,7 +408,7 @@ async function fetchAllCatalogPage(skip, query, genre) {
     for (const r of results) if (r.status === 'fulfilled') found.push(...r.value);
     completed += batch.length;
     const pct = catalogs.length ? (completed / catalogs.length) * 100 : 100;
-    setCatalogSearchProgress(pct, `Mencari di katalog Roxxy (${completed}/${catalogs.length})…`);
+    setCatalogSearchProgress(pct, `Mencari di katalog Video Feeds (${completed}/${catalogs.length})…`);
   }
   const seen = new Set();
   return found.filter(item => {
@@ -454,7 +454,7 @@ async function fetchCatalogPage(reset = false) {
       roxxyHasMore = roxxyNextSkip < roxxySearchAllItems.length;
     } else {
       const singleRequest = fetchOneCatalog(selectedCatalog, roxxyNextSkip, query, genre);
-      setCatalogSearchProgress(25, 'Mengirim permintaan ke Roxxy…');
+      setCatalogSearchProgress(25, 'Mengirim permintaan ke server Video Feeds…');
       const progressStages = [
         setTimeout(() => { if (requestId === roxxyCatalogRequest && roxxyPageLoading) setCatalogSearchProgress(55, 'Menerima hasil katalog…'); }, 450),
         setTimeout(() => { if (requestId === roxxyCatalogRequest && roxxyPageLoading) setCatalogSearchProgress(82, 'Memproses metadata hasil…'); }, 1100)
@@ -755,7 +755,7 @@ async function refreshRoxxyTorboxStatus() {
 async function sendMagnetToTorBox(i) {
   const a = (window._roxxyAnalyses || {})[i];
   if (!a || a.engine !== 'torbox' || !a.magnet) { setStatus('Magnet tidak tersedia.'); return; }
-  const title = selectedMeta?.name || selectedMeta?.jav_code || 'Roxxy JAV';
+  const title = selectedMeta?.name || selectedMeta?.jav_code || 'Video Feeds';
   try {
     $('roxxy-torbox-state').textContent = 'SUBMITTING';
     $('roxxy-torbox-status').textContent = 'Mengirim Magnet ke TorBox…';

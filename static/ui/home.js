@@ -888,11 +888,11 @@
           el("p", {
             text: state.query
               ? `Tidak ada judul yang cocok dengan "${state.query}".`
-              : "Tambahkan media dari Library, Discovery, atau Roxxy untuk mulai membangun katalog.",
+              : "Tambahkan media dari Library, Discovery, atau Video Feeds untuk mulai membangun katalog.",
           }),
           el("div", { style: "margin-top:20px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap" },
             el("a", { class: "btn btn--light", href: "/", text: "Buka Library" }),
-            el("a", { class: "btn btn--ghost", href: "/roxxy", text: "Buka Roxxy" })
+            el("a", { class: "btn btn--ghost", href: "/roxxy", text: "Buka Video Feeds" })
           )
         )
       );

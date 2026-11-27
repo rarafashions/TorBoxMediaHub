@@ -70,14 +70,14 @@ def _roxxy_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, 
     response.raise_for_status()
     data = response.json()
     if not isinstance(data, dict):
-        raise ValueError("Respons Roxxy bukan objek JSON.")
+        raise ValueError("Respons Video Feeds bukan objek JSON.")
     return data
 
 
 def _safe_error(exc: Exception) -> str:
     # Do not leak token-bearing manifest URL or signed stream URLs to UI/logs.
     msg = str(exc)
-    msg = re.sub(r"https://hub\.roxxy-tech\.com/[^\s]+", "[Roxxy URL disamarkan]", msg)
+    msg = re.sub(r"https://hub\.roxxy-tech\.com/[^\s]+", "[Video Feeds URL disamarkan]", msg)
     return msg[:300]
 
 
@@ -116,18 +116,18 @@ def api_save_config():
     if manifest:
         p = urlparse(manifest)
         if p.scheme != "https" or p.hostname != "hub.roxxy-tech.com" or not p.path.endswith("/manifest.json"):
-            return jsonify({"ok": False, "error": "Manifest URL tidak valid. Gunakan URL manifest Roxxy HTTPS yang berakhir /manifest.json."}), 400
+            return jsonify({"ok": False, "error": "Manifest URL tidak valid. Gunakan URL manifest Video Feeds HTTPS yang berakhir /manifest.json."}), 400
     if not folder:
         return jsonify({"ok": False, "error": "Folder download tidak boleh kosong."}), 400
     _save_private_settings({"roxxy_manifest_url": manifest, "roxxy_download_path": folder})
-    return jsonify({"ok": True, "message": "Konfigurasi Roxxy disimpan. Token tidak ditampilkan kembali."})
+    return jsonify({"ok": True, "message": "Konfigurasi Video Feeds disimpan. Token tidak ditampilkan kembali."})
 
 
 @roxxy_bp.get("/api/roxxy/manifest")
 def api_manifest():
     try:
         data = _roxxy_get("manifest.json")
-        return jsonify({"ok": True, "name": data.get("name", "Roxxy"), "version": data.get("version"),
+        return jsonify({"ok": True, "name": data.get("name", "Video Feeds"), "version": data.get("version"),
                         "types": data.get("types", []), "catalogs": data.get("catalogs", []),
                         "resources": data.get("resources", [])})
     except Exception as exc:
@@ -316,7 +316,7 @@ def _classify_stream(stream: Dict[str, Any]) -> Dict[str, Any]:
     result = {"engine": "manual", "route": "manual_inspection", "reason": "URL belum dapat diklasifikasikan secara aman.", "magnet": None}
     magnet = url if lower.startswith("magnet:?") else _decode_forwarded_magnet(url)
     if magnet:
-        result.update(engine="torbox", route="torbox_magnet", reason="Magnet URI terdeteksi dari URL stream atau payload forwarding Roxxy.", magnet=magnet)
+        result.update(engine="torbox", route="torbox_magnet", reason="Magnet URI terdeteksi dari URL stream atau payload forwarding Video Feeds.", magnet=magnet)
         return result
     path = urlparse(url).path.lower() if lower.startswith(("http://", "https://")) else ""
     if path.endswith((".m3u8", ".mpd")):
@@ -324,7 +324,7 @@ def _classify_stream(stream: Dict[str, Any]) -> Dict[str, Any]:
     elif path.endswith(".mkv") or re.search(r"\bhevc\b|\bh265\b", name, re.I):
         result.update(engine="aria2c", route="aria2_file", reason="File MKV/HEVC diarahkan ke downloader file.")
     elif path.endswith(".mp4"):
-        result.update(engine="yt-dlp", route="yt_dlp", reason="URL MP4 dikenali sebagai media URL; yt-dlp dipilih sesuai aturan Roxxy.")
+        result.update(engine="yt-dlp", route="yt_dlp", reason="URL MP4 dikenali sebagai media URL; yt-dlp dipilih sesuai aturan Video Feeds.")
     elif lower.startswith(("http://", "https://")):
         result.update(engine="pending_http_inspection", route="inspect_http", reason="HTTP/HTTPS belum menunjukkan ekstensi. Perlu pemeriksaan header sebelum memilih aria2c atau yt-dlp.")
     return result

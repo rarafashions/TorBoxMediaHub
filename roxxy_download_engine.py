@@ -40,19 +40,19 @@ def _safe_filename(value: str) -> str:
     value = unquote(str(value or "")).replace("\x00", "")
     value = re.sub(r'[<>:"/\\\\|?*]', "_", value)
     value = re.sub(r"\s+", " ", value).strip(" .")
-    return value[:180] or "Roxxy_Download"
+    return value[:180] or "VideoFeeds_Download"
 
 def _fallback_name(payload: Dict[str, Any], ext: str = "") -> str:
     meta = payload.get("meta") or {}
     code = str(meta.get("jav_code") or payload.get("jav_code") or "").strip().upper()
-    title = str(meta.get("name") or payload.get("title") or "Roxxy JAV").strip()
+    title = str(meta.get("name") or payload.get("title") or "Video Feeds").strip()
     resolution = str(payload.get("resolution") or "")
     if not resolution:
         text = " ".join(str(payload.get(k) or "") for k in ("name", "title", "description"))
         m = re.search(r"\b(2160p|1080p|720p|480p)\b", text, re.I)
         resolution = m.group(1) if m else ""
     base = " - ".join(x for x in (code, title, resolution) if x)
-    return _safe_filename(base or "Roxxy_Download") + ext
+    return _safe_filename(base or "VideoFeeds_Download") + ext
 
 def _content_disposition_name(value: str) -> str:
     if not value:
