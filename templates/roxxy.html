@@ -561,11 +561,23 @@ function renderCatalogSearchSummary(state) {
 }
 
 function populateSelectedCatalogGenres(c, keep = '') {
-  const extra = (c?.extra || []).find(x => x.name === 'genre');
-  const options = extra?.options || [];
-  const selected = options.includes(keep) ? keep : '';
-  $('genre-select').innerHTML = '<option value="">Semua Genre</option>'
+  // Manifest extras are normally an array, but some addons emit a single
+  // object (`"extra":{"name":"skip"}`); normalize before searching.
+  const extras = Array.isArray(c?.extra) ? c.extra : (c?.extra ? [c.extra] : []);
+  const extra = extras.find(x => x && x.name === 'genre');
+  const options = Array.isArray(extra?.options) ? extra.options : [];
+  const required = !!extra?.isRequired;
+  // A required genre (e.g. MissAV) must be sent on the first load; otherwise
+  // the addon returns its default page or nothing at all.
+  let selected = options.includes(keep) ? keep : (required ? (options[0] || '') : '');
+  const allOption = required ? '' : '<option value="">Semua Genre</option>';
+  $('genre-select').innerHTML = allOption
     + options.map(x => `<option value="${esc(x)}"${x === selected ? ' selected' : ''}>${esc(x)}</option>`).join('');
+  $('genre-select').title = required
+    ? 'Genre wajib untuk katalog ini'
+    : 'Filter genre atau hasil per katalog';
+  if (selected) $('genre-select').value = selected;
+  window._roxxyGenre = selected;
 }
 
 function applyCatalogSearchFilter() {
@@ -579,6 +591,31 @@ function applyCatalogSearchFilter() {
   });
   const total = (window._roxxyItems || []).length;
   $('result-count').textContent = filter ? `${visible} dari ${total} judul` : `${total} judul`;
+}
+
+// A catalog genre (e.g. MissAV -> Uncensored Leak) is an addon-side filter:
+// hiding already-loaded cards would only ever show the default page. Selecting
+// one reloads the catalog with `?genre=` so the addon returns the right items.
+function applyGenreSelection() {
+  const raw = $('genre-select').value || '';
+  if (raw.startsWith('cat:')) {
+    applyCatalogSearchFilter();
+    return;
+  }
+  // Clearing a genre must fetch the unfiltered catalog again, so a real change
+  // (including back to "Semua Genre") always reloads from the addon.
+  const previous = window._roxxyGenre || '';
+  if (!selectedCatalog || raw === previous) {
+    applyCatalogSearchFilter();
+    return;
+  }
+  const allBox = $('search-all-catalogs');
+  if (allBox && allBox.checked) allBox.checked = false;
+  roxxySearchAllState = null;
+  setStatus(raw
+    ? `Memuat genre "${raw}" dari ${selectedCatalog.name}…`
+    : `Memuat ulang ${selectedCatalog.name} tanpa filter genre…`);
+  fetchCatalogPage(true);
 }
 
 function renderCatalogCards(items, append = false) {
@@ -1587,9 +1624,9 @@ async function checkTorboxCache(i) {
 }
 
 $('search-query').addEventListener('keydown', e => { if (e.key === 'Enter') loadCatalog(); });
-// Catalog filter and genre choice are client-side only; a new network search
-// starts exclusively from the Cari button (or Enter).
-$('genre-select').addEventListener('change', applyCatalogSearchFilter);
+// Catalog-result filters are client-side; a real catalog genre reloads the
+// catalog from the addon with its `genre` extra so the server does the filtering.
+$('genre-select').addEventListener('change', applyGenreSelection);
 // Always keep the header badge and TorBox panel fresh, including downloads
 // started before this page was opened. The status route is memory-only.
 setInterval(refreshRoxxyTorboxStatus, 5000);
