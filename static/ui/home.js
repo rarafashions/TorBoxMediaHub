@@ -112,6 +112,119 @@
     return CATEGORY_LABEL[cat] || "Lainnya";
   }
 
+  /* --------------------------- Series helpers ---------------------------- */
+
+  const SERIES_CATEGORIES = new Set(["tv_show", "anime", "donghua"]);
+
+  function isSeriesCategory(cat) {
+    return SERIES_CATEGORIES.has(cat);
+  }
+
+  // Item episodic = kategori serial dan punya series_title atau nomor episode.
+  // Anime movie tanpa keduanya tetap tampil sebagai kartu tunggal.
+  function isEpisodeItem(item) {
+    return isSeriesCategory(item.content_category) &&
+      (Boolean(String(item.series_title || "").trim()) || item.episode_num != null);
+  }
+
+  function seriesKey(item) {
+    return String(item.series_title || item.title || item.file_name || "").trim().toLowerCase();
+  }
+
+  function groupSeries(items) {
+    const map = new Map();
+    for (const item of items) {
+      if (!isEpisodeItem(item)) continue;
+      const key = seriesKey(item);
+      if (!key) continue;
+
+      let group = map.get(key);
+      if (!group) {
+        group = {
+          kind: "series",
+          key,
+          title: String(item.series_title || item.title || item.file_name || "Tanpa Judul").trim(),
+          category: item.content_category,
+          items: [],
+          seasons: new Set(),
+          watched: 0,
+          posterItem: null,
+          year: null,
+          rating: 0,
+          plot: "",
+          studio: "",
+          updated_at: "",
+        };
+        map.set(key, group);
+      }
+
+      group.items.push(item);
+      group.seasons.add(parseInt(item.season_num || 1, 10) || 1);
+      if (Number(item.is_watched)) group.watched += 1;
+      if (!group.posterItem && item.has_poster) group.posterItem = item;
+      if (!group.year && item.year) group.year = item.year;
+      if (Number(item.rating) > group.rating) group.rating = Number(item.rating);
+      if (!group.plot && item.plot) group.plot = item.plot;
+      if (!group.studio && item.studio) group.studio = item.studio;
+      if (String(item.updated_at || "") > group.updated_at) group.updated_at = String(item.updated_at || "");
+    }
+
+    const groups = Array.from(map.values());
+    for (const group of groups) {
+      group.items.sort(
+        (a, b) =>
+          (Number(a.season_num || 1) - Number(b.season_num || 1)) ||
+          (Number(a.episode_num || 0) - Number(b.episode_num || 0))
+      );
+      group.posterItem = group.posterItem || group.items.find((it) => it.has_poster) || group.items[0] || null;
+    }
+    return groups;
+  }
+
+  // Campurkan serial (satu entri per judul) dan item tunggal (film) agar rail
+  // tidak dipenuhi episode individual.
+  function mixedEntries(items) {
+    const groups = groupSeries(items);
+    const grouped = new Set(groups.flatMap((g) => g.items.map((it) => String(it.id))));
+    const singles = items.filter((it) => !grouped.has(String(it.id)));
+    return [...groups, ...singles];
+  }
+
+  function entryTitle(entry) {
+    return entry.kind === "series" ? entry.title : entry.title || entry.file_name || "Tanpa Judul";
+  }
+
+  function entryRating(entry) {
+    return Number(entry.rating || 0);
+  }
+
+  function entryStar(entry) {
+    return entry.kind === "series"
+      ? Number((entry.posterItem && entry.posterItem.rating_star) || 0)
+      : Number(entry.rating_star || 0);
+  }
+
+  function entryUpdated(entry) {
+    return String(entry.updated_at || "");
+  }
+
+  function entryCategory(entry) {
+    return entry.kind === "series" ? entry.category : entry.content_category;
+  }
+
+  function entryWatched(entry) {
+    if (entry.kind !== "series") return Number(entry.is_watched) === 1;
+    return entry.items.length > 0 && entry.items.every((it) => Number(it.is_watched) === 1);
+  }
+
+  function seasonNumbers(group) {
+    return Array.from(group.seasons).sort((a, b) => a - b);
+  }
+
+  function episodeLabel(num) {
+    return num == null ? "EP" : `E${String(num).padStart(2, "0")}`;
+  }
+
   function posterUrl(item) {
     const id = item && typeof item === "object" ? item.id : item;
     const version = item && typeof item === "object" ? item.updated_at || "" : "";
@@ -195,32 +308,69 @@
 
   /* ------------------------------ Billboard ----------------------------- */
 
-  function pickHero() {
-    const withPoster = state.items.filter((it) => it.has_poster);
-    const pool = withPoster.length ? withPoster : state.items;
+  function pickHero(entries) {
+    const withPoster = entries.filter((entry) => {
+      const item = entry.kind === "series" ? entry.posterItem : entry;
+      return Boolean(item && item.has_poster);
+    });
+    const pool = withPoster.length ? withPoster : entries.slice();
     if (!pool.length) return null;
     return pool.slice().sort((a, b) => {
-      const sa = Number(a.rating_star || 0) * 2 + Number(a.rating || 0);
-      const sb = Number(b.rating_star || 0) * 2 + Number(b.rating || 0);
+      const sa = entryStar(a) * 2 + entryRating(a);
+      const sb = entryStar(b) * 2 + entryRating(b);
       if (sb !== sa) return sb - sa;
-      return String(b.updated_at || "").localeCompare(String(a.updated_at || ""));
+      return entryUpdated(b).localeCompare(entryUpdated(a));
     })[0];
   }
 
-  function renderBillboard(item) {
-    const meta = [item.year, runtimeLabel(item.runtime), catLabel(item.content_category)]
-      .filter(Boolean)
-      .map((t) => el("span", { text: t }));
+  function renderBillboard(entry) {
+    const isSeries = entry.kind === "series";
+    const item = isSeries ? entry.posterItem : entry;
+    if (!item) return null;
+
+    const metaTexts = isSeries
+      ? [
+          entry.year,
+          entry.seasons.size ? `${entry.seasons.size} Season` : "",
+          entry.items.length ? `${entry.items.length} Episode` : "",
+          catLabel(entry.category),
+        ]
+      : [item.year, runtimeLabel(item.runtime), catLabel(item.content_category)];
+    const meta = metaTexts.filter(Boolean).map((t) => el("span", { text: t }));
 
     const metaRow = el("div", { class: "billboard__meta" });
     meta.forEach((node, i) => {
       if (i > 0) metaRow.append(el("span", { class: "dot", "aria-hidden": "true" }));
       metaRow.append(node);
     });
-    if (item.rating_star) {
+    if (entryStar(entry)) {
       metaRow.append(el("span", { class: "dot", "aria-hidden": "true" }));
-      metaRow.append(el("span", { class: "billboard__score", text: `★ ${item.rating_star}/5` }));
+      metaRow.append(el("span", { class: "billboard__score", text: `★ ${entryStar(entry)}/5` }));
     }
+
+    const primary = isSeries
+      ? el("button", {
+          class: "btn btn--light",
+          html: `${ICON.play}<span>Putar Episode</span>`,
+          onclick: () => playSeries(entry),
+        })
+      : el("button", {
+          class: "btn btn--light",
+          html: `${ICON.play}<span>Putar</span>`,
+          onclick: () => playItem(item),
+        });
+
+    const secondary = isSeries
+      ? el("button", {
+          class: "btn btn--ghost",
+          html: `${ICON.plus}<span>Episode</span>`,
+          onclick: () => openSeries(entry),
+        })
+      : el("button", {
+          class: "btn btn--ghost",
+          html: `${ICON.plus}<span>Detail</span>`,
+          onclick: () => openDetail(item.id),
+        });
 
     return el(
       "section",
@@ -234,37 +384,330 @@
         "div",
         { class: "billboard__content" },
         el("span", { class: "billboard__eyebrow", text: "Sorotan" }),
-        el("h1", { class: "billboard__title", text: item.title || item.file_name || "Tanpa Judul" }),
+        el("h1", { class: "billboard__title", text: entryTitle(entry) }),
         metaRow,
-        item.plot ? el("p", { class: "billboard__plot clamp-3", text: item.plot }) : null,
-        el(
-          "div",
-          { class: "billboard__actions" },
-          el("button", {
-            class: "btn btn--light",
-            html: `${ICON.play}<span>Putar</span>`,
-            onclick: () => playItem(item),
-          }),
-          el("button", {
-            class: "btn btn--ghost",
-            html: `${ICON.plus}<span>Detail</span>`,
-            onclick: () => openDetail(item.id),
-          })
-        )
+        (isSeries ? entry.plot : item.plot)
+          ? el("p", { class: "billboard__plot clamp-3", text: isSeries ? entry.plot : item.plot })
+          : null,
+        el("div", { class: "billboard__actions" }, primary, secondary)
       )
     );
   }
 
+  function playSeries(group) {
+    const target =
+      group.items.find((it) => !Number(it.is_watched)) || group.items[0];
+    if (target) playItem(target);
+  }
+
+  /* --------------------------- Series panel ----------------------------- */
+
+  function openSeries(group) {
+    closeDetail();
+    const fresh = groupSeries(state.items).find((g) => g.key === group.key);
+    if (fresh) group = fresh;
+
+    const posterItem = group.posterItem || group.items[0];
+    const seasons = seasonNumbers(group);
+    let activeSeason = seasons[0] || 1;
+    let status = null;
+    let officialSeasons = [];
+    let loadingStatus = false;
+    let statusToken = 0;
+
+    state.detailId = null;
+
+    const seasonBar = el("div", { class: "series__seasons", role: "tablist", "aria-label": "Pilih season" });
+    const statusLine = el("p", { class: "series__status" });
+    const listHost = el("div", { class: "series__list" });
+
+    const allSeasons = () => {
+      const set = new Set(seasons);
+      for (const s of officialSeasons) set.add(Number(s.season_number) || 1);
+      return Array.from(set).sort((a, b) => a - b);
+    };
+
+    const countIn = (season) =>
+      group.items.filter((it) => Number(it.season_num || 1) === Number(season)).length;
+
+    const itemsFor = (season) => {
+      if (status && Number(status.active_season) === Number(season) && Array.isArray(status.items)) {
+        return status.items
+          .map((it) => state.items.find((x) => Number(x.id) === Number(it.id)) || it)
+          .sort(
+            (a, b) =>
+              Number(a.episode_num || 9999) - Number(b.episode_num || 9999) ||
+              String(a.file_name || "").localeCompare(String(b.file_name || ""))
+          );
+      }
+      return group.items.filter((it) => Number(it.season_num || 1) === Number(season));
+    };
+
+    function paintTabs() {
+      seasonBar.replaceChildren(
+        ...allSeasons().map((season) => {
+          const count = countIn(season);
+          const isActive = Number(season) === Number(activeSeason);
+          return el("button", {
+            class: "series__tab" + (isActive ? " is-active" : ""),
+            type: "button",
+            role: "tab",
+            "aria-selected": isActive ? "true" : "false",
+            text: `Season ${season}${count ? ` · ${count}` : ""}`,
+            onclick: () => selectSeason(season),
+          });
+        })
+      );
+    }
+
+    function paintStatus() {
+      let text;
+      if (loadingStatus) {
+        text = "Memuat struktur season resmi...";
+      } else if (status && Number(status.active_season) === Number(activeSeason)) {
+        text = status.status_message || "";
+        const missing = status.missing_episodes || [];
+        if (missing.length) {
+          const shown = missing.slice(0, 24).map(episodeLabel).join(", ");
+          text += `${text ? " · " : ""}Missing: ${shown}${missing.length > 24 ? " …" : ""}`;
+        }
+      } else {
+        const count = itemsFor(activeSeason).length;
+        text = count
+          ? `${count} episode tersedia di library`
+          : "Belum ada episode season ini di library";
+      }
+      statusLine.textContent = text;
+      statusLine.classList.toggle("is-loading", loadingStatus);
+    }
+
+    function episodeRow(episode) {
+      const watched = Number(episode.is_watched) === 1;
+      const meta = [
+        runtimeLabel(episode.runtime),
+        bytesLabel(episode.file_size),
+        episode.has_subtitle ? `SUB ${String(episode.subtitle_lang || "").toUpperCase()}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
+      return el(
+        "article",
+        { class: "episode" + (watched ? " is-watched" : "") },
+        el("span", { class: "episode__num", text: episodeLabel(episode.episode_num), "aria-hidden": "true" }),
+        el(
+          "button",
+          { class: "episode__body", type: "button", onclick: () => openDetail(episode) },
+          el("span", { class: "episode__title", text: episode.title || episode.file_name || "Tanpa Judul" }),
+          episode.file_name ? el("span", { class: "episode__file", text: episode.file_name }) : null,
+          meta ? el("span", { class: "episode__meta", text: meta }) : null
+        ),
+        el(
+          "div",
+          { class: "episode__actions" },
+          el("button", {
+            class: "btn btn--ghost btn--sm" + (watched ? " is-on" : ""),
+            type: "button",
+            "aria-pressed": watched ? "true" : "false",
+            title: watched ? "Tandai belum ditonton" : "Tandai ditonton",
+            "aria-label": watched ? "Tandai belum ditonton" : "Tandai ditonton",
+            html: ICON.check,
+            onclick: () => toggleEpisodeWatched(episode),
+          }),
+          el("button", {
+            class: "btn btn--light btn--sm",
+            type: "button",
+            html: `${ICON.play}<span>Putar</span>`,
+            onclick: () => playItem(episode),
+          })
+        )
+      );
+    }
+
+    function paintEpisodes() {
+      const items = itemsFor(activeSeason);
+      if (!items.length) {
+        listHost.replaceChildren(
+          el("p", { class: "series__empty", text: `Belum ada episode Season ${activeSeason} di library.` })
+        );
+        return;
+      }
+      listHost.replaceChildren(...items.map(episodeRow));
+    }
+
+    function paintAll() {
+      paintTabs();
+      paintStatus();
+      paintEpisodes();
+    }
+
+    function selectSeason(season) {
+      const next = Number(season);
+      if (next === Number(activeSeason) && status && Number(status.active_season) === next) return;
+      activeSeason = next;
+      status = null;
+      paintAll();
+      loadStatus(next);
+    }
+
+    async function loadStatus(season) {
+      const token = ++statusToken;
+      loadingStatus = true;
+      paintStatus();
+      try {
+        const params = new URLSearchParams({
+          series_title: group.title,
+          category: group.category || "tv_show",
+          season: String(season),
+        });
+        const data = await api(`/api/series/episodes-status?${params.toString()}`);
+        if (token !== statusToken || Number(season) !== Number(activeSeason)) return;
+        status = data;
+        if (Array.isArray(data.seasons) && data.seasons.length) {
+          officialSeasons = data.seasons;
+        }
+      } catch (_) {
+        if (token !== statusToken) return;
+        status = null;
+      } finally {
+        if (token === statusToken) {
+          loadingStatus = false;
+          paintAll();
+        }
+      }
+    }
+
+    async function toggleEpisodeWatched(episode) {
+      const next = Number(episode.is_watched) === 1 ? 0 : 1;
+      try {
+        await api(`/api/media/${episode.id}/watched`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ is_watched: next }),
+        });
+        episode.is_watched = next;
+        const local = group.items.find((it) => Number(it.id) === Number(episode.id));
+        if (local) local.is_watched = next;
+        paintAll();
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    }
+
+    async function playSeason() {
+      const items = itemsFor(activeSeason);
+      if (!items.length) {
+        toast(`Belum ada episode Season ${activeSeason} di library`, "error");
+        return;
+      }
+      try {
+        const data = await api("/api/media/play-batch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            media_ids: items.map((it) => it.id),
+            label: `${group.title} · Season ${activeSeason}`,
+          }),
+        });
+        toast(data.message || `Season ${activeSeason} dikirim ke player`, "ok");
+      } catch (err) {
+        toast(err.message, "error");
+      }
+    }
+
+    const metaRow = el("div", { class: "detail__meta" });
+    [group.year, `${seasons.length} Season`, `${group.items.length} Episode`, catLabel(group.category)]
+      .filter(Boolean)
+      .forEach((text, i) => {
+        if (i > 0) metaRow.append(el("span", { class: "dot", text: "·" }));
+        metaRow.append(el("span", { text: String(text) }));
+      });
+    if (entryStar(group)) {
+      metaRow.append(el("span", { class: "dot", text: "·" }));
+      metaRow.append(el("span", { text: `★ ${entryStar(group)}/5` }));
+    }
+
+    const poster = posterItem
+      ? el("img", { class: "detail__poster", alt: "", src: posterUrl(posterItem) })
+      : el("div", { class: "detail__poster card__fallback", text: initials(group.title) });
+
+    const panel = el(
+      "div",
+      { class: "detail detail--series" },
+      el("button", {
+        class: "detail__close",
+        type: "button",
+        "aria-label": "Tutup",
+        html: ICON.back,
+        onclick: closeDetail,
+      }),
+      el(
+        "div",
+        { class: "detail__hero" },
+        el("div", {
+          class: "detail__art",
+          style: posterItem && posterItem.has_poster ? `background-image:url('${posterUrl(posterItem)}')` : "",
+        }),
+        el("div", { class: "detail__scrim" }),
+        el(
+          "div",
+          { class: "detail__inner" },
+          el(
+            "div",
+            { class: "detail__layout" },
+            poster,
+            el(
+              "div",
+              {},
+              el("span", { class: "billboard__eyebrow", text: catLabel(group.category) }),
+              el("h1", { class: "detail__title", text: group.title }),
+              metaRow,
+              group.plot ? el("p", { class: "detail__plot clamp-3", text: group.plot }) : null,
+              el(
+                "div",
+                { class: "detail__actions" },
+                el("button", {
+                  class: "btn btn--light",
+                  html: `${ICON.play}<span>Putar Episode Berikutnya</span>`,
+                  onclick: () => playSeries(group),
+                }),
+                el("button", {
+                  class: "btn btn--ghost",
+                  html: `${ICON.play}<span>Putar Season</span>`,
+                  onclick: playSeason,
+                })
+              )
+            )
+          ),
+          el("div", { class: "series" }, seasonBar, statusLine, listHost)
+        )
+      )
+    );
+
+    document.body.append(panel);
+    document.body.style.overflow = "hidden";
+    paintAll();
+    loadStatus(activeSeason);
+    $(".detail__close", panel)?.focus();
+  }
+
   /* -------------------------------- Card -------------------------------- */
 
-  function buildCard(item, opts) {
+  function buildCard(entry, opts) {
     const options = opts || {};
+    const isSeries = entry.kind === "series";
+    const item = isSeries ? entry.posterItem : entry;
+    if (!item) return null;
+
+    const title = entryTitle(entry);
+    const category = entryCategory(entry);
+    const seasonCount = isSeries ? seasonNumbers(entry).length : 0;
 
     const frame = el("div", { class: "card__frame" });
 
     const fallback = el("div", {
       class: "card__fallback",
-      text: initials(item.title || item.file_name),
+      text: initials(title),
       "aria-hidden": "true",
     });
     frame.append(fallback);
@@ -282,10 +725,13 @@
       frame.append(img);
     }
 
-    // Badge kategori + sumber
+    // Badge kategori + jumlah season + sumber
     const badges = el("div", { class: "card__badges" });
-    if (item.content_category && item.content_category !== "uncategorized") {
-      badges.append(el("span", { class: "card__badge card__badge--cat", text: catLabel(item.content_category) }));
+    if (category && category !== "uncategorized") {
+      badges.append(el("span", { class: "card__badge card__badge--cat", text: catLabel(category) }));
+    }
+    if (isSeries) {
+      badges.append(el("span", { class: "card__badge card__badge--series", text: `${seasonCount}S` }));
     }
     if (item.source_type === "local") {
       badges.append(el("span", { class: "card__badge card__badge--local", text: "Lokal" }));
@@ -295,14 +741,14 @@
     if (badges.childElementCount) frame.append(badges);
 
     // Panel hover
-    const hoverFacts = [item.year || null, runtimeLabel(item.runtime) || null]
-      .filter(Boolean)
-      .join(" · ");
+    const hoverFacts = isSeries
+      ? `${seasonCount} season · ${entry.items.length} episode`
+      : [item.year || null, runtimeLabel(item.runtime) || null].filter(Boolean).join(" · ");
 
     const hoverinfo = el(
       "div",
       { class: "card__hoverinfo" },
-      el("div", { class: "truncate", style: "font-weight:700;font-size:12.5px", text: item.title || item.file_name }),
+      el("div", { class: "truncate", style: "font-weight:700;font-size:12.5px", text: title }),
       el("div", { style: "margin-top:3px;font-size:11px;color:var(--text-3)", text: hoverFacts || "—" }),
       item.genres && item.genres.length
         ? el("div", { class: "truncate", style: "margin-top:5px;font-size:11px;color:var(--text-2)", text: item.genres.slice(0, 3).join(" · ") })
@@ -313,8 +759,12 @@
     const body = el(
       "div",
       { class: "card__body" },
-      el("p", { class: "card__title clamp-2", text: item.title || item.file_name || "Tanpa Judul" }),
-      item.year ? el("p", { class: "card__sub", text: String(item.year) }) : null
+      el("p", { class: "card__title clamp-2", text: title }),
+      isSeries
+        ? el("p", { class: "card__sub", text: `${entry.items.length} Episode` })
+        : item.year
+          ? el("p", { class: "card__sub", text: String(item.year) })
+          : null
     );
 
     const card = el(
@@ -322,8 +772,8 @@
       {
         class: "card" + (options.rank ? " card--ranked" : ""),
         type: "button",
-        "aria-label": `Buka detail ${item.title || item.file_name}`,
-        onclick: () => openDetail(item.id),
+        "aria-label": `${isSeries ? "Buka serial" : "Buka detail"} ${title}`,
+        onclick: () => (isSeries ? openSeries(entry) : openDetail(item.id)),
       },
       options.rank ? el("span", { class: "card__rank", text: String(options.rank), "aria-hidden": "true" }) : null,
       frame,
@@ -351,6 +801,7 @@
     const track = el("div", { class: "rail__track", role: "list" });
     items.forEach((item, idx) => {
       const wrapper = buildCard(item, { rank: options.ranked ? idx + 1 : 0 });
+      if (!wrapper) return;
       wrapper.setAttribute("role", "listitem");
       track.append(wrapper);
     });
@@ -448,38 +899,39 @@
       return;
     }
 
-    const hero = pickHero();
+    const entries = mixedEntries(state.items);
+    const hero = pickHero(entries);
     const sections = [];
 
     if (hero) sections.push(renderBillboard(hero));
 
-    // Baru ditambahkan
-    const recent = state.items.slice().sort((a, b) =>
-      String(b.updated_at || "").localeCompare(String(a.updated_at || ""))
-    );
+    // Baru ditambahkan (serial memakai episode terbaru sebagai penanda)
+    const recent = entries
+      .slice()
+      .sort((a, b) => entryUpdated(b).localeCompare(entryUpdated(a)));
     sections.push(buildRail("Baru Ditambahkan", recent.slice(0, 20)));
 
-    // Belum ditonton
-    const unwatched = recent.filter((it) => !Number(it.is_watched));
+    // Belum ditonton (serial dianggap selesai bila semua episodenya ditonton)
+    const unwatched = recent.filter((entry) => !entryWatched(entry));
     sections.push(buildRail("Belum Ditonton", unwatched.slice(0, 20)));
 
     // Rating tertinggi (dengan badge peringkat)
-    const rated = state.items
-      .filter((it) => Number(it.rating_star) > 0)
-      .sort((a, b) => Number(b.rating_star) - Number(a.rating_star))
+    const rated = entries
+      .filter((entry) => entryStar(entry) > 0)
+      .sort((a, b) => entryStar(b) - entryStar(a))
       .slice(0, 10);
     sections.push(buildRail("Rating Tertinggi", rated, { ranked: true }));
 
-    // Rail per kategori (hanya yang cukup isinya)
+    // Rail per kategori: serial tampil satu kartu per judul, bukan per episode
     const byCat = {};
-    for (const item of state.items) {
-      const cat = item.content_category || "uncategorized";
-      (byCat[cat] = byCat[cat] || []).push(item);
+    for (const entry of entries) {
+      const cat = entryCategory(entry) || "uncategorized";
+      (byCat[cat] = byCat[cat] || []).push(entry);
     }
     const catOrder = ["general_movie", "tv_show", "anime", "donghua", "jav", "english_adult", "indo"];
     const catKeys = [...catOrder.filter((c) => byCat[c]), ...Object.keys(byCat).filter((c) => !catOrder.includes(c))];
     for (const cat of catKeys) {
-      if (byCat[cat].length < 4) continue;
+      // Semua kategori yang punya isi ditampilkan; rail bisa digeser horizontal.
       sections.push(buildRail(catLabel(cat), byCat[cat].slice(0, 20)));
     }
 
@@ -531,8 +983,8 @@
     return row;
   }
 
-  function openDetail(id) {
-    const item = readItem(id);
+  function openDetail(idOrItem) {
+    const item = idOrItem && typeof idOrItem === "object" ? idOrItem : readItem(idOrItem);
     if (!item) return;
 
     state.detailId = Number(item.id);
@@ -556,7 +1008,7 @@
 
     const panel = el(
       "div",
-      { class: "detail" },
+      { class: "detail detail--single" },
       el("button", { class: "detail__close", type: "button", "aria-label": "Tutup", html: ICON.back, onclick: closeDetail }),
       el(
         "div",
@@ -655,19 +1107,25 @@
     }
 
     panel.addEventListener("keydown", (ev) => {
-      if (ev.key === "Escape") closeDetail();
+      if (ev.key === "Escape") {
+        ev.stopPropagation();
+        closeDetail();
+      }
     });
     $(".detail__close", panel)?.focus();
   }
 
   function closeDetail() {
-    const panel = $(".detail");
+    const panels = document.querySelectorAll(".detail");
+    const panel = panels[panels.length - 1];
     if (!panel) return;
     panel.remove();
-    document.body.style.overflow = "";
-    state.detailId = null;
-    if (location.hash.startsWith("#media-")) {
-      history.replaceState(null, "", location.pathname + location.search);
+    if (!document.querySelector(".detail")) document.body.style.overflow = "";
+    if (panel.classList.contains("detail--single")) {
+      state.detailId = null;
+      if (location.hash.startsWith("#media-")) {
+        history.replaceState(null, "", location.pathname + location.search);
+      }
     }
   }
 
@@ -715,15 +1173,22 @@
       });
     }
 
-    // Klik di luar detail menutup
+    // Klik di luar detail menutup panel teratas
     document.addEventListener("click", (ev) => {
-      const panel = $(".detail");
+      const panels = document.querySelectorAll(".detail");
+      const panel = panels[panels.length - 1];
       if (!panel) return;
       if (ev.target === panel) closeDetail();
     });
 
+    // Escape menutup panel teratas (detail episode atau panel serial)
+    document.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape" && document.querySelector(".detail")) closeDetail();
+    });
+
     window.addEventListener("popstate", () => {
-      if (!location.hash.startsWith("#media-")) closeDetail();
+      const single = document.querySelector(".detail--single");
+      if (!location.hash.startsWith("#media-") && single) closeDetail();
     });
   }
 
@@ -735,5 +1200,14 @@
   });
 
   // Ekspos minimal untuk debugging manual di konsol
-  window.TMH = { state, load, openDetail, closeDetail };
+  window.TMH = {
+    state,
+    load,
+    openDetail,
+    openSeries,
+    closeDetail,
+    groupSeries,
+    mixedEntries,
+    isEpisodeItem,
+  };
 })();

@@ -324,6 +324,21 @@
   flex: none;
 }
 
+.btn--ghost.is-on {
+  color: var(--success);
+}
+
+.btn--sm {
+  padding: 7px 13px;
+  font-size: 12px;
+  gap: 6px;
+}
+
+.btn--sm .btn__svg {
+  width: 14px;
+  height: 14px;
+}
+
 /* ============================ RAIL ====================================== */
 
 .rail {
@@ -497,6 +512,11 @@
 .card__badge--local {
   background: rgba(63, 185, 80, 0.9);
   color: #06210a;
+}
+
+.card__badge--series {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.3);
 }
 
 .card__badge--cloud {
@@ -873,6 +893,163 @@
   }
   .detail__poster {
     width: 150px;
+  }
+}
+
+/* ======================= SERIES / SEASON PANEL ========================= */
+
+.detail--series .detail__hero {
+  display: block;
+  padding-top: clamp(64px, 9vh, 112px);
+}
+
+.series {
+  position: relative;
+  margin-top: 34px;
+  padding-top: 24px;
+  border-top: 1px solid var(--surface-3);
+}
+
+.series__seasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.series__tab {
+  padding: 7px 15px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--surface-3);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 700;
+  transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast);
+}
+
+.series__tab:hover {
+  color: var(--text-1);
+  border-color: var(--text-3);
+}
+
+.series__tab.is-active {
+  background: #f6f6f8;
+  border-color: #f6f6f8;
+  color: #08080a;
+}
+
+.series__status {
+  margin: 0 0 16px;
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.series__status.is-loading {
+  color: var(--text-2);
+}
+
+.series__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.series__empty {
+  margin: 0;
+  padding: 22px;
+  border: 1px dashed var(--surface-3);
+  border-radius: var(--radius-xs);
+  text-align: center;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+
+.episode {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid var(--surface-3);
+  border-radius: var(--radius-xs);
+  background: var(--surface-1);
+  transition: border-color var(--dur-fast), background var(--dur-fast);
+}
+
+.episode:hover {
+  border-color: var(--text-3);
+  background: var(--surface-2);
+}
+
+.episode.is-watched {
+  opacity: 0.72;
+}
+
+.episode__num {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-xs);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.episode__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+}
+
+.episode__title {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-1);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.episode__file {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-3);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+
+.episode__meta {
+  color: var(--text-3);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.episode__actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 760px) {
+  .episode {
+    flex-wrap: wrap;
+  }
+  .episode__body {
+    flex-basis: calc(100% - 60px);
+  }
+  .episode__actions {
+    width: 100%;
+    justify-content: flex-end;
   }
 }
 
