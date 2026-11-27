@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging.handlers
 import os
 import platform
 import re
@@ -7,6 +8,7 @@ import shlex
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -28,9 +30,9 @@ import dual_subtitle_engine as dual_subs
 import subtitle_quality_audit as subtitle_audit
 import platform_support as platform_env
 import webdl_resolver as webdl
-from roxxy_module import roxxy_bp
+from roxxy_module import invalidate_library_index, roxxy_bp
 
-APP_VERSION = "v1.3D6"  # single source of truth; templates render this
+APP_VERSION = "v1.3D7"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -68,9 +70,112 @@ def _guard_cross_site_writes():
         return jsonify({"ok": False, "error": "Cross-site request blocked."}), 403
     return None
 
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_FILE = os.path.join(LOG_DIR, "app.log")
+LOG_MAX_BYTES = 5 * 1024 * 1024
+LOG_BACKUP_COUNT = 4
+
+
+class _ConsoleTee:
+    """Mirror stdout/stderr into the rotating log file, keep console output.
+
+    The server normally runs in a console window, and that window is the only
+    log sink: running it hidden or from another shell loses every traceback.
+    Each write still goes to the original stream, and the same text is also
+    recorded through the ``console`` logger.
+    """
+
+    _local = threading.local()
+    _ansi = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+
+    def __init__(self, stream: Any, logger_name: str = "console") -> None:
+        self._stream = stream
+        self._logger = logging.getLogger(logger_name)
+
+    def write(self, data: Any) -> int:
+        raw = data
+        if isinstance(data, (bytes, bytearray)):
+            text = bytes(data).decode("utf-8", "replace")
+        else:
+            text = str(data)
+        if not getattr(self._local, "writing", False) and text.strip():
+            self._local.writing = True
+            try:
+                for line in self._ansi.sub("", text).splitlines():
+                    if line.strip():
+                        self._logger.info(line.rstrip("\r\n"))
+            except Exception:
+                pass
+            finally:
+                self._local.writing = False
+        try:
+            # Kirim objek aslinya: click/colorama menulis bytes ke stream.
+            self._stream.write(raw)
+        except Exception:
+            pass
+        return len(raw) if isinstance(raw, (bytes, bytearray)) else len(text)
+
+    def writelines(self, lines: Any) -> None:
+        for line in lines:
+            self.write(line)
+
+    def flush(self) -> None:
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def isatty(self) -> bool:
+        return False
+
+    def fileno(self) -> int:
+        return self._stream.fileno()
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
+
+
+def _setup_server_logging() -> str:
+    """Attach a rotating file log so restarts stop losing server output."""
+    if getattr(app, "_tbh_file_logging", False):
+        return LOG_FILE
+    os.makedirs(LOG_DIR, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        LOG_FILE,
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    root = logging.getLogger()
+    root.setLevel(logging.INFO)
+    root.addHandler(handler)
+    # Tee pertama, agar stream handler yang dibuat setelah ini menulis ke tee
+    # dan setiap baris tercatat tepat sekali di file.
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and not isinstance(stream, _ConsoleTee):
+            setattr(sys, stream_name, _ConsoleTee(stream))
+    # Werkzeug/Flask menulis ke konsol sendiri; tee yang menyalinnya ke file.
+    # Propagate dimatikan supaya baris yang sama tidak masuk dua kali.
+    for logger in (logging.getLogger("werkzeug"), app.logger):
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+        if not logger.handlers:
+            logger.addHandler(logging.StreamHandler())
+    app._tbh_file_logging = True
+    return LOG_FILE
+
+
 VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v", ".ts", ".m2ts")
 SUBTITLE_EXTENSIONS = (".srt", ".ass", ".ssa", ".vtt", ".sub")
 TORBOX_API_BASE = "https://api.torbox.app/v1/api"
+# TorBox disurvei hanya selama ada item yang dipantau. Sepuluh detik cukup untuk
+# menampilkan progres tanpa membanjiri API dengan permintaan tiap 5 detik.
+TORBOX_WATCH_POLL_SECONDS = 10
 M3U_FRESH_TTL_SECONDS = 1800  # 30 minutes cache for freshly generated playlist M3U
 
 DISCOVER_CACHE_TTL = 600  # 10 minutes cache for Discovery feeds
@@ -367,7 +472,7 @@ class TorboxDownloadMonitor:
 
     def _loop(self) -> None:
         while True:
-            time.sleep(5)
+            time.sleep(TORBOX_WATCH_POLL_SECONDS)
             with self._lock:
                 if not self.watched_items:
                     self._thread_started = False
@@ -408,6 +513,7 @@ class TorboxDownloadMonitor:
                 for key, entry in list(self.watched_items.items()):
                     if time.time() - entry["added_at"] > 21600:
                         del self.watched_items[key]
+                        _forget_import_hints(key)
                         continue
 
                     remote = torbox_state.get(key)
@@ -474,16 +580,21 @@ class TorboxDownloadMonitor:
                 except Exception as exc:
                     print(f"[TorboxDownloadMonitor] Sync error: {exc}")
                 finally:
+                    done_keys = {e["key"] for e in completed_entries}
                     if imported_successfully:
                         with self._lock:
-                            done_keys = {e["key"] for e in completed_entries}
                             self.syncing_items = [
                                 s for s in self.syncing_items if s["key"] not in done_keys
                             ]
                             self.recently_imported.extend(completed_entries)
+                        # Hint sudah dipakai impor ini; salinan persisten di DB
+                        # (get_torbox_import_hint) tetap tersedia untuk impor ulang.
+                        _forget_import_hints(done_keys)
+                        # Judul yang baru masuk Library harus langsung tampil
+                        # sebagai IN LIBRARY pada pengecekan badge berikutnya.
+                        invalidate_library_index()
                     else:
                         with self._lock:
-                            done_keys = {e["key"] for e in completed_entries}
                             self.syncing_items = [
                                 s for s in self.syncing_items if s["key"] not in done_keys
                             ]
@@ -494,6 +605,20 @@ TORBOX_MONITOR = TorboxDownloadMonitor()
 # Phase 8.4.0: preserve Discovery category and poster across WebDL completion/import.
 _TORBOX_IMPORT_HINTS: Dict[str, Dict[str, Any]] = {}
 _TORBOX_IMPORT_HINTS_LOCK = threading.Lock()
+
+
+def _forget_import_hints(keys: Any) -> None:
+    """Buang hint in-memory setelah item selesai diimpor atau kedaluwarsa.
+
+    Salinan persisten di DB (``get_torbox_import_hint``) tetap dipakai saat
+    impor ulang, jadi menghapus entri ini tidak menghilangkan metadata.
+    """
+    wanted = {keys} if isinstance(keys, str) else {k for k in (keys or []) if k}
+    if not wanted:
+        return
+    with _TORBOX_IMPORT_HINTS_LOCK:
+        for key in wanted:
+            _TORBOX_IMPORT_HINTS.pop(key, None)
 
 
 def _is_video_file(filename: str) -> bool:
@@ -4228,6 +4353,8 @@ def api_db_erase_all():
 
 
 if __name__ == "__main__":
+    log_path = _setup_server_logging()
+    print(f"[INFO] Log file: {log_path}", flush=True)
     db.init_db()
     from roxxy_download_engine import start_library_task_worker
     start_library_task_worker()

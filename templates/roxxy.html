@@ -103,7 +103,10 @@
         <h1 class="text-xl font-extrabold tracking-tight text-white">Jelajahi Katalog</h1>
         <p class="text-xs text-slate-400">Klik poster untuk melihat detail metadata, cek cache TorBox, atau mulai unduhan.</p>
       </div>
-      <span id="result-count" class="rounded-full border border-white/10 bg-white/5 px-3.5 py-1 text-xs font-medium text-slate-300">0 judul</span>
+      <div class="flex items-center gap-2">
+        <button id="results-refresh-btn" onclick="refreshCatalogResults()" class="hidden rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-300 transition hover:bg-emerald-500 hover:text-slate-950" title="Muat ulang hasil katalog agar badge IN LIBRARY sesuai Library terbaru">↻ Muat ulang hasil</button>
+        <span id="result-count" class="rounded-full border border-white/10 bg-white/5 px-3.5 py-1 text-xs font-medium text-slate-300">0 judul</span>
+      </div>
     </div>
 
     <div id="catalog-results" class="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7">
@@ -150,7 +153,10 @@
         <section id="local-download-queue" class="space-y-3">
           <div class="flex items-center justify-between">
             <span class="text-xs font-semibold text-slate-300">Folder Movies Windows</span>
-            <span id="local-queue-count" class="rounded-full bg-white/5 px-2.5 py-0.5 text-[11px] text-slate-300">0 aktif</span>
+            <div class="flex items-center gap-1.5">
+              <button id="local-clear-btn" onclick="clearLocalHistory()" class="hidden rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-[10px] font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white" title="Hapus riwayat download yang sudah selesai atau gagal">Bersihkan</button>
+              <span id="local-queue-count" class="rounded-full bg-white/5 px-2.5 py-0.5 text-[11px] text-slate-300">0 aktif</span>
+            </div>
           </div>
           <div id="local-queue-list" class="space-y-2.5">
             <p class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Belum ada download lokal.</p>
@@ -254,7 +260,10 @@
         <div>
           <div class="mb-3 flex items-center justify-between">
             <h3 class="text-sm font-extrabold uppercase tracking-wider text-slate-200">Pilihan Sumber Stream</h3>
-            <span id="subtitles-list" class="text-[11px] text-slate-400"></span>
+            <div class="flex items-center gap-2">
+              <button onclick="analyzeAllStreams()" class="rounded-md border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white" title="Analisis semua sumber sekaligus">Analisis semua</button>
+              <span id="subtitles-list" class="text-[11px] text-slate-400"></span>
+            </div>
           </div>
           <div id="stream-list" class="space-y-2.5"></div>
         </div>
@@ -728,6 +737,7 @@ function refreshDetailCloudAction() {
 
 async function sendMetaToTorBoxWebdl() {
   if (!selectedMeta) return;
+  if (!confirmIfInLibrary('Simpan ke TorBox Cloud')) return;
   const type = selectedMeta._roxxyType || selectedMeta.type || '';
   const btn = $('detail-cloud-btn');
   const title = selectedMeta.name || selectedMeta.jav_code || 'Video Feeds';
@@ -832,29 +842,46 @@ function renderStreams(streams, subs) {
         <span class="text-xs font-medium ${s.playable === false ? 'text-amber-400' : 'text-emerald-400'}">
           ${s.playable === false ? '⚠ Tidak ditandai playable' : '● Tersedia untuk dianalisis'}
         </span>
-        <span class="inline-flex items-center gap-2 text-xs text-sky-300" data-analysis-status>
+        ${i === 0
+          ? `<span class="inline-flex items-center gap-2 text-xs text-sky-300" data-analysis-status>
           <span class="h-3 w-3 animate-spin rounded-full border-2 border-sky-300/30 border-t-sky-300"></span>
           Mencari sumber download…
-        </span>
+        </span>`
+          : `<button id="stream-trigger-${i}" onclick="analyzeStream(${i})" class="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1 text-[11px] font-semibold text-sky-300 transition hover:bg-sky-500 hover:text-slate-950">Analisis sumber ini</button>`}
       </div>
       <div id="stream-analysis-${i}" class="mt-2.5 text-xs text-slate-400"></div>
     </div>
   `).join('') || '<div class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Tidak ada stream tersedia untuk judul ini.</div>';
   
   $('subtitles-list').textContent = subs.length ? `Subtitle: ${subs.map(x => x.lang || x.langName || 'unknown').join(', ')}` : 'Tanpa subtitle eksternal';
-  // Automatically analyze every available source; no manual "Analisis & Pilih" click.
-  streams.forEach((_, i) => analyzeStream(i));
+  // Hanya sumber teratas yang dianalisis otomatis: setiap analisis melakukan
+  // probe jaringan ke hoster. Sumber lain dianalisis saat dipilih, atau lewat
+  // tombol "Analisis semua".
+  window._roxxyAnalyses = {};
+  if (streams.length) analyzeStream(0);
+}
+
+function analyzeAllStreams() {
+  const streams = window._roxxyStreams || [];
+  streams.forEach((_, i) => {
+    if (!(window._roxxyAnalyses || {})[i]) analyzeStream(i);
+  });
 }
 
 async function analyzeStream(i) {
-  const s = (window._roxxyStreams || [])[i];
+  const streamsRef = window._roxxyStreams || [];
+  const s = streamsRef[i];
   if (!s) return;
+  const trigger = $(`stream-trigger-${i}`);
+  if (trigger) { trigger.disabled = true; trigger.textContent = 'Menganalisis…'; }
   const out = $(`stream-analysis-${i}`);
   out.innerHTML = '<div class="animate-pulse text-sky-300">Menganalisis URL dan tipe stream…</div>';
   try {
     const r = await fetch('/api/roxxy/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stream: s }) });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    // Meta lain dibuka selama analisis berjalan: hasil ini sudah tidak relevan.
+    if (window._roxxyStreams !== streamsRef) return;
     const a = j.analysis;
     window._roxxyAnalyses = window._roxxyAnalyses || {};
     window._roxxyAnalyses[i] = a;
@@ -875,9 +902,11 @@ async function analyzeStream(i) {
     if (status) status.innerHTML = a.resolved
       ? '<span class="h-2 w-2 rounded-full bg-emerald-400"></span> Sumber siap diunduh'
       : '<span class="h-2 w-2 rounded-full bg-amber-400"></span> Perlu pemeriksaan header';
+    if (trigger) trigger.classList.add('hidden');
     if (a.engine === 'torbox') checkTorboxCache(i);
   } catch (e) {
     out.textContent = 'Analisis gagal: ' + e.message;
+    if (trigger) { trigger.disabled = false; trigger.textContent = 'Analisis sumber ini'; }
     const status = out.parentElement?.querySelector('[data-analysis-status]');
     if (status) status.innerHTML = '<span class="h-2 w-2 rounded-full bg-rose-400"></span> Gagal mencari sumber';
   }
@@ -886,6 +915,7 @@ async function analyzeStream(i) {
 async function startLocalDownload(i) {
   const s = (window._roxxyStreams || [])[i];
   if (!s) return;
+  if (!confirmIfInLibrary('Download lokal')) return;
   try {
     const r = await fetch('/api/roxxy/local/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stream: s, meta: selectedMeta, subtitles: window._roxxySubtitles || [], download_path: $('download-path').value }) });
     const j = await r.json();
@@ -910,9 +940,37 @@ async function retryJob(id) {
   }
 }
 
+async function clearLocalHistory() {
+  if (!confirm('Hapus riwayat download lokal yang sudah selesai? File di folder tidak ikut terhapus.')) return;
+  try {
+    const r = await fetch('/api/roxxy/local/clear', { method: 'POST' });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
+    setStatus(j.removed ? `${j.removed} riwayat download dibersihkan.` : 'Tidak ada riwayat yang perlu dibersihkan.');
+    refreshLocalQueue();
+  } catch (e) {
+    setStatus('Gagal membersihkan riwayat: ' + e.message);
+  }
+}
+
+// Badge IN LIBRARY hanya informasi, jadi unduhan tetap boleh dilanjutkan.
+// Konfirmasi ini mencegah unduhan ulang yang tidak disengaja.
+function confirmIfInLibrary(action) {
+  if (!selectedMeta || !selectedMeta.in_library) return true;
+  const match = selectedMeta.library_match || {};
+  const label = match.title || match.file_name || 'judul ini';
+  return confirm(`${action}: "${label}" sudah ada di Library. Tetap unduh?`);
+}
+
 const LIBRARY_PROGRESS_STAGES = new Set(['queued', 'validating', 'identified', 'registering']);
 let localActiveCount = 0;
 let torboxActiveCount = 0;
+let libraryResultsStale = false;
+
+function isLocalJobFinished(job) {
+  return (job.status === 'completed' || job.status === 'failed')
+    && !LIBRARY_PROGRESS_STAGES.has(String(job.library_status || ''));
+}
 
 function isLocalJobActive(job) {
   if (!job) return false;
@@ -939,6 +997,7 @@ async function refreshLocalQueue() {
     localActiveCount = active.length;
     updateDownloadBadge();
     $('local-queue-count').textContent = `${active.length} aktif`;
+    $('local-clear-btn').classList.toggle('hidden', !jobs.some(isLocalJobFinished));
     if (!jobs.length) {
       $('local-queue-list').innerHTML = '<p class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Belum ada download lokal.</p>';
       return;
@@ -1029,6 +1088,7 @@ async function refreshRoxxyTorboxStatus() {
     if (!d.ok) return;
     const active = d.active || [], syncing = d.syncing || [], imported = d.newly_imported || [];
     renderRoxxyMainQueue(active, syncing);
+    if (imported.length) handleLibraryUpdated(imported);
     
     const first = active.find(v => Number(v.progress ?? 0) < 100);
     if (first) {
@@ -1053,9 +1113,51 @@ async function refreshRoxxyTorboxStatus() {
   }
 }
 
+function updateLibraryRefreshButton() {
+  const btn = $('results-refresh-btn');
+  if (btn) btn.classList.toggle('hidden', !libraryResultsStale);
+}
+
+async function refreshCatalogResults() {
+  if (!catalogs.length) { setStatus('Manifest belum dimuat. Klik ↻ Catalogs.'); return; }
+  libraryResultsStale = false;
+  updateLibraryRefreshButton();
+  await fetchCatalogPage(true);
+}
+
+async function refreshSelectedMetaBadge() {
+  if (!selectedMeta || $('detail-panel').classList.contains('hidden')) return;
+  try {
+    const type = selectedMeta._roxxyType || selectedMeta.type;
+    const catalogId = selectedMeta._roxxyCatalogId || '';
+    const m = await api(`/api/roxxy/meta/${encodeURIComponent(type)}/${encodeURIComponent(selectedMeta.id)}`);
+    selectedMeta = { ...(m.meta || {}), _roxxyType: type, _roxxyCatalogId: catalogId };
+    renderMeta(selectedMeta);
+  } catch (e) {
+    // Badge tetap memakai hasil sebelumnya; pengguna bisa membuka ulang detail.
+  }
+}
+
+// Dipanggil saat auto-import TorBox menambahkan judul baru ke Library.
+function handleLibraryUpdated(imported) {
+  const count = (imported || []).length;
+  if (!count) return;
+  setStatus(`${count} judul baru masuk Library; badge IN LIBRARY diperbarui.`);
+  refreshSelectedMetaBadge();
+  if (roxxySearchAllState) {
+    // Mode "semua katalog" berat untuk dimuat ulang otomatis; sediakan tombol.
+    libraryResultsStale = true;
+    updateLibraryRefreshButton();
+  } else if (selectedCatalog) {
+    // Mode satu katalog hanya butuh satu permintaan.
+    fetchCatalogPage(true);
+  }
+}
+
 async function sendMagnetToTorBox(i) {
   const a = (window._roxxyAnalyses || {})[i];
   if (!a || a.engine !== 'torbox' || !a.magnet) { setStatus('Magnet tidak tersedia.'); return; }
+  if (!confirmIfInLibrary('Kirim ke TorBox')) return;
   const stream = (window._roxxyStreams || [])[i] || {};
   const title = selectedMeta?.name || selectedMeta?.jav_code || 'Video Feeds';
   const expected = a.suggested_filename || stream.behaviorHints?.filename || stream.filename || '';

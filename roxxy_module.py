@@ -10,6 +10,7 @@ import os
 import re
 import base64
 import threading
+import time
 from collections import OrderedDict
 from urllib.parse import parse_qs, unquote
 from urllib.parse import quote, urlparse
@@ -100,6 +101,10 @@ _LIBRARY_SELECT = (
     "id, title, file_name, parent_name, source_type, content_category, "
     "has_metadata, has_subtitle, season_num, episode_num, code_id"
 )
+# Badge checks happen once per card, so the index is shared for a short window.
+_LIBRARY_INDEX_TTL_SECONDS = 20.0
+_library_index_cache: Dict[str, Any] = {"index": None, "at": 0.0}
+_library_index_lock = threading.Lock()
 
 
 def _library_match_key(value: Any) -> str:
@@ -142,11 +147,33 @@ def _build_library_index(rows: Any) -> Dict[str, Dict[str, Any]]:
 
 
 def _load_library_index() -> Dict[str, Dict[str, Any]]:
-    with db.get_connection() as conn:
-        rows = conn.execute(
-            f"SELECT {_LIBRARY_SELECT} FROM media_items ORDER BY id DESC"
-        ).fetchall()
-    return _build_library_index(rows)
+    """Return the library index, rebuilding it at most once per TTL.
+
+    A "search all catalogs" run fans out to ~100 catalog requests. Without this
+    cache every request would re-read all of ``media_items`` (measured at
+    ~25-30 ms each), adding seconds of identical database work per search.
+    """
+    now = time.monotonic()
+    with _library_index_lock:
+        cached = _library_index_cache.get("index")
+        cached_at = float(_library_index_cache.get("at") or 0.0)
+        if cached is not None and now - cached_at < _LIBRARY_INDEX_TTL_SECONDS:
+            return cached
+        with db.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_LIBRARY_SELECT} FROM media_items ORDER BY id DESC"
+            ).fetchall()
+        index = _build_library_index(rows)
+        _library_index_cache["index"] = index
+        _library_index_cache["at"] = now
+        return index
+
+
+def invalidate_library_index() -> None:
+    """Drop the cached index so the next badge check sees a new import."""
+    with _library_index_lock:
+        _library_index_cache["index"] = None
+        _library_index_cache["at"] = 0.0
 
 
 def _library_match_for_meta(

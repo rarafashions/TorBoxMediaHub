@@ -45,6 +45,11 @@ ARIA2C_MIN_SPLIT_SIZE = "1M"
 ARIA2C_MAX_TRIES = 3
 ARIA2C_RETRY_WAIT = 2
 RETRY_LIMIT = 3
+# The download drawer keeps a history of finished jobs, but the in-memory map
+# must not grow for the whole lifetime of the server process.
+LOCAL_JOB_HISTORY_MAX = 50
+_FINISHED_JOB_STATUSES = {"completed", "failed"}
+_LIBRARY_PENDING_STATUSES = {"queued", "validating", "identified", "registering"}
 HTTP = requests.Session()
 HTTP.headers.update({"User-Agent": "TorBoxMediaHub-Roxxy/1.3", "Accept": "*/*"})
 
@@ -192,6 +197,28 @@ def _set(job_id: str, **changes: Any) -> None:
         if job_id in _jobs:
             _jobs[job_id].update(changes)
             _jobs[job_id]["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+
+def _prune_job_history_locked(keep: int = LOCAL_JOB_HISTORY_MAX) -> int:
+    """Drop the oldest finished jobs so the drawer history stays bounded.
+
+    The caller must hold ``_lock``. Active downloads and jobs whose Library task
+    is still queued/validating/registering are never removed: the library worker
+    and the UI still update those rows.
+    """
+    finished = [
+        (job_id, job)
+        for job_id, job in _jobs.items()
+        if job.get("status") in _FINISHED_JOB_STATUSES
+        and str(job.get("library_status") or "") not in _LIBRARY_PENDING_STATUSES
+    ]
+    excess = len(finished) - max(0, int(keep))
+    if excess <= 0:
+        return 0
+    finished.sort(key=lambda pair: str(pair[1].get("created_at") or ""))
+    for job_id, _job in finished[:excess]:
+        _jobs.pop(job_id, None)
+    return excess
 
 
 def _set_job_library(job_id: Any, status: str, message: str) -> None:
@@ -832,6 +859,8 @@ def _run_job(job_id: str, engine: str, url: str, output_dir: str, filename: str,
             _set(job_id, status="failed", message=str(exc)[:250])
         finally:
             _set(job_id, pid=None)
+            with _lock:
+                _prune_job_history_locked()
 
 @localdl_bp.post("/api/roxxy/local/inspect")
 def api_local_inspect():
@@ -878,6 +907,7 @@ def api_local_start():
                "stream_snapshot": stream_snapshot}
         with _lock:
             _jobs[job_id] = job
+            _prune_job_history_locked()
         thread = threading.Thread(target=_run_job, args=(job_id, info["engine"], info["url"], outdir, filename), daemon=True)
         thread.start()
         return jsonify({"ok": True, "job": {k:v for k,v in job.items() if k not in {"output_dir","pid","url","started_ts"}}, "inspection": {k:v for k,v in info.items() if k not in {"url"}}})
@@ -922,6 +952,18 @@ def api_local_queue():
         job.pop("stream_snapshot", None)
         job.pop("target_path", None)
     return jsonify({"ok": True, "jobs": jobs})
+
+@localdl_bp.post("/api/roxxy/local/clear")
+def api_local_clear():
+    """Hapus riwayat download lokal yang sudah selesai atau gagal.
+
+    Download yang masih queued/downloading dan job yang Library-nya masih
+    diproses tidak pernah dihapus.
+    """
+    with _lock:
+        removed = _prune_job_history_locked(keep=0)
+        remaining = len(_jobs)
+    return jsonify({"ok": True, "removed": removed, "jobs": remaining})
 
 @localdl_bp.post("/api/roxxy/local/retry/<job_id>")
 def api_local_retry(job_id: str):
