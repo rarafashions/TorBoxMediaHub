@@ -193,6 +193,18 @@ def _set(job_id: str, **changes: Any) -> None:
             _jobs[job_id].update(changes)
             _jobs[job_id]["updated_at"] = datetime.now().isoformat(timespec="seconds")
 
+
+def _set_job_library(job_id: Any, status: str, message: str) -> None:
+    """Mirror the DB Library stage onto the in-memory download card."""
+    if not job_id:
+        return
+    with _lock:
+        if job_id in _jobs:
+            _jobs[job_id]["library_status"] = status
+            _jobs[job_id]["library_message"] = message
+            _jobs[job_id]["updated_at"] = datetime.now().isoformat(timespec="seconds")
+
+
 def _find_completed_file(output_dir: str, requested_filename: str, engine: str, min_mtime: float = 0.0) -> str:
     """Resolve the actual completed output, including yt-dlp's selected extension.
 
@@ -402,11 +414,19 @@ def _register_roxxy_media(task: Dict[str, Any]) -> Dict[str, Any]:
         title = os.path.splitext(filename)[0]
     release = str(metadata.get("releaseInfo") or "").strip()
     year_match = re.search(r"\b(19\d{2}|20\d{2})\b", release)
+    try:
+        year_value = int(metadata.get("year") or 0) or (int(year_match.group(1)) if year_match else None)
+    except (TypeError, ValueError):
+        year_value = int(year_match.group(1)) if year_match else None
     genres = metadata.get("genres") or []
     if not isinstance(genres, list):
         genres = [str(genres)]
     genres = [str(g).strip() for g in genres if str(g).strip()]
     runtime = _roxxy_runtime_minutes(metadata.get("runtime"))
+    try:
+        rating = float(metadata.get("imdbRating") or 0) or None
+    except (TypeError, ValueError):
+        rating = None
     unique_path = os.path.normcase(os.path.abspath(path))
     media_data = {
         "unique_key": "local:" + unique_path,
@@ -416,9 +436,10 @@ def _register_roxxy_media(task: Dict[str, Any]) -> Dict[str, Any]:
         "file_size": int(validation.get("size") or task.get("file_size") or os.path.getsize(path)),
         "code_id": identification.get("code_id") or None,
         "title": title,
-        "original_title": title,
-        "year": int(year_match.group(1)) if year_match else None,
+        "original_title": str(metadata.get("original_name") or title),
+        "year": year_value,
         "runtime": runtime,
+        "studio": str(metadata.get("studio") or "").strip() or None,
         "plot": str(metadata.get("description") or "").strip() or None,
         "content_category": category,
         "is_adult": 1 if category in ("jav", "english_adult", "indo") else 0,
@@ -426,12 +447,41 @@ def _register_roxxy_media(task: Dict[str, Any]) -> Dict[str, Any]:
         "metadata_source": "roxxy",
         "poster_url": metadata.get("poster") or metadata.get("background") or None,
         "genres": genres,
+        "rating": rating,
         "has_subtitle": 0,
         "subtitle_source": "none",
     }
     media_id = db.upsert_media_item(media_data)
+    cache_library_poster(media_id, media_data)
     return {"media_id": media_id, "unique_key": media_data["unique_key"],
             "title": title, "category": category}
+
+
+def cache_library_poster(media_id: int, media_data: Dict[str, Any]) -> Optional[str]:
+    """Materialize the Roxxy cover so the Library does not depend on a hotlink."""
+    poster_url = str(media_data.get("poster_url") or "").strip()
+    if not poster_url:
+        return None
+    try:
+        import metadata_engine as meta_engine
+        result = meta_engine.download_poster_image_result(
+            poster_url, str(media_data.get("unique_key") or media_id)
+        )
+        local_path = result.get("local_poster_path")
+        if not local_path:
+            return None
+        db.update_media_poster_state(
+            media_id,
+            poster_url=result.get("poster_url") or poster_url,
+            local_poster_path=local_path,
+            status=result.get("poster_status") or "found",
+            error=result.get("poster_error"),
+            source="roxxy",
+            replace_url=False,
+        )
+        return local_path
+    except Exception:
+        return None
 
 
 def _roxxy_registration_worker() -> None:
@@ -443,6 +493,8 @@ def _roxxy_registration_worker() -> None:
                 time.sleep(2.0)
                 continue
             validation = task.get("validation") or {}
+            job_id = task.get("download_job_id")
+            _set_job_library(job_id, "registering", "Mendaftarkan ke Library & menyiapkan cover…")
             try:
                 registered = _register_roxxy_media(task)
                 d3 = {
@@ -454,56 +506,86 @@ def _roxxy_registration_worker() -> None:
                 }
                 validation["d3_registration"] = d3
                 category = registered["category"]
-                subtitle_result = None
-                subtitle_note = "skipped_indonesian" if category == "indo" else "not_found"
+                item = db.get_media_item(registered["media_id"]) or {}
+                attached_langs: List[str] = []
+                provided_error = None
+                stream_snapshot = task.get("stream") or {}
+                provided_subtitles = stream_snapshot.get("_subtitles")
+                if not provided_subtitles:
+                    provided_subtitles = (task.get("metadata") or {}).get("subtitles") or []
                 if category != "indo":
                     try:
-                        item = db.get_media_item(registered["media_id"])
-                        settings = db.get_settings()
-                        subtitle_result = subtitle_engine.fetch_subtitle_for_item(
-                            item or {}, torbox_api_key=settings.get("torbox_api_key") or ""
+                        attached_langs = attach_provided_subtitles(
+                            registered["media_id"], item, provided_subtitles
                         )
-                        if subtitle_result and subtitle_result.get("subtitle_path"):
-                            db.upsert_media_subtitle(
-                                registered["media_id"],
-                                subtitle_result.get("subtitle_lang") or "en",
-                                subtitle_result["subtitle_path"],
-                                subtitle_result.get("subtitle_source") or "roxxy_fallback",
-                                is_embedded=bool(subtitle_result.get("is_embedded", False)),
-                                stream_index=subtitle_result.get("stream_index"),
-                                verified=True,
-                            )
-                            subtitle_note = "found"
                     except Exception as sub_exc:
-                        # Subtitle failure must not roll back a valid Library registration.
+                        provided_error = str(sub_exc)[:180]
                         validation.setdefault("d3_warnings", []).append(
-                            "Subtitle processing failed: " + str(sub_exc)[:180]
+                            "Roxxy subtitle processing failed: " + provided_error
                         )
-                        subtitle_note = "error"
+                subtitle_result = None
+                if attached_langs:
+                    subtitle_note = "roxxy_" + "+".join(sorted(set(attached_langs)))
+                else:
+                    subtitle_note = "skipped_indonesian" if category == "indo" else "not_found"
+                    if category != "indo":
+                        try:
+                            settings = db.get_settings()
+                            subtitle_result = subtitle_engine.fetch_subtitle_for_item(
+                                item, torbox_api_key=settings.get("torbox_api_key") or ""
+                            )
+                            if subtitle_result and subtitle_result.get("subtitle_path"):
+                                db.upsert_media_subtitle(
+                                    registered["media_id"],
+                                    subtitle_result.get("subtitle_lang") or "en",
+                                    subtitle_result["subtitle_path"],
+                                    subtitle_result.get("subtitle_source") or "roxxy_fallback",
+                                    is_embedded=bool(subtitle_result.get("is_embedded", False)),
+                                    stream_index=subtitle_result.get("stream_index"),
+                                    verified=True,
+                                )
+                                subtitle_note = "found"
+                        except Exception as sub_exc:
+                            # Subtitle failure must not roll back a valid Library registration.
+                            validation.setdefault("d3_warnings", []).append(
+                                "Subtitle processing failed: " + str(sub_exc)[:180]
+                            )
+                            subtitle_note = "error"
                 validation["d3_registration"]["subtitle_status"] = subtitle_note
                 db.update_roxxy_library_task(
                     task["id"], "completed", int(validation.get("size") or task.get("file_size") or 0),
                     validation, None
                 )
-                with _lock:
-                    jid = task.get("download_job_id")
-                    if jid in _jobs:
-                        _jobs[jid]["library_status"] = "completed"
-                        _jobs[jid]["library_message"] = (
-                            f"Library terdaftar (ID {registered['media_id']}); subtitle: {subtitle_note}."
-                        )
+                _set_job_library(
+                    job_id, "completed",
+                    f"Library terdaftar (ID {registered['media_id']}); subtitle: {subtitle_note}."
+                )
             except Exception as exc:
                 db.update_roxxy_library_task(
                     task["id"], "failed", int(validation.get("size") or task.get("file_size") or 0),
                     validation, "D3 registration failed: " + str(exc)
                 )
-                with _lock:
-                    jid = task.get("download_job_id")
-                    if jid in _jobs:
-                        _jobs[jid]["library_status"] = "failed"
-                        _jobs[jid]["library_message"] = str(exc)[:250]
+                _set_job_library(job_id, "failed", str(exc)[:250])
         except Exception:
             time.sleep(3.0)
+
+
+def attach_provided_subtitles(
+    media_id: int, item: Dict[str, Any], provided: Any
+) -> List[str]:
+    """Persist subtitle tracks already supplied by Roxxy; returns attached languages."""
+    langs: List[str] = []
+    for track in subtitle_engine.fetch_provided_subtitles(provided, item):
+        db.upsert_media_subtitle(
+            media_id,
+            track["subtitle_lang"],
+            track["subtitle_path"],
+            track.get("subtitle_source") or "roxxy",
+            is_embedded=False,
+            verified=True,
+        )
+        langs.append(track["subtitle_lang"])
+    return langs
 
 
 def _library_task_worker() -> None:
@@ -515,6 +597,8 @@ def _library_task_worker() -> None:
                 time.sleep(2.0)
                 continue
             try:
+                job_id = task.get("download_job_id")
+                _set_job_library(job_id, "validating", "Memvalidasi file dan mengidentifikasi kategori…")
                 result = _validate_completed_file(task["file_path"])
                 identified = _identify_roxxy_media(task, result)
                 db.update_roxxy_library_task(
@@ -527,18 +611,10 @@ def _library_task_worker() -> None:
                     "duplicate": "Kode JAV sudah ada di Library; tidak boleh dibuat sebagai entri duplikat.",
                     "needs_review": "File valid, tetapi kategori belum cukup meyakinkan; perlu pemeriksaan manual.",
                 }
-                with _lock:
-                    jid = task.get("download_job_id")
-                    if jid in _jobs:
-                        _jobs[jid]["library_status"] = identified["status"]
-                        _jobs[jid]["library_message"] = messages[identified["status"]]
+                _set_job_library(job_id, identified["status"], messages[identified["status"]])
             except Exception as exc:
                 db.update_roxxy_library_task(task["id"], "failed", 0, {}, str(exc))
-                with _lock:
-                    jid = task.get("download_job_id")
-                    if jid in _jobs:
-                        _jobs[jid]["library_status"] = "failed"
-                        _jobs[jid]["library_message"] = str(exc)[:250]
+                _set_job_library(task.get("download_job_id"), "failed", str(exc)[:250])
         except Exception:
             time.sleep(3.0)
 
@@ -660,6 +736,10 @@ def api_local_start():
                 ext = ".mp4" if info["engine"] == "yt-dlp" else ".bin"
             filename = _fallback_name({**data, "name": stream.get("name"), "meta": data.get("meta")}, ext)
         job_id = uuid.uuid4().hex[:12]
+        stream_snapshot = dict(stream)
+        provided_subs = data.get("subtitles")
+        if isinstance(provided_subs, list) and provided_subs:
+            stream_snapshot["_subtitles"] = provided_subs[:20]
         job = {"id": job_id, "title": str((data.get("meta") or {}).get("name") or stream.get("name") or filename),
                "filename": filename, "engine": info["engine"], "engine_active": info["engine"],
                "status": "queued", "progress": 0.0,
@@ -669,7 +749,7 @@ def api_local_start():
                # Kept in memory only for retry; never serialised to the UI.
                "url": info["url"], "started_ts": time.time(),
                "meta_snapshot": data.get("meta") or {},
-               "stream_snapshot": stream}
+               "stream_snapshot": stream_snapshot}
         with _lock:
             _jobs[job_id] = job
         thread = threading.Thread(target=_run_job, args=(job_id, info["engine"], info["url"], outdir, filename), daemon=True)

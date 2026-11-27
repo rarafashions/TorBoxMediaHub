@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -592,6 +592,146 @@ def fetch_subtitle_for_language(
             return {"subtitle_path": path, "subtitle_lang": language,
                     "subtitle_source": "opensubtitles", "is_embedded": False}
     return None
+
+
+_SUBTITLE_LANG_ALIASES = {
+    "en": "en", "eng": "en", "english": "en", "en-us": "en", "en-gb": "en",
+    "id": "id", "ind": "id", "indonesian": "id", "indonesia": "id", "bahasa": "id", "id-id": "id",
+}
+_SUBTITLE_CONTENT_TYPE_EXTS = {
+    "application/x-subrip": ".srt",
+    "text/srt": ".srt",
+    "text/vtt": ".vtt",
+    "text/x-ssa": ".ssa",
+    "text/x-ass": ".ass",
+    "application/x-ass": ".ass",
+}
+PROVIDED_SUBTITLE_MAX_BYTES = 5 * 1024 * 1024
+PROVIDED_SUBTITLE_LIMIT = 8
+PROVIDED_SUBTITLE_MAX_REDIRECTS = 3
+
+
+def normalize_subtitle_language(value: Any) -> Optional[str]:
+    """Map a provider language tag to the two Library languages (en/id)."""
+    text = str(value or "").strip().lower().replace("_", "-")
+    if not text:
+        return None
+    if text in _SUBTITLE_LANG_ALIASES:
+        return _SUBTITLE_LANG_ALIASES[text]
+    return _SUBTITLE_LANG_ALIASES.get(re.split(r"[-.]", text)[0])
+
+
+def _provided_subtitle_url_is_public(url: str) -> bool:
+    """Reuse the poster SSRF validator for provider-supplied subtitle URLs."""
+    try:
+        import metadata_engine as meta_engine
+        allowed, _reason = meta_engine._poster_url_is_public(url)
+        return bool(allowed)
+    except Exception:
+        return False
+
+
+def _read_subtitle_response(response: Any, max_bytes: int) -> Optional[bytes]:
+    try:
+        length = (getattr(response, "headers", {}) or {}).get("Content-Length")
+        if length and int(length) > max_bytes:
+            return None
+    except (TypeError, ValueError):
+        pass
+    iterator = getattr(response, "iter_content", None)
+    if callable(iterator):
+        chunks: List[bytes] = []
+        total = 0
+        for chunk in iterator(chunk_size=64 * 1024):
+            if not chunk:
+                continue
+            total += len(chunk)
+            if total > max_bytes:
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks)
+    raw = getattr(response, "content", b"") or b""
+    return raw if len(raw) <= max_bytes else None
+
+
+def _download_provided_subtitle(url: str, dest_base: str, max_bytes: int) -> Optional[str]:
+    current = str(url or "").strip()
+    for _hop in range(PROVIDED_SUBTITLE_MAX_REDIRECTS + 1):
+        if not current or not _provided_subtitle_url_is_public(current):
+            return None
+        try:
+            response = HTTP_SESSION.get(
+                current, stream=True, allow_redirects=False, timeout=(6, 15)
+            )
+        except requests.RequestException:
+            return None
+        try:
+            status = int(getattr(response, "status_code", 0) or 0)
+            if status in (301, 302, 303, 307, 308):
+                location = (getattr(response, "headers", {}) or {}).get("Location") or ""
+                current = urljoin(current, location)
+                continue
+            if status != 200:
+                return None
+            content_type = str(
+                (getattr(response, "headers", {}) or {}).get("Content-Type") or ""
+            ).split(";")[0].strip().lower()
+            raw = _read_subtitle_response(response, max_bytes)
+        finally:
+            try:
+                response.close()
+            except Exception:
+                pass
+        if not raw:
+            return None
+        ext = os.path.splitext(urlparse(current).path)[1].lower()
+        if ext not in SUBTITLE_EXTS:
+            ext = _SUBTITLE_CONTENT_TYPE_EXTS.get(content_type, ".srt")
+        return _save_subtitle_bytes(raw, dest_base, ext)
+    return None
+
+
+def fetch_provided_subtitles(
+    entries: Any,
+    item: Dict[str, Any],
+    max_bytes: int = PROVIDED_SUBTITLE_MAX_BYTES,
+) -> List[Dict[str, Any]]:
+    """Download subtitle tracks supplied by the Roxxy stream response.
+
+    Only English/Indonesian tracks are accepted; the URL is validated per
+    redirect hop with the existing poster SSRF guard and capped in size.
+    """
+    if not isinstance(entries, list):
+        return []
+    digest = hashlib.sha256(
+        str(item.get("unique_key") or item.get("id") or item.get("file_name") or "").encode()
+    ).hexdigest()[:20]
+    results: List[Dict[str, Any]] = []
+    seen = set()
+    for entry in entries[:PROVIDED_SUBTITLE_LIMIT]:
+        if not isinstance(entry, dict):
+            continue
+        language = normalize_subtitle_language(
+            entry.get("lang") or entry.get("language") or entry.get("langName") or entry.get("name")
+        )
+        if language not in ("en", "id") or language in seen:
+            continue
+        url = str(entry.get("url") or "").strip()
+        if not url or len(url) > 2048:
+            continue
+        path = _download_provided_subtitle(url, f"sub_{digest}_{language}", max_bytes)
+        if not path:
+            continue
+        seen.add(language)
+        results.append(
+            {
+                "subtitle_path": path,
+                "subtitle_lang": language,
+                "subtitle_source": "roxxy",
+                "is_embedded": False,
+            }
+        )
+    return results
 
 
 def fetch_subtitle_for_item(

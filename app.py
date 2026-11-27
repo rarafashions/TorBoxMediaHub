@@ -38,7 +38,7 @@ app = Flask(
     static_folder=os.path.join(BASE_DIR, "static"),
 )
 app.register_blueprint(roxxy_bp)
-from roxxy_download_engine import localdl_bp
+from roxxy_download_engine import attach_provided_subtitles, cache_library_poster, localdl_bp
 app.register_blueprint(localdl_bp)
 
 
@@ -293,10 +293,20 @@ class TorboxDownloadMonitor:
         replace_media_id: Optional[int] = None,
         delete_remote_on_replace: bool = True,
         poster_url: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+        subtitles: Optional[List[Dict[str, Any]]] = None,
+        expected_filename: str = "",
     ) -> None:
         if not item_id:
             return
         key = f"{kind}:{item_id}"
+        hint_payload: Dict[str, Any] = {}
+        if isinstance(metadata, dict) and metadata:
+            hint_payload["meta"] = metadata
+        if isinstance(subtitles, list) and subtitles:
+            hint_payload["subtitles"] = subtitles
+        if expected_filename:
+            hint_payload["expected_filename"] = expected_filename
         with self._lock:
             self.watched_items[key] = {
                 "key": key,
@@ -312,20 +322,34 @@ class TorboxDownloadMonitor:
                 "progress": 0.0,
                 "download_state": "queued",
                 "finished": False,
+                "library_stage": "",
+                "library_message": "",
                 "added_at": time.time(),
             }
             with _TORBOX_IMPORT_HINTS_LOCK:
                 _TORBOX_IMPORT_HINTS[key] = {
                     "content_category": category if category in db.VALID_CATEGORIES else "uncategorized",
                     "poster_url": poster_url or "",
+                    "metadata": hint_payload,
                 }
             try:
-                db.save_torbox_import_hint(kind, str(item_id), category, poster_url)
+                db.save_torbox_import_hint(kind, str(item_id), category, poster_url, hint_payload)
             except Exception as hint_exc:
                 print(f"[TorBoxImportHint] Persistence warning: {hint_exc}")
             if not self._thread_started:
                 self._thread_started = True
                 threading.Thread(target=self._loop, daemon=True).start()
+
+    def set_library_progress(self, keys: Any, stage: str, message: str) -> None:
+        """Update the import stage shown under a completed cloud download."""
+        wanted = {keys} if isinstance(keys, str) else set(keys or [])
+        if not wanted:
+            return
+        with self._lock:
+            for entry in self.syncing_items:
+                if entry.get("key") in wanted:
+                    entry["library_stage"] = stage
+                    entry["library_message"] = message
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
@@ -400,6 +424,8 @@ class TorboxDownloadMonitor:
                     entry["finished"] = is_done
 
                     if is_done:
+                        entry["library_stage"] = "queued"
+                        entry["library_message"] = "Menunggu impor ke Library…"
                         completed_entries.append(dict(entry))
                         del self.watched_items[key]
 
@@ -471,6 +497,135 @@ _TORBOX_IMPORT_HINTS_LOCK = threading.Lock()
 
 def _is_video_file(filename: str) -> bool:
     return os.path.splitext(filename)[1].lower() in VIDEO_EXTENSIONS
+
+
+_IMPORT_META_TEXT_FIELDS = (
+    "name", "description", "poster", "background", "releaseInfo", "runtime",
+    "studio", "jav_code", "original_name", "director",
+)
+_IMPORT_META_LIST_FIELDS = ("genres", "cast")
+
+
+def _sanitize_import_metadata(raw: Any) -> Dict[str, Any]:
+    """Keep only bounded, known Roxxy meta fields for the import hint."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in _IMPORT_META_TEXT_FIELDS:
+        value = raw.get(key)
+        if isinstance(value, (str, int, float)) and not isinstance(value, bool):
+            text = str(value).strip()
+            if text:
+                out[key] = text[:5000]
+    try:
+        year = int(raw.get("year") or 0)
+        if 1800 <= year <= 2200:
+            out["year"] = year
+    except (TypeError, ValueError):
+        pass
+    try:
+        rating = float(raw.get("imdbRating") or 0)
+        if 0 < rating <= 10:
+            out["imdbRating"] = rating
+    except (TypeError, ValueError):
+        pass
+    for key in _IMPORT_META_LIST_FIELDS:
+        value = raw.get(key)
+        if isinstance(value, list):
+            items = [str(v).strip()[:200] for v in value if isinstance(v, (str, int, float)) and str(v).strip()]
+            if items:
+                out[key] = items[:20]
+    return out
+
+
+def _sanitize_import_subtitles(raw: Any) -> List[Dict[str, str]]:
+    """Bound subtitle-track hints; URLs are validated again at download time."""
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, str]] = []
+    for entry in raw[:20]:
+        if not isinstance(entry, dict):
+            continue
+        url = str(entry.get("url") or "").strip()
+        if not url.startswith(("http://", "https://")) or len(url) > 2048:
+            continue
+        out.append(
+            {
+                "url": url,
+                "lang": str(
+                    entry.get("lang") or entry.get("language") or entry.get("langName") or ""
+                ).strip()[:32],
+                "name": str(entry.get("name") or "").strip()[:120],
+            }
+        )
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _import_hint_media_payload(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate a sanitized Roxxy metadata snapshot into media_items fields."""
+    if not metadata:
+        return {}
+    payload: Dict[str, Any] = {}
+    name = str(metadata.get("name") or metadata.get("title") or "").strip()
+    if name:
+        payload["title"] = name[:300]
+    plot = str(metadata.get("description") or "").strip()
+    if plot:
+        payload["plot"] = plot[:5000]
+    original = str(metadata.get("original_name") or "").strip()
+    if original:
+        payload["original_title"] = original[:300]
+    studio = str(metadata.get("studio") or "").strip()
+    if studio:
+        payload["studio"] = studio[:200]
+    try:
+        year = int(metadata.get("year") or 0)
+        if 1800 <= year <= 2200:
+            payload["year"] = year
+    except (TypeError, ValueError):
+        pass
+    runtime_match = re.search(r"(\d{1,4})", str(metadata.get("runtime") or ""))
+    if runtime_match:
+        payload["runtime"] = int(runtime_match.group(1))
+    genres = metadata.get("genres")
+    if isinstance(genres, list) and genres:
+        payload["genres"] = [str(g).strip()[:80] for g in genres if str(g).strip()][:20]
+    try:
+        rating = float(metadata.get("imdbRating") or 0)
+        if 0 < rating <= 10:
+            payload["rating"] = rating
+    except (TypeError, ValueError):
+        pass
+    if payload:
+        payload["has_metadata"] = 1
+        payload["metadata_source"] = "roxxy"
+    return payload
+
+
+def _classify_import_hint(metadata: Dict[str, Any], expected_filename: str) -> str:
+    try:
+        # The JAV code is valid evidence, so include it when Roxxy did not
+        # provide a usable filename for the torrent.
+        code = str(metadata.get("jav_code") or "").strip()
+        filename_hint = expected_filename or code
+        normalized_title = str(metadata.get("name") or "")
+        if code and code.lower() not in normalized_title.lower():
+            normalized_title = f"{normalized_title} {code}".strip()
+        result = class_eng.classify_media(
+            filename=filename_hint,
+            normalized_title=normalized_title,
+            metadata=metadata,
+        )
+        if (
+            result.get("classification_status") == "classified"
+            and result.get("detected_category") in db.VALID_CATEGORIES
+        ):
+            return result["detected_category"]
+    except Exception:
+        pass
+    return ""
 
 
 def _get_lan_ip() -> str:
@@ -767,12 +922,17 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
                                 import_hint = db.get_torbox_import_hint(kind, pid)
                             except Exception:
                                 import_hint = {}
+                        hint_meta = import_hint.get("metadata") or {}
+                        if not isinstance(hint_meta, dict):
+                            hint_meta = {}
                         discovered.append({
                             "kind": kind,
                             "item_id": pid,
                             "file_id": fid,
                             "content_category": import_hint.get("content_category", "uncategorized"),
                             "poster_url": import_hint.get("poster_url", ""),
+                            "hint_metadata": hint_meta.get("meta") or {},
+                            "hint_subtitles": hint_meta.get("subtitles") or [],
                             "parent_name": parent_title,
                             "file_name": raw_name,
                             "file_size": fsize,
@@ -792,26 +952,36 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
         current=0,
         message=f"Saving {len(discovered)} completed video files to database..."
     )
+    tracked_keys = {
+        f"{entry['kind']}:{entry['item_id']}"
+        for entry in discovered
+        if entry.get("hint_metadata") or entry.get("hint_subtitles")
+    }
+    if tracked_keys:
+        TORBOX_MONITOR.set_library_progress(
+            tracked_keys, "importing", "Mengimpor ke Library TorBox Media Hub…"
+        )
     new_or_updated_ids: List[int] = []
     with db.get_connection() as conn:
         for idx, entry in enumerate(discovered, start=1):
             ukey = f"torbox:{entry['kind']}:{entry['item_id']}:{entry['file_id']}"
-            mid = db.upsert_media_item(
-                {
-                    "unique_key": ukey,
-                    "source_type": "cloud",
-                    "torbox_kind": entry["kind"],
-                    "torbox_item_id": entry["item_id"],
-                    "torbox_file_id": entry["file_id"],
-                    "parent_name": entry["parent_name"],
-                    "file_name": entry["file_name"],
-                    "file_size": entry["file_size"],
-                    "title": entry["file_name"],
-                    "content_category": entry.get("content_category") or "uncategorized",
-                    "poster_url": entry.get("poster_url") or None,
-                },
-                conn=conn,
-            )
+            media_payload: Dict[str, Any] = {
+                "unique_key": ukey,
+                "source_type": "cloud",
+                "torbox_kind": entry["kind"],
+                "torbox_item_id": entry["item_id"],
+                "torbox_file_id": entry["file_id"],
+                "parent_name": entry["parent_name"],
+                "file_name": entry["file_name"],
+                "file_size": entry["file_size"],
+                "title": entry["file_name"],
+                "content_category": entry.get("content_category") or "uncategorized",
+                "poster_url": entry.get("poster_url") or None,
+            }
+            hint_fields = _import_hint_media_payload(entry.get("hint_metadata") or {})
+            if hint_fields:
+                media_payload.update(hint_fields)
+            mid = db.upsert_media_item(media_payload, conn=conn)
             new_or_updated_ids.append(mid)
             if idx % 25 == 0 or idx == len(discovered):
                 TASK_MGR.update(current=idx, message=f"Syncing Cloud ({idx}/{len(discovered)})...")
@@ -822,6 +992,54 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
                         if (entry.get("content_category") or "") != "indo"]
         if non_indo_ids:
             _enrich_ids_internal(non_indo_ids, force=False)
+
+    # Apply Roxxy cover + subtitle tracks for downloads started from Video Feeds.
+    provided_targets = [
+        (mid, entry) for mid, entry in zip(new_or_updated_ids, discovered)
+        if entry.get("hint_metadata") or entry.get("hint_subtitles")
+    ]
+    if provided_targets:
+        finalized: Dict[str, str] = {}
+        for mid, entry in provided_targets:
+            key = f"{entry['kind']}:{entry['item_id']}"
+            item = None
+            try:
+                item = db.get_media_item(mid) or {}
+            except Exception:
+                item = {}
+            if entry.get("hint_metadata") and item.get("poster_url"):
+                TORBOX_MONITOR.set_library_progress(key, "cover", "Menyimpan cover Roxxy…")
+                try:
+                    cache_library_poster(mid, item)
+                except Exception as poster_exc:
+                    print(f"[TorBoxImport] Poster warning {key}: {poster_exc}")
+            category = str(item.get("content_category") or entry.get("content_category") or "")
+            subtitle_note = ""
+            if entry.get("hint_subtitles"):
+                if category == "indo":
+                    subtitle_note = "subtitle Indonesia dilewati"
+                else:
+                    TORBOX_MONITOR.set_library_progress(key, "subtitle", "Mengunduh subtitle Roxxy…")
+                    try:
+                        langs = attach_provided_subtitles(mid, item or {}, entry["hint_subtitles"])
+                        subtitle_note = (
+                            "subtitle Roxxy: " + "+".join(sorted(set(langs)))
+                            if langs else "subtitle Roxxy tidak tersedia"
+                        )
+                    except Exception as sub_exc:
+                        print(f"[TorBoxImport] Subtitle warning {key}: {sub_exc}")
+                        subtitle_note = "subtitle gagal diproses"
+            finalized[key] = subtitle_note
+            TORBOX_MONITOR.set_library_progress(
+                key,
+                "completed",
+                "Library terdaftar" + (f"; {subtitle_note}" if subtitle_note else "") + ".",
+            )
+        leftover = tracked_keys - set(finalized)
+        if leftover:
+            TORBOX_MONITOR.set_library_progress(
+                leftover, "completed", "Library terdaftar (tanpa subtitle tambahan)."
+            )
 
     summary = (
         f"TorBox sync completed: {len(discovered)} video files processed "
@@ -2498,10 +2716,24 @@ def api_torbox_add_cached():
     nzb_url = (payload.get("nzb_url") or "").strip()
     name = (payload.get("title") or "").strip()
     series_title = (payload.get("series_title") or "").strip()
-    category = (payload.get("category") or "").strip()
+    category = (payload.get("category") or "").strip().lower()
     season = int(payload.get("season") or 1)
     replace_media_id = payload.get("replace_media_id")
     delete_remote_on_replace = bool(payload.get("delete_remote_on_replace", True))
+    hint_metadata = _sanitize_import_metadata(payload.get("metadata"))
+    hint_subtitles = _sanitize_import_subtitles(payload.get("subtitles"))
+    expected_filename = os.path.basename(
+        str(payload.get("expected_filename") or "").strip()
+    )[:200]
+    poster_url = str(
+        payload.get("poster_url") or hint_metadata.get("poster") or ""
+    ).strip()[:2048]
+    if hint_metadata:
+        detected_category = _classify_import_hint(hint_metadata, expected_filename)
+        if detected_category:
+            category = detected_category
+    if category not in db.VALID_CATEGORIES:
+        category = "uncategorized"
 
     settings = db.get_settings()
     api_key = (settings.get("torbox_api_key") or "").strip()
@@ -2569,6 +2801,10 @@ def api_torbox_add_cached():
                     season=season,
                     replace_media_id=int(replace_media_id) if replace_media_id else None,
                     delete_remote_on_replace=delete_remote_on_replace,
+                    poster_url=poster_url,
+                    metadata=hint_metadata or None,
+                    subtitles=hint_subtitles or None,
+                    expected_filename=expected_filename,
                 )
 
             detail_msg = body.get("detail") or f"Added '{name or kind}' to TorBox Cloud!"

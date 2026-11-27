@@ -7,8 +7,10 @@ import unittest
 from unittest.mock import patch
 
 import app as app_module
+import database_manager as db
 import roxxy_download_engine as rde
 import roxxy_module as rm
+import subtitle_engine as se
 
 
 def _normalized(path: str) -> str:
@@ -354,6 +356,242 @@ class JobFallbackTests(unittest.TestCase):
             self.assertEqual(job["status"], "failed")
             self.assertIn("aria2c: exit 1", job["message"])
             self.assertIn("yt-dlp: exit 1", job["message"])
+
+
+class ProvidedSubtitleTests(unittest.TestCase):
+    """Roxxy-supplied subtitle tracks must be filtered, deduped and validated."""
+
+    def test_accepts_only_english_and_indonesian_once(self):
+        entries = [
+            {"lang": "English", "url": "https://93.184.216.34/a.srt"},
+            {"language": "id", "url": "https://93.184.216.34/b.srt"},
+            {"lang": "en", "url": "https://93.184.216.34/c.srt"},
+            {"lang": "ja", "url": "https://93.184.216.34/d.srt"},
+            {"lang": "en", "url": ""},
+        ]
+        with patch.object(se, "_download_provided_subtitle", return_value="C:/cache/a.srt") as dl:
+            tracks = se.fetch_provided_subtitles(entries, {"unique_key": "local:X"})
+        self.assertEqual([t["subtitle_lang"] for t in tracks], ["en", "id"])
+        self.assertTrue(all(t["subtitle_source"] == "roxxy" for t in tracks))
+        self.assertEqual(dl.call_count, 2)
+
+    def test_ignores_missing_or_malformed_payloads(self):
+        for payload in (None, {}, "https://93.184.216.34/a.srt", [None, "x", 5]):
+            with self.subTest(payload=payload):
+                self.assertEqual(se.fetch_provided_subtitles(payload, {"unique_key": "k"}), [])
+
+    def test_language_normalisation_handles_regional_tags(self):
+        self.assertEqual(se.normalize_subtitle_language("en-US"), "en")
+        self.assertEqual(se.normalize_subtitle_language("id_ID"), "id")
+        self.assertEqual(se.normalize_subtitle_language("English"), "en")
+        self.assertIsNone(se.normalize_subtitle_language("jpn"))
+
+    def test_private_and_loopback_urls_are_rejected(self):
+        self.assertFalse(se._provided_subtitle_url_is_public("http://127.0.0.1/a.srt"))
+        self.assertFalse(se._provided_subtitle_url_is_public("http://localhost/a.srt"))
+        self.assertFalse(se._provided_subtitle_url_is_public("file:///C:/a.srt"))
+        self.assertTrue(se._provided_subtitle_url_is_public("https://93.184.216.34/a.srt"))
+
+    def test_untrusted_subtitle_url_never_triggers_a_request(self):
+        with patch.object(se.HTTP_SESSION, "get") as get:
+            self.assertIsNone(se._download_provided_subtitle("http://127.0.0.1/a.srt", "x", 1024))
+        get.assert_not_called()
+
+    def test_size_cap_rejects_oversized_responses(self):
+        class _Response:
+            headers = {}
+            def iter_content(self, chunk_size=0):
+                return iter([b"a" * 64, b"b" * 64])
+        self.assertIsNone(se._read_subtitle_response(_Response(), max_bytes=100))
+        self.assertEqual(len(se._read_subtitle_response(_Response(), max_bytes=1000)), 128)
+
+    def test_attach_persists_every_supplied_track(self):
+        tracks = [
+            {"subtitle_path": "C:/cache/en.srt", "subtitle_lang": "en", "subtitle_source": "roxxy"},
+            {"subtitle_path": "C:/cache/id.srt", "subtitle_lang": "id", "subtitle_source": "roxxy"},
+        ]
+        with patch.object(rde.subtitle_engine, "fetch_provided_subtitles", return_value=tracks), \
+             patch.object(rde.db, "upsert_media_subtitle") as upsert:
+            langs = rde.attach_provided_subtitles(7, {"unique_key": "local:X"}, [{"url": "x"}])
+        self.assertEqual(langs, ["en", "id"])
+        self.assertEqual(upsert.call_count, 2)
+        self.assertEqual(upsert.call_args_list[0].args[:2], (7, "en"))
+        self.assertFalse(upsert.call_args_list[0].kwargs["is_embedded"])
+
+
+class ImportHintMetadataTests(unittest.TestCase):
+    """Cloud imports must reuse the Roxxy metadata snapshot without trusting it."""
+
+    def test_sanitizer_keeps_known_fields_and_drops_unknown(self):
+        cleaned = app_module._sanitize_import_metadata({
+            "name": "  Sample Title  ",
+            "description": "Plot",
+            "jav_code": "ABP-123",
+            "year": "2021",
+            "imdbRating": "8.1",
+            "genres": ["Drama", "  ", 7],
+            "cast": ["Actor"],
+            "poster": "https://93.184.216.34/p.jpg",
+            "signed_url": "https://secret.example/token",
+            "runtime": "120 min",
+        })
+        self.assertEqual(cleaned["name"], "Sample Title")
+        self.assertEqual(cleaned["year"], 2021)
+        self.assertEqual(cleaned["imdbRating"], 8.1)
+        self.assertEqual(cleaned["genres"], ["Drama", "7"])
+        self.assertEqual(cleaned["cast"], ["Actor"])
+        self.assertNotIn("signed_url", cleaned)
+
+    def test_sanitizer_rejects_impossible_year_and_rating(self):
+        cleaned = app_module._sanitize_import_metadata({"name": "X", "year": 1200, "imdbRating": 42})
+        self.assertNotIn("year", cleaned)
+        self.assertNotIn("imdbRating", cleaned)
+
+    def test_subtitle_hint_rejects_non_http_urls_and_caps_entries(self):
+        entries = [{"url": "ftp://93.184.216.34/a.srt", "lang": "en"}]
+        entries += [{"url": f"https://93.184.216.34/{i}.srt", "lang": "en"} for i in range(12)]
+        cleaned = app_module._sanitize_import_subtitles(entries)
+        self.assertEqual(len(cleaned), 8)
+        self.assertTrue(all(e["url"].startswith("https://") for e in cleaned))
+
+    def test_media_payload_maps_metadata_and_marks_source(self):
+        payload = app_module._import_hint_media_payload({
+            "name": "Sample Title", "description": "Plot", "year": 2021,
+            "runtime": "95 min", "genres": ["Drama"], "imdbRating": 7.5,
+            "studio": "Studio A", "original_name": "Original",
+        })
+        self.assertEqual(payload["title"], "Sample Title")
+        self.assertEqual(payload["runtime"], 95)
+        self.assertEqual(payload["year"], 2021)
+        self.assertEqual(payload["genres"], ["Drama"])
+        self.assertEqual(payload["rating"], 7.5)
+        self.assertEqual(payload["has_metadata"], 1)
+        self.assertEqual(payload["metadata_source"], "roxxy")
+
+    def test_empty_metadata_produces_no_fields(self):
+        self.assertEqual(app_module._import_hint_media_payload({}), {})
+
+    def test_classification_uses_jav_code_when_filename_is_missing(self):
+        category = app_module._classify_import_hint(
+            {"name": "Sample JAV Title", "jav_code": "ABP-123"}, ""
+        )
+        self.assertEqual(category, "jav")
+
+
+class TorboxHintPersistenceTests(unittest.TestCase):
+    """Import hints must survive restarts without losing earlier metadata."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = (db.DB_DIR, db.DB_PATH, db.CACHE_DIR, db.BACKUP_DIR, db.PLAYLIST_DIR, db.STATIC_DIR)
+        db.DB_DIR = self._tmp.name
+        db.DB_PATH = os.path.join(self._tmp.name, "hints.db")
+        db.CACHE_DIR = os.path.join(self._tmp.name, "cache")
+        db.BACKUP_DIR = os.path.join(self._tmp.name, "backup")
+        db.PLAYLIST_DIR = os.path.join(self._tmp.name, "playlists")
+        db.STATIC_DIR = os.path.join(self._tmp.name, "static")
+        db.init_db()
+
+    def tearDown(self):
+        (db.DB_DIR, db.DB_PATH, db.CACHE_DIR,
+         db.BACKUP_DIR, db.PLAYLIST_DIR, db.STATIC_DIR) = self._old
+        self._tmp.cleanup()
+
+    def test_hint_roundtrips_metadata_and_poster(self):
+        meta = {"meta": {"name": "Sample", "jav_code": "ABP-123"}, "subtitles": [{"lang": "en", "url": "https://93.184.216.34/a.srt"}]}
+        db.save_torbox_import_hint("torrent", "42", "jav", "https://93.184.216.34/p.jpg", meta)
+        hint = db.get_torbox_import_hint("torrent", "42")
+        self.assertEqual(hint["content_category"], "jav")
+        self.assertEqual(hint["poster_url"], "https://93.184.216.34/p.jpg")
+        self.assertEqual(hint["metadata"]["meta"]["jav_code"], "ABP-123")
+
+    def test_later_hint_without_metadata_preserves_it(self):
+        db.save_torbox_import_hint("torrent", "42", "jav", "", {"meta": {"name": "Sample"}})
+        db.save_torbox_import_hint("torrent", "42", "jav", "https://93.184.216.34/p.jpg")
+        hint = db.get_torbox_import_hint("torrent", "42")
+        self.assertEqual(hint["metadata"]["meta"]["name"], "Sample")
+        self.assertEqual(hint["poster_url"], "https://93.184.216.34/p.jpg")
+
+    def test_invalid_category_is_normalised(self):
+        db.save_torbox_import_hint("torrent", "7", "not-a-category", "")
+        self.assertEqual(db.get_torbox_import_hint("torrent", "7")["content_category"], "uncategorized")
+
+    def test_missing_hint_returns_empty_mapping(self):
+        self.assertEqual(db.get_torbox_import_hint("torrent", "missing"), {})
+
+    def test_migration_adds_column_to_legacy_hint_table(self):
+        with db.get_connection() as conn:
+            conn.execute("DROP TABLE torbox_import_hints")
+            conn.execute(
+                """CREATE TABLE torbox_import_hints (
+                       torbox_kind TEXT NOT NULL,
+                       torbox_item_id TEXT NOT NULL,
+                       content_category TEXT NOT NULL DEFAULT 'uncategorized',
+                       poster_url TEXT,
+                       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                       PRIMARY KEY (torbox_kind, torbox_item_id)
+                   )"""
+            )
+            conn.execute(
+                "INSERT INTO torbox_import_hints (torbox_kind, torbox_item_id, content_category) "
+                "VALUES ('torrent', '9', 'jav')"
+            )
+            conn.execute(
+                "DELETE FROM schema_migrations WHERE migration_id = ?",
+                (db.TORBOX_HINT_MIGRATION_ID,),
+            )
+            conn.commit()
+            db.migrate_torbox_import_hint_schema(conn)
+            conn.commit()
+            columns = {
+                r["name"] for r in conn.execute("PRAGMA table_info(torbox_import_hints)").fetchall()
+            }
+        self.assertIn("metadata_json", columns)
+        hint = db.get_torbox_import_hint("torrent", "9")
+        self.assertEqual(hint["content_category"], "jav")
+        self.assertEqual(hint["metadata"], {})
+
+
+class LocalSubtitleSnapshotTests(unittest.TestCase):
+    """Local downloads must carry Roxxy's subtitle list into the D3 task."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self._tmp = tempfile.TemporaryDirectory()
+        _ThreadRecorder.created = []
+        with rde._lock:
+            rde._jobs.clear()
+
+    def tearDown(self):
+        with rde._lock:
+            rde._jobs.clear()
+        self._tmp.cleanup()
+        _ThreadRecorder.created = []
+
+    def test_start_captures_supplied_subtitles_without_leaking_them(self):
+        info = {
+            "engine": "aria2c", "kind": "file", "content_type": "video/mp4",
+            "filename": "Title.mp4", "extension": ".mp4", "content_length": 10,
+            "http_status": 200, "url": "https://93.184.216.34/video.mp4",
+        }
+        subs = [{"lang": "en", "url": "https://93.184.216.34/a.srt"}]
+        with patch.object(rde, "_inspect", return_value=info), \
+             patch.object(rde.threading, "Thread", _ThreadRecorder):
+            response = self.client.post(
+                "/api/roxxy/local/start",
+                json={
+                    "stream": {"url": "https://93.184.216.34/video.mp4", "name": "Title"},
+                    "meta": {"name": "Title"},
+                    "subtitles": subs,
+                    "download_path": self._tmp.name,
+                },
+            )
+        body = response.get_json()
+        self.assertTrue(body["ok"])
+        job = rde._jobs[body["job"]["id"]]
+        self.assertEqual(job["stream_snapshot"]["_subtitles"], subs)
+        queue = self.client.get("/api/roxxy/local/queue").get_json()
+        self.assertNotIn("stream_snapshot", queue["jobs"][0])
 
 
 if __name__ == "__main__":

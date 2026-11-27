@@ -565,6 +565,7 @@ function labelRoute(s) {
 
 function renderStreams(streams, subs) {
   window._roxxyStreams = streams;
+  window._roxxySubtitles = Array.isArray(subs) ? subs : [];
   $('stream-list').innerHTML = streams.map((s, i) => `
     <div class="rounded-xl border border-white/10 bg-white/[0.02] p-4 transition hover:border-sky-500/40 hover:bg-white/[0.04]">
       <div class="flex flex-wrap items-center justify-between gap-2">
@@ -634,7 +635,7 @@ async function startLocalDownload(i) {
   const s = (window._roxxyStreams || [])[i];
   if (!s) return;
   try {
-    const r = await fetch('/api/roxxy/local/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stream: s, meta: selectedMeta, download_path: $('download-path').value }) });
+    const r = await fetch('/api/roxxy/local/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ stream: s, meta: selectedMeta, subtitles: window._roxxySubtitles || [], download_path: $('download-path').value }) });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
     setStatus(`Download lokal dimulai: ${j.job.title}`);
@@ -701,28 +702,50 @@ refreshLocalQueue();
 
 let roxxyWatchTimer = null;
 function renderRoxxyMainQueue(active, syncing) {
-  const queue = (active || []).filter(x => Number(x.progress ?? 0) < 100);
-  queue.sort((a, b) => Number(b.progress ?? 0) - Number(a.progress ?? 0));
+  const downloading = (active || []).filter(x => Number(x.progress ?? 0) < 100);
+  downloading.sort((a, b) => Number(b.progress ?? 0) - Number(a.progress ?? 0));
+  const importing = (syncing || []).map(x => ({ ...x, _importing: true }));
+  const queue = downloading.concat(importing);
   $('torbox-queue-count').textContent = `${queue.length} aktif`;
   if (!queue.length) {
     $('torbox-main-queue-list').innerHTML = '<p class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Tidak ada download TorBox aktif.</p>';
     return;
   }
   $('torbox-main-queue-list').innerHTML = queue.map((x, i) => {
-    const pct = Math.max(0, Math.min(100, Number(x.progress) || 0));
+    const importing_ = !!x._importing;
+    const pct = importing_ ? 100 : Math.max(0, Math.min(100, Number(x.progress) || 0));
     const title = esc(x.title || `TorBox download ${i + 1}`);
-    const state = esc(x.download_state || 'downloading');
+    const state = esc(importing_ ? 'import library' : (x.download_state || 'downloading'));
+    const barColor = importing_ ? 'bg-emerald-400' : 'bg-amber-400';
+    const pctColor = importing_ ? 'text-emerald-400' : 'text-amber-400';
+    const stage = String(x.library_stage || '');
+    const stageLabel = importing_ || stage
+      ? `<div class="mt-1 text-[11px] ${stage === 'failed' ? 'text-rose-300' : 'text-emerald-300'}">Library: ${esc(x.library_message || stageLabelText(stage))}</div>`
+      : '';
     return `
       <article class="rounded-xl border border-white/10 bg-white/[0.03] p-3.5">
         <div class="flex items-start justify-between gap-2">
           <div class="min-w-0 text-xs font-bold text-white line-clamp-2">${title}</div>
-          <div class="shrink-0 text-[11px] font-bold text-amber-400">${pct.toFixed(1)}% · ${state}</div>
+          <div class="shrink-0 text-[11px] font-bold ${pctColor}">${importing_ ? 'LIBRARY' : pct.toFixed(1) + '%'} · ${state}</div>
         </div>
         <div class="mt-2.5 h-1.5 overflow-hidden rounded-full bg-white/10">
-          <div class="h-full rounded-full bg-amber-400 transition-all duration-300" style="width:${pct}%"></div>
+          <div class="h-full rounded-full ${barColor} transition-all duration-300" style="width:${pct}%"></div>
         </div>
+        ${stageLabel}
       </article>`;
   }).join('');
+}
+
+function stageLabelText(stage) {
+  const map = {
+    queued: 'menunggu giliran impor',
+    importing: 'mengimpor ke Library…',
+    cover: 'menyimpan cover Roxxy…',
+    subtitle: 'mengunduh subtitle Roxxy…',
+    completed: 'terdaftar di Library',
+    failed: 'gagal masuk Library',
+  };
+  return map[stage] || 'menunggu impor ke Library…';
 }
 
 async function refreshRoxxyTorboxStatus() {
@@ -732,7 +755,7 @@ async function refreshRoxxyTorboxStatus() {
     if (!d.ok) return;
     const active = d.active || [], syncing = d.syncing || [], imported = d.newly_imported || [];
     renderRoxxyMainQueue(active, syncing);
-    $('download-center-count').textContent = `${(active || []).filter(v => Number(v.progress ?? 0) < 100).length} aktif`;
+    $('download-center-count').textContent = `${(active || []).filter(v => Number(v.progress ?? 0) < 100).length + (syncing || []).length} aktif`;
     
     const first = active.find(v => Number(v.progress ?? 0) < 100);
     if (first) {
@@ -741,7 +764,10 @@ async function refreshRoxxyTorboxStatus() {
       if (!roxxyWatchTimer) roxxyWatchTimer = setInterval(refreshRoxxyTorboxStatus, 5000);
     } else if (syncing.length) {
       $('roxxy-torbox-state').textContent = 'IMPORTING';
-      $('roxxy-torbox-status').textContent = `${syncing.length} item sedang diproses untuk import.`;
+      const firstSync = syncing[0] || {};
+      $('roxxy-torbox-status').textContent = syncing.length === 1
+        ? `${firstSync.title || 'Item'} — ${firstSync.library_message || 'mengimpor ke Library…'}`
+        : `${syncing.length} item ke Library — ${firstSync.library_message || 'mengimpor…'}`;
     } else if (imported.length) {
       $('roxxy-torbox-state').textContent = 'IMPORTED';
       $('roxxy-torbox-status').textContent = `${imported.length} item berhasil diimpor ke Library.`;
@@ -759,11 +785,13 @@ async function refreshRoxxyTorboxStatus() {
 async function sendMagnetToTorBox(i) {
   const a = (window._roxxyAnalyses || {})[i];
   if (!a || a.engine !== 'torbox' || !a.magnet) { setStatus('Magnet tidak tersedia.'); return; }
+  const stream = (window._roxxyStreams || [])[i] || {};
   const title = selectedMeta?.name || selectedMeta?.jav_code || 'Video Feeds';
+  const expected = a.suggested_filename || stream.behaviorHints?.filename || stream.filename || '';
   try {
     $('roxxy-torbox-state').textContent = 'SUBMITTING';
     $('roxxy-torbox-status').textContent = 'Mengirim Magnet ke TorBox…';
-    const r = await fetch('/api/torbox/add-cached', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'torrent', magnet: a.magnet, title, category: 'JAV' }) });
+    const r = await fetch('/api/torbox/add-cached', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'torrent', magnet: a.magnet, title, expected_filename: expected, poster_url: selectedMeta?.poster || selectedMeta?.background || '', metadata: selectedMeta || null, subtitles: window._roxxySubtitles || [], category: '' }) });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || j.message || `HTTP ${r.status}`);
     setStatus(j.message || 'Magnet dikirim ke TorBox.');

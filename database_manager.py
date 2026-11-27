@@ -40,6 +40,7 @@ CLASSIFICATION_MIGRATION_ID = "tbh_v1_2_phase2_classification_schema"
 POSTER_MIGRATION_ID = "tbh_v1_2_phase4_poster_reliability"
 TITLE_OVERRIDE_MIGRATION_ID = "tbh_v1_2_manual_title_override"
 DUAL_SUBTITLE_MIGRATION_ID = "tbh_v1_2_phase6b_dual_subtitles"
+TORBOX_HINT_MIGRATION_ID = "tbh_v1_3d4_torbox_hint_metadata"
 VALID_POSTER_STATUSES = {"not_checked", "found", "missing", "invalid_url", "invalid_image", "unreachable", "load_error", "manual"}
 
 
@@ -363,6 +364,30 @@ def _title_override_migration_already_applied() -> bool:
         probe.close()
 
 
+def _torbox_hint_metadata_migration_already_applied() -> bool:
+    """Return True when the TorBox import-hint metadata column is recorded."""
+    if not os.path.isfile(DB_PATH):
+        return True
+    probe = sqlite3.connect(DB_PATH, timeout=30)
+    try:
+        hint_table = probe.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'torbox_import_hints'"
+        ).fetchone()
+        if not hint_table:
+            return False
+        migrations_table = probe.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'"
+        ).fetchone()
+        if not migrations_table:
+            return False
+        return probe.execute(
+            "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
+            (TORBOX_HINT_MIGRATION_ID,),
+        ).fetchone() is not None
+    finally:
+        probe.close()
+
+
 def init_db() -> None:
     os.makedirs(DB_DIR, exist_ok=True)
     os.makedirs(BACKUP_DIR, exist_ok=True)
@@ -375,6 +400,7 @@ def init_db() -> None:
         _classification_migration_already_applied()
         and _poster_migration_already_applied()
         and _title_override_migration_already_applied()
+        and _torbox_hint_metadata_migration_already_applied()
     ):
         backup_result = create_db_backup()
         if not backup_result or not backup_result.get("backup_file"):
@@ -469,6 +495,7 @@ def init_db() -> None:
                 torbox_item_id TEXT NOT NULL,
                 content_category TEXT NOT NULL DEFAULT 'uncategorized',
                 poster_url TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (torbox_kind, torbox_item_id)
             );
@@ -511,6 +538,7 @@ def init_db() -> None:
         migrate_poster_schema(conn)
         migrate_manual_title_override_schema(conn)
         migrate_dual_subtitle_schema(conn)
+        migrate_torbox_import_hint_schema(conn)
 
         conn.execute("CREATE INDEX IF NOT EXISTS idx_media_series_title ON media_items(series_title);")
 
@@ -1210,18 +1238,31 @@ def _get_media_playlist_map(conn: sqlite3.Connection) -> Dict[int, List[str]]:
 
 
 
-def save_torbox_import_hint(kind: str, item_id: str, category: str, poster_url: str = "") -> None:
-    """Persist Discovery category/poster hints until the matching TorBox item is imported."""
+def save_torbox_import_hint(kind: str, item_id: str, category: str, poster_url: str = "",
+                            metadata: Optional[Dict[str, Any]] = None) -> None:
+    """Persist Discovery/Roxxy category, poster and metadata hints until import."""
     if not kind or not item_id:
         return
     safe_category = category if category in VALID_CATEGORIES else "uncategorized"
+    try:
+        serialized = json.dumps(metadata or {}, ensure_ascii=False)
+    except (TypeError, ValueError):
+        serialized = "{}"
+    if len(serialized) > 200_000:
+        serialized = "{}"
     with get_connection() as conn:
         conn.execute(
-            """INSERT INTO torbox_import_hints (torbox_kind, torbox_item_id, content_category, poster_url)
-               VALUES (?, ?, ?, ?)
+            """INSERT INTO torbox_import_hints
+                 (torbox_kind, torbox_item_id, content_category, poster_url, metadata_json)
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(torbox_kind, torbox_item_id) DO UPDATE SET
-                 content_category=excluded.content_category, poster_url=excluded.poster_url""",
-            (str(kind), str(item_id), safe_category, poster_url or None),
+                 content_category=excluded.content_category,
+                 poster_url=COALESCE(excluded.poster_url, torbox_import_hints.poster_url),
+                 metadata_json=CASE
+                   WHEN excluded.metadata_json IS NULL OR excluded.metadata_json='{}'
+                   THEN torbox_import_hints.metadata_json
+                   ELSE excluded.metadata_json END""",
+            (str(kind), str(item_id), safe_category, poster_url or None, serialized),
         )
         conn.commit()
 
@@ -1229,10 +1270,18 @@ def save_torbox_import_hint(kind: str, item_id: str, category: str, poster_url: 
 def get_torbox_import_hint(kind: str, item_id: str) -> Dict[str, Any]:
     with get_connection() as conn:
         row = conn.execute(
-            "SELECT content_category, poster_url FROM torbox_import_hints WHERE torbox_kind=? AND torbox_item_id=?",
+            "SELECT content_category, poster_url, metadata_json FROM torbox_import_hints "
+            "WHERE torbox_kind=? AND torbox_item_id=?",
             (str(kind), str(item_id)),
         ).fetchone()
-    return dict(row) if row else {}
+    if not row:
+        return {}
+    hint = dict(row)
+    try:
+        hint["metadata"] = json.loads(hint.pop("metadata_json", None) or "{}")
+    except Exception:
+        hint["metadata"] = {}
+    return hint
 
 
 def enqueue_roxxy_library_task(download_job_id: str, file_path: str,
@@ -1893,6 +1942,37 @@ def update_media_subtitle(media_id: int, sub_path: str, sub_lang: str, sub_sourc
         )
         conn.commit()
 
+
+
+def migrate_torbox_import_hint_schema(conn: Optional[sqlite3.Connection] = None) -> None:
+    """Add the metadata JSON column used by Roxxy-to-TorBox import hints."""
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    savepoint = "tbh_torbox_hint_metadata_migration"
+    try:
+        conn.execute(f"SAVEPOINT {savepoint}")
+        columns = {
+            r["name"] for r in conn.execute("PRAGMA table_info(torbox_import_hints)").fetchall()
+        }
+        if "metadata_json" not in columns:
+            conn.execute(
+                "ALTER TABLE torbox_import_hints ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations(migration_id,applied_at) VALUES(?,?)",
+            (TORBOX_HINT_MIGRATION_ID, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        if own_conn:
+            conn.commit()
+    except Exception:
+        conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+        conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        raise
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def migrate_dual_subtitle_schema(conn: Optional[sqlite3.Connection] = None) -> None:
