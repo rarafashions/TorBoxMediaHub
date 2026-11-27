@@ -52,7 +52,7 @@
         <select id="catalog-select" class="min-w-[165px] rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-200 outline-none transition focus:border-sky-500 focus:bg-slate-900">
           <option value="">Load manifest dulu</option>
         </select>
-        <select id="genre-select" class="min-w-[135px] rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-200 outline-none transition focus:border-sky-500 focus:bg-slate-900">
+        <select id="genre-select" title="Filter genre atau hasil per katalog" class="min-w-[150px] max-w-[240px] rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-200 outline-none transition focus:border-sky-500 focus:bg-slate-900">
           <option value="">Semua Genre</option>
         </select>
         <div class="relative flex-1 min-w-[180px]">
@@ -73,7 +73,6 @@
           <div class="h-1.5 overflow-hidden rounded-full bg-white/10">
             <div id="catalog-search-progress-bar" class="h-full rounded-full bg-sky-400 transition-all duration-300" style="width:0%"></div>
           </div>
-          <div id="catalog-search-summary" class="hidden mt-2 flex flex-wrap gap-1.5 text-[10px]"></div>
         </div>
         <button onclick="loadManifest()" title="Muat Ulang Manifest" class="rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white">
           ↻ Catalogs
@@ -339,16 +338,20 @@ function selectCatalog() {
   $('result-count').textContent = '0 judul';
   $('load-more-wrap').classList.add('hidden');
   roxxySearchAllState = null;
-  renderCatalogSearchSummary(null);
   populateSelectedCatalogGenres(c);
   if (selectedCatalog) loadCatalog();
 }
 $('catalog-select').addEventListener('change', selectCatalog);
 
 
+let _catalogProgressHideTimer = null;
 function setCatalogSearchProgress(percent, label, visible = true) {
   const wrap = $('catalog-search-progress');
   if (!wrap) return;
+  if (visible && _catalogProgressHideTimer) {
+    clearTimeout(_catalogProgressHideTimer);
+    _catalogProgressHideTimer = null;
+  }
   wrap.classList.toggle('hidden', !visible);
   const value = Math.max(0, Math.min(100, Math.round(percent)));
   $('catalog-search-progress-label').textContent = label || 'Mencari…';
@@ -357,7 +360,11 @@ function setCatalogSearchProgress(percent, label, visible = true) {
 }
 function finishCatalogSearchProgress(label = 'Pencarian selesai') {
   setCatalogSearchProgress(100, label, true);
-  setTimeout(() => $('catalog-search-progress')?.classList.add('hidden'), 1800);
+  const requestId = roxxyCatalogRequest;
+  _catalogProgressHideTimer = setTimeout(() => {
+    _catalogProgressHideTimer = null;
+    if (requestId === roxxyCatalogRequest) $('catalog-search-progress')?.classList.add('hidden');
+  }, 1800);
 }
 
 const ROXXY_PAGE_SIZE = 100;
@@ -368,10 +375,32 @@ let roxxySearchAllState = null;
 
 function catalogKey(c) { return `${c.type}:${c.id}`; }
 
-function populateCatalogFilterOptions() {
-  const groups = catalogs.map(c => `<option value="cat:${esc(catalogKey(c))}">${esc(c.type)} · ${esc(c.name)}</option>`).join('');
-  $('genre-select').innerHTML = '<option value="">Semua Katalog &amp; Genre</option>'
-    + (groups ? `<optgroup label="Filter hasil per katalog">${groups}</optgroup>` : '');
+// The per-catalog search summary lives inside the Genre dropdown: one compact
+// combo box instead of a chip row that eats grid space. Only catalogs that
+// actually returned results are listed, so the list stays short.
+function renderCatalogSearchSummary(state) {
+  const select = $('genre-select');
+  if (!select || !state) return;
+  const current = select.value || '';
+  const total = (window._roxxyItems || []).length;
+  const pending = catalogs.some(c => {
+    const st = state.status[catalogKey(c)] || {};
+    return !st.state || st.state === 'pending';
+  });
+  const options = [`<option value="">Semua: ${total}${pending ? ' …' : ''}</option>`];
+  const perCatalog = [];
+  for (const c of catalogs) {
+    const key = catalogKey(c);
+    const st = state.status[key] || {};
+    if (st.state !== 'ok' || !st.count) continue;
+    perCatalog.push(`<option value="cat:${esc(key)}">${esc(c.name)}: ${st.count}</option>`);
+  }
+  // "Semua" stays the first option so it remains the default selection.
+  if (perCatalog.length) options.push('<option disabled>— filter katalog —</option>', ...perCatalog);
+  select.innerHTML = options.join('');
+  if (current.startsWith('cat:') && Array.from(select.options).some(o => o.value === current)) {
+    select.value = current;
+  }
 }
 
 function populateSelectedCatalogGenres(c, keep = '') {
@@ -380,49 +409,6 @@ function populateSelectedCatalogGenres(c, keep = '') {
   const selected = options.includes(keep) ? keep : '';
   $('genre-select').innerHTML = '<option value="">Semua Genre</option>'
     + options.map(x => `<option value="${esc(x)}"${x === selected ? ' selected' : ''}>${esc(x)}</option>`).join('');
-}
-
-function chipClass(active, tone) {
-  const base = 'inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 transition';
-  if (tone === 'error') return `${base} border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20`;
-  return active
-    ? `${base} border-sky-400/60 bg-sky-500/20 text-sky-100`
-    : `${base} border-white/10 bg-white/5 text-slate-300 hover:bg-white/10`;
-}
-
-function renderCatalogSearchSummary(state) {
-  const wrap = $('catalog-search-summary');
-  if (!wrap) return;
-  if (!state) {
-    wrap.classList.add('hidden');
-    wrap.innerHTML = '';
-    return;
-  }
-  wrap.classList.remove('hidden');
-  const selected = $('genre-select').value || '';
-  const total = (window._roxxyItems || []).length;
-  const chips = [`<button type="button" data-cat-chip="" onclick="filterByCatalogChip(this)" class="${chipClass(!selected.startsWith('cat:'))}"><span>Semua</span><span class="font-bold tabular-nums">${total}</span></button>`];
-  for (const c of catalogs) {
-    const key = catalogKey(c);
-    const st = state.status[key] || {};
-    const tone = st.state === 'error' ? 'error' : '';
-    const value = st.state === 'error' ? 'gagal' : st.state === 'pending' ? '…' : String(st.count ?? 0);
-    const chipTitle = st.error || (c.type + ' · ' + c.name);
-    chips.push(`<button type="button" data-cat-chip="${esc(key)}" onclick="filterByCatalogChip(this)" title="${esc(chipTitle)}" class="${chipClass(selected === 'cat:' + key, tone)}"><span class="truncate">${esc(c.name)}</span><span class="font-bold tabular-nums">${esc(value)}</span></button>`);
-  }
-  wrap.innerHTML = chips.join('');
-}
-
-function filterByCatalogChip(button) {
-  const key = button?.dataset?.catChip || '';
-  const select = $('genre-select');
-  if (key) {
-    if (!Array.from(select.options).some(o => o.value === 'cat:' + key)) populateCatalogFilterOptions();
-    select.value = 'cat:' + key;
-  } else {
-    select.value = '';
-  }
-  applyCatalogSearchFilter();
 }
 
 function applyCatalogSearchFilter() {
@@ -436,7 +422,6 @@ function applyCatalogSearchFilter() {
   });
   const total = (window._roxxyItems || []).length;
   $('result-count').textContent = filter ? `${visible} dari ${total} judul` : `${total} judul`;
-  if (roxxySearchAllState) renderCatalogSearchSummary(roxxySearchAllState);
 }
 
 function renderCatalogCards(items, append = false) {
@@ -496,6 +481,7 @@ function appendAllSearchItems(state, fresh) {
   if (placeholder) placeholder.remove();
   window._roxxyItems = (window._roxxyItems || []).concat(fresh);
   renderCatalogCards(fresh, true);
+  renderCatalogSearchSummary(state);
   applyCatalogSearchFilter();
 }
 
@@ -583,11 +569,6 @@ async function fetchCatalogPage(reset = false) {
       if (reset || !roxxySearchAllState) {
         // Every catalog is queried at once; each response is appended as soon
         // as it arrives, so slow providers never block fast ones.
-        const previousFilter = ($('genre-select').value || '').startsWith('cat:') ? $('genre-select').value : '';
-        populateCatalogFilterOptions();
-        if (previousFilter && Array.from($('genre-select').options).some(o => o.value === previousFilter)) {
-          $('genre-select').value = previousFilter;
-        }
         roxxySearchAllState = newAllSearchState(query);
         renderCatalogSearchSummary(roxxySearchAllState);
         setStatus(`Mencari "${query}" di ${catalogs.length} katalog secara paralel…`);
@@ -599,20 +580,20 @@ async function fetchCatalogPage(reset = false) {
       }
       if (requestId !== roxxyCatalogRequest) return;
       roxxyHasMore = allSearchHasMore(roxxySearchAllState);
+      renderCatalogSearchSummary(roxxySearchAllState);
       applyCatalogSearchFilter();
       if (!window._roxxyItems.length) {
         $('catalog-results').innerHTML = '<div class="col-span-full py-12 text-center text-sm text-slate-500">Tidak ada hasil katalog ditemukan.</div>';
       }
       const failed = catalogs.filter(c => (roxxySearchAllState.status[catalogKey(c)] || {}).state === 'error').length;
       const label = `Selesai — ${window._roxxyItems.length} hasil` + (failed ? `, ${failed} katalog gagal` : '');
-      setCatalogSearchProgress(100, label);
-      setStatus(label + '. Pilih chip katalog untuk memfilter tanpa mencari ulang.');
+      finishCatalogSearchProgress(label);
+      setStatus(label + '. Filter katalog ada di dropdown genre, tanpa mencari ulang.');
     } else {
       // Single-catalog mode keeps its own pagination and genre filter.
       const hadAllState = !!roxxySearchAllState;
       if (hadAllState) {
         roxxySearchAllState = null;
-        renderCatalogSearchSummary(null);
         window._roxxyItems = [];
         roxxyNextSkip = 0;
       }
