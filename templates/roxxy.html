@@ -658,13 +658,34 @@ async function retryJob(id) {
   }
 }
 
+const LIBRARY_PROGRESS_STAGES = new Set(['queued', 'validating', 'identified', 'registering']);
+let localActiveCount = 0;
+let torboxActiveCount = 0;
+
+function isLocalJobActive(job) {
+  if (!job) return false;
+  if (job.status === 'queued' || job.status === 'downloading') return true;
+  // A finished download that is still being validated/registered also counts:
+  // the item is not in the Library yet.
+  return job.status === 'completed' && LIBRARY_PROGRESS_STAGES.has(String(job.library_status || ''));
+}
+
+function updateDownloadBadge() {
+  const total = localActiveCount + torboxActiveCount;
+  const badge = $('download-center-count');
+  badge.textContent = `${total} aktif`;
+  badge.title = `${localActiveCount} lokal aktif, ${torboxActiveCount} TorBox aktif`;
+}
+
 async function refreshLocalQueue() {
   try {
     const r = await fetch('/api/roxxy/local/queue');
     const j = await r.json();
     if (!j.ok) return;
     const jobs = j.jobs || [];
-    const active = jobs.filter(x => ['queued', 'downloading'].includes(x.status));
+    const active = jobs.filter(isLocalJobActive);
+    localActiveCount = active.length;
+    updateDownloadBadge();
     $('local-queue-count').textContent = `${active.length} aktif`;
     if (!jobs.length) {
       $('local-queue-list').innerHTML = '<p class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Belum ada download lokal.</p>';
@@ -700,13 +721,14 @@ async function refreshLocalQueue() {
 setInterval(refreshLocalQueue, 3000);
 refreshLocalQueue();
 
-let roxxyWatchTimer = null;
 function renderRoxxyMainQueue(active, syncing) {
   const downloading = (active || []).filter(x => Number(x.progress ?? 0) < 100);
   downloading.sort((a, b) => Number(b.progress ?? 0) - Number(a.progress ?? 0));
   const importing = (syncing || []).map(x => ({ ...x, _importing: true }));
   const queue = downloading.concat(importing);
   $('torbox-queue-count').textContent = `${queue.length} aktif`;
+  torboxActiveCount = queue.length;
+  updateDownloadBadge();
   if (!queue.length) {
     $('torbox-main-queue-list').innerHTML = '<p class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Tidak ada download TorBox aktif.</p>';
     return;
@@ -755,13 +777,11 @@ async function refreshRoxxyTorboxStatus() {
     if (!d.ok) return;
     const active = d.active || [], syncing = d.syncing || [], imported = d.newly_imported || [];
     renderRoxxyMainQueue(active, syncing);
-    $('download-center-count').textContent = `${(active || []).filter(v => Number(v.progress ?? 0) < 100).length + (syncing || []).length} aktif`;
     
     const first = active.find(v => Number(v.progress ?? 0) < 100);
     if (first) {
       $('roxxy-torbox-state').textContent = 'DOWNLOADING';
       $('roxxy-torbox-status').textContent = `${first.title || 'Download'} · ${Number(first.progress) || 0}%`;
-      if (!roxxyWatchTimer) roxxyWatchTimer = setInterval(refreshRoxxyTorboxStatus, 5000);
     } else if (syncing.length) {
       $('roxxy-torbox-state').textContent = 'IMPORTING';
       const firstSync = syncing[0] || {};
@@ -774,7 +794,6 @@ async function refreshRoxxyTorboxStatus() {
     } else {
       $('roxxy-torbox-state').textContent = 'IDLE';
       $('roxxy-torbox-status').textContent = 'Tidak ada download aktif.';
-      if (roxxyWatchTimer) { clearInterval(roxxyWatchTimer); roxxyWatchTimer = null; }
     }
   } catch (e) {
     $('roxxy-torbox-state').textContent = 'ERROR';
@@ -801,7 +820,6 @@ async function sendMagnetToTorBox(i) {
     openDownloadDrawer();
     showDownloadTab('torbox');
     await refreshRoxxyTorboxStatus();
-    if (!roxxyWatchTimer) roxxyWatchTimer = setInterval(refreshRoxxyTorboxStatus, 5000);
   } catch (e) {
     $('roxxy-torbox-state').textContent = 'FAILED';
     $('roxxy-torbox-status').textContent = 'Gagal: ' + e.message;
@@ -833,6 +851,10 @@ async function checkTorboxCache(i) {
 }
 
 $('search-query').addEventListener('keydown', e => { if (e.key === 'Enter') loadCatalog(); });
+// Always keep the header badge and TorBox panel fresh, including downloads
+// started before this page was opened. The status route is memory-only.
+setInterval(refreshRoxxyTorboxStatus, 5000);
+refreshRoxxyTorboxStatus();
 loadConfig();
 </script>
 </body>

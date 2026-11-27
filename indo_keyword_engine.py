@@ -17,9 +17,13 @@ DEFAULT_KEYWORDS: Dict[str, Dict[str, int]] = {
         "bokep indo": 4, "bokep indonesia": 4, "video indo": 4,
         "bahasa indonesia": 4, "cindo": 3, "chindo": 3,
         "di selingkuhi": 3, "diselingkuhi": 3,
+        # The infidelity terms are unambiguous Indonesian/Malay regional
+        # vocabulary; titles like "lagi selingkuh ..." must land in Indo even
+        # when the provider also attaches English adult genre tags.
+        "selingkuh": 3, "selingkuhan": 3, "perselingkuhan": 3, "berselingkuh": 3,
     },
     "supporting": {
-        "selingkuh": 2, "perselingkuhan": 2, "curhat": 2,
+        "curhat": 2,
         "indonesia": 1, "indonesian": 1,
         "hijab": 1, "jilbab": 1, "berhijab": 1,
         "lokal": 1, "amatir": 1,

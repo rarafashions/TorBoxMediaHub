@@ -1,6 +1,7 @@
 import unittest
 
 from classification_engine import classify_media, normalize_media_title
+import indo_keyword_engine as indo_eng
 
 
 class ClassificationGoldenTests(unittest.TestCase):
@@ -113,6 +114,45 @@ class ClassificationGoldenTests(unittest.TestCase):
             normalize_media_title("[SubsPlease] Anime.Title.S01E02.1080p.WEB-DL.mkv"),
             "Anime Title",
         )
+
+
+class IndoKeywordPriorityTests(unittest.TestCase):
+    """Indonesian regional vocabulary must win over generic English adult tags."""
+
+    def test_selingkuh_alone_is_indo(self):
+        verdict = indo_eng.classify_indo({"title": "lagi selingkuh laki nya nelpon Full"})
+        self.assertTrue(verdict["is_indo"], verdict)
+        self.assertIn("selingkuh", verdict["matched_keywords"])
+
+    def test_selingkuh_variants_are_strong_signal(self):
+        for title in (
+            "Perselingkuhan di kontrakan",
+            "Istri berselingkuh dengan tetangga",
+            "Video selingkuhan Full",
+        ):
+            with self.subTest(title=title):
+                self.assertTrue(indo_eng.classify_indo({"title": title})["is_indo"])
+
+    def test_single_weak_supporting_word_still_needs_two_signals(self):
+        verdict = indo_eng.classify_indo({"title": "Curhat malam minggu"})
+        self.assertFalse(verdict["is_indo"], verdict)
+
+    def test_classification_prefers_indo_over_english_adult_genres(self):
+        result = classify_media(
+            "lagi selingkuh laki nya nelpon full.mp4",
+            normalized_title="lagi selingkuh laki nya nelpon Full",
+            metadata={
+                "genres": ["Teen", "Anal", "Asian", "Blowjob", "Bbw"],
+                "description": "4:01 - Teen, Anal, Asian, Blowjob",
+            },
+        )
+        self.assertEqual(result["classification_status"], "classified")
+        self.assertEqual(result["detected_category"], "indo")
+        self.assertEqual(result["classification_method"], "indo_keyword_classifier")
+
+    def test_english_adult_without_indo_terms_keeps_its_category(self):
+        result = classify_media("English Teen Anal Blowjob Scene.mp4")
+        self.assertEqual(result["detected_category"], "english_adult")
 
 
 if __name__ == "__main__":
