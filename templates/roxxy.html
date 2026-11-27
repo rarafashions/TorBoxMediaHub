@@ -73,6 +73,7 @@
           <div class="h-1.5 overflow-hidden rounded-full bg-white/10">
             <div id="catalog-search-progress-bar" class="h-full rounded-full bg-sky-400 transition-all duration-300" style="width:0%"></div>
           </div>
+          <div id="catalog-search-summary" class="hidden mt-2 flex flex-wrap gap-1.5 text-[10px]"></div>
         </div>
         <button onclick="loadManifest()" title="Muat Ulang Manifest" class="rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-300 transition hover:bg-white/10 hover:text-white">
           ↻ Catalogs
@@ -337,8 +338,9 @@ function selectCatalog() {
   $('catalog-results').innerHTML = '<div class="col-span-full flex flex-col items-center justify-center rounded-2xl border border-dashed border-white/10 bg-white/[0.02] py-20 text-center"><div class="mb-3 text-3xl">🎬</div><p class="text-sm font-semibold text-slate-300">Katalog Belum Dimuat</p><p class="mt-1 text-xs text-slate-500">Klik Cari untuk memuat katalog.</p></div>';
   $('result-count').textContent = '0 judul';
   $('load-more-wrap').classList.add('hidden');
-  const extra = (c?.extra || []).find(x => x.name === 'genre');
-  $('genre-select').innerHTML = '<option value="">Semua Genre</option>' + (extra?.options || []).map(x => `<option>${esc(x)}</option>`).join('');
+  roxxySearchAllState = null;
+  renderCatalogSearchSummary(null);
+  populateSelectedCatalogGenres(c);
   if (selectedCatalog) loadCatalog();
 }
 $('catalog-select').addEventListener('change', selectCatalog);
@@ -360,14 +362,90 @@ function finishCatalogSearchProgress(label = 'Pencarian selesai') {
 
 const ROXXY_PAGE_SIZE = 100;
 let roxxyNextSkip = 0, roxxyHasMore = false, roxxyPageLoading = false, roxxyCatalogRequest = 0;
-let roxxySearchAllItems = null;
+// One session for "Cari semua katalog": per-catalog offsets, counts and status
+// so every catalog can render its own results as soon as it responds.
+let roxxySearchAllState = null;
+
+function catalogKey(c) { return `${c.type}:${c.id}`; }
+
+function populateCatalogFilterOptions() {
+  const groups = catalogs.map(c => `<option value="cat:${esc(catalogKey(c))}">${esc(c.type)} · ${esc(c.name)}</option>`).join('');
+  $('genre-select').innerHTML = '<option value="">Semua Katalog &amp; Genre</option>'
+    + (groups ? `<optgroup label="Filter hasil per katalog">${groups}</optgroup>` : '');
+}
+
+function populateSelectedCatalogGenres(c, keep = '') {
+  const extra = (c?.extra || []).find(x => x.name === 'genre');
+  const options = extra?.options || [];
+  const selected = options.includes(keep) ? keep : '';
+  $('genre-select').innerHTML = '<option value="">Semua Genre</option>'
+    + options.map(x => `<option value="${esc(x)}"${x === selected ? ' selected' : ''}>${esc(x)}</option>`).join('');
+}
+
+function chipClass(active, tone) {
+  const base = 'inline-flex max-w-[220px] items-center gap-1 rounded-full border px-2 py-0.5 transition';
+  if (tone === 'error') return `${base} border-rose-500/30 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20`;
+  return active
+    ? `${base} border-sky-400/60 bg-sky-500/20 text-sky-100`
+    : `${base} border-white/10 bg-white/5 text-slate-300 hover:bg-white/10`;
+}
+
+function renderCatalogSearchSummary(state) {
+  const wrap = $('catalog-search-summary');
+  if (!wrap) return;
+  if (!state) {
+    wrap.classList.add('hidden');
+    wrap.innerHTML = '';
+    return;
+  }
+  wrap.classList.remove('hidden');
+  const selected = $('genre-select').value || '';
+  const total = (window._roxxyItems || []).length;
+  const chips = [`<button type="button" data-cat-chip="" onclick="filterByCatalogChip(this)" class="${chipClass(!selected.startsWith('cat:'))}"><span>Semua</span><span class="font-bold tabular-nums">${total}</span></button>`];
+  for (const c of catalogs) {
+    const key = catalogKey(c);
+    const st = state.status[key] || {};
+    const tone = st.state === 'error' ? 'error' : '';
+    const value = st.state === 'error' ? 'gagal' : st.state === 'pending' ? '…' : String(st.count ?? 0);
+    const chipTitle = st.error || (c.type + ' · ' + c.name);
+    chips.push(`<button type="button" data-cat-chip="${esc(key)}" onclick="filterByCatalogChip(this)" title="${esc(chipTitle)}" class="${chipClass(selected === 'cat:' + key, tone)}"><span class="truncate">${esc(c.name)}</span><span class="font-bold tabular-nums">${esc(value)}</span></button>`);
+  }
+  wrap.innerHTML = chips.join('');
+}
+
+function filterByCatalogChip(button) {
+  const key = button?.dataset?.catChip || '';
+  const select = $('genre-select');
+  if (key) {
+    if (!Array.from(select.options).some(o => o.value === 'cat:' + key)) populateCatalogFilterOptions();
+    select.value = 'cat:' + key;
+  } else {
+    select.value = '';
+  }
+  applyCatalogSearchFilter();
+}
+
+function applyCatalogSearchFilter() {
+  const raw = $('genre-select').value || '';
+  const filter = raw.startsWith('cat:') ? raw.slice(4) : '';
+  let visible = 0;
+  document.querySelectorAll('#catalog-results [data-catalog]').forEach(card => {
+    const show = !filter || card.dataset.catalog === filter;
+    card.classList.toggle('hidden', !show);
+    if (show) visible += 1;
+  });
+  const total = (window._roxxyItems || []).length;
+  $('result-count').textContent = filter ? `${visible} dari ${total} judul` : `${total} judul`;
+  if (roxxySearchAllState) renderCatalogSearchSummary(roxxySearchAllState);
+}
 
 function renderCatalogCards(items, append = false) {
   const offset = append ? (window._roxxyItems || []).length - items.length : 0;
   const cards = items.map((m, n) => {
     const i = offset + n;
+    const cat = m._roxxyType && m._roxxyCatalogId ? `${m._roxxyType}:${m._roxxyCatalogId}` : '';
     return `
-      <button onclick="openMeta(${i})" class="poster-card group relative overflow-hidden rounded-xl border border-white/10 bg-slate-900 text-left focus:outline-none">
+      <button data-catalog="${esc(cat)}" onclick="openMeta(${i})" class="poster-card group relative overflow-hidden rounded-xl border border-white/10 bg-slate-900 text-left focus:outline-none">
         <div class="relative overflow-hidden bg-slate-800">
           ${m.poster ? `<img src="${esc(m.poster)}" class="w-full object-cover" loading="lazy">` : '<div class="aspect-[2/3] w-full bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center text-xs text-slate-500">No Poster</div>'}
           <div class="absolute left-2 top-2 rounded bg-black/75 px-2 py-0.5 text-[10px] font-bold tracking-wide text-sky-300 backdrop-blur-md border border-white/10">${esc(m.jav_code || m.id)}</div>
@@ -385,7 +463,7 @@ function updateLoadMoreButton() {
   if (!wrap || !button) return;
   wrap.classList.toggle('hidden', !roxxyHasMore && !roxxyPageLoading);
   button.disabled = roxxyPageLoading;
-  button.textContent = roxxyPageLoading ? 'Memuat…' : 'Load 100 More';
+  button.textContent = roxxyPageLoading ? 'Memuat…' : (roxxySearchAllState ? 'Muat hasil berikutnya' : 'Load 100 More');
 }
 
 async function fetchOneCatalog(catalog, skip, query, genre) {
@@ -395,82 +473,174 @@ async function fetchOneCatalog(catalog, skip, query, genre) {
   if (genre) p.set('genre', genre);
   const url = `/api/roxxy/catalog/${encodeURIComponent(catalog.type)}/${encodeURIComponent(catalog.id)}?${p}`;
   const result = await api(url);
-  return (result.metas || []).map(item => ({...item, _roxxyType: catalog.type}));
+  return (result.metas || []).map(item => ({
+    ...item,
+    _roxxyType: catalog.type,
+    _roxxyCatalogId: String(catalog.id),
+    _roxxyCatalogName: catalog.name,
+  }));
 }
 
-async function fetchAllCatalogPage(skip, query, genre) {
-  const found = [];
-  // Small concurrency batches avoid flooding the Roxxy endpoint.
-  let completed = 0;
-  for (let i = 0; i < catalogs.length; i += 6) {
-    const batch = catalogs.slice(i, i + 6);
-    const results = await Promise.allSettled(batch.map(c => fetchOneCatalog(c, skip, query, genre)));
-    for (const r of results) if (r.status === 'fulfilled') found.push(...r.value);
-    completed += batch.length;
-    const pct = catalogs.length ? (completed / catalogs.length) * 100 : 100;
-    setCatalogSearchProgress(pct, `Mencari di katalog Video Feeds (${completed}/${catalogs.length})…`);
+function newAllSearchState(query) {
+  return { query, requestId: roxxyCatalogRequest, status: {}, done: 0, seen: new Set() };
+}
+
+function allSearchHasMore(state) {
+  if (!state) return false;
+  return Object.values(state.status).some(st => st.state === 'ok' && !st.exhausted);
+}
+
+function appendAllSearchItems(state, fresh) {
+  if (!fresh.length || state.requestId !== roxxyCatalogRequest) return;
+  const placeholder = $('catalog-results').querySelector('[data-search-placeholder]');
+  if (placeholder) placeholder.remove();
+  window._roxxyItems = (window._roxxyItems || []).concat(fresh);
+  renderCatalogCards(fresh, true);
+  applyCatalogSearchFilter();
+}
+
+async function fetchAllCatalogsProgressive(state) {
+  if (!catalogs.length) {
+    setCatalogSearchProgress(100, 'Manifest belum dimuat.');
+    return;
   }
-  const seen = new Set();
-  return found.filter(item => {
-    const key = `${item._roxxyType}:${item.id}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+  const total = catalogs.length;
+  state.done = 0;
+  catalogs.forEach(c => {
+    const key = catalogKey(c);
+    const st = state.status[key] || (state.status[key] = {
+      key, type: c.type, id: String(c.id), name: c.name, count: 0, skip: 0, exhausted: false,
+    });
+    st.state = 'pending';
+    st.error = '';
   });
+  renderCatalogSearchSummary(state);
+  setCatalogSearchProgress(2, `Mencari di ${total} katalog secara paralel…`);
+  // No artificial batch limit: every catalog is requested at once, and each
+  // response is appended immediately so fast providers are visible right away.
+  const tasks = catalogs.map(async c => {
+    const st = state.status[catalogKey(c)];
+    try {
+      const items = await fetchOneCatalog(c, st.skip, state.query, '');
+      if (state.requestId !== roxxyCatalogRequest) {
+        st.state = 'ok';
+        return;
+      }
+      const fresh = [];
+      for (const item of items) {
+        const key = `${item._roxxyType}:${item.id}`;
+        if (state.seen.has(key)) continue;
+        state.seen.add(key);
+        fresh.push(item);
+      }
+      st.count += fresh.length;
+      st.skip += items.length;
+      st.exhausted = items.length < ROXXY_PAGE_SIZE || (items.length === ROXXY_PAGE_SIZE && fresh.length === 0);
+      st.state = 'ok';
+      appendAllSearchItems(state, fresh);
+    } catch (e) {
+      if (state.requestId === roxxyCatalogRequest) {
+        st.state = 'error';
+        st.error = String(e?.message || e);
+      }
+    } finally {
+      state.done += 1;
+      if (state.requestId === roxxyCatalogRequest) {
+        const pct = Math.min(99, Math.round((state.done / total) * 100));
+        setCatalogSearchProgress(pct, `Menerima hasil… (${state.done}/${total} katalog)`);
+        renderCatalogSearchSummary(state);
+      }
+    }
+  });
+  await Promise.allSettled(tasks);
 }
 
 async function fetchCatalogPage(reset = false) {
-  if (!selectedCatalog || (roxxyPageLoading && !reset)) return;
+  if (!catalogs.length) { setStatus('Manifest belum dimuat. Klik ↻ Catalogs.'); return; }
+  if (roxxyPageLoading && !reset) return;
+  const wantsAllCatalogs = !!$('search-all-catalogs')?.checked;
+  const query = $('search-query').value.trim();
+  const allMode = wantsAllCatalogs && !!query;
+  if (!allMode && !selectedCatalog) {
+    setStatus(wantsAllCatalogs ? 'Isi kata kunci dulu untuk mencari di semua katalog.' : 'Pilih katalog dulu.');
+    return;
+  }
   if (reset) {
     roxxyCatalogRequest++;
     window._roxxyItems = [];
     roxxyNextSkip = 0;
     roxxyHasMore = false;
-    roxxySearchAllItems = null;
-    $('catalog-results').innerHTML = '<div class="col-span-full py-12 text-center text-sm text-slate-500">Memuat katalog…</div>';
+    $('catalog-results').innerHTML = '<div data-search-placeholder class="col-span-full py-12 text-center text-sm text-slate-500">Memuat katalog…</div>';
   }
   const requestId = roxxyCatalogRequest;
-  const allMode = $('search-all-catalogs')?.checked && $('search-query').value.trim();
-  const query = $('search-query').value.trim();
-  const genre = $('genre-select').value;
   roxxyPageLoading = true;
   updateLoadMoreButton();
-  setStatus(reset ? 'Memuat katalog…' : 'Memuat 100 judul berikutnya…');
+  setStatus(reset ? 'Memuat katalog…' : 'Memuat hasil berikutnya…');
   setCatalogSearchProgress(5, allMode ? 'Menyiapkan pencarian semua katalog…' : 'Menghubungi katalog terpilih…');
 
   try {
-    let items;
     if (allMode) {
-      // For global search, fetch one page from each manifest catalog, then paginate the combined result locally.
-      if (reset || !roxxySearchAllItems) {
-        setStatus(`Mencari "${query}" di ${catalogs.length} katalog…`);
-        roxxySearchAllItems = await fetchAllCatalogPage(0, query, '');
+      if (reset || !roxxySearchAllState) {
+        // Every catalog is queried at once; each response is appended as soon
+        // as it arrives, so slow providers never block fast ones.
+        const previousFilter = ($('genre-select').value || '').startsWith('cat:') ? $('genre-select').value : '';
+        populateCatalogFilterOptions();
+        if (previousFilter && Array.from($('genre-select').options).some(o => o.value === previousFilter)) {
+          $('genre-select').value = previousFilter;
+        }
+        roxxySearchAllState = newAllSearchState(query);
+        renderCatalogSearchSummary(roxxySearchAllState);
+        setStatus(`Mencari "${query}" di ${catalogs.length} katalog secara paralel…`);
+        await fetchAllCatalogsProgressive(roxxySearchAllState);
+      } else {
+        // Load more: request the next page from every catalog that still has results.
+        setStatus('Memuat halaman berikutnya dari semua katalog…');
+        await fetchAllCatalogsProgressive(roxxySearchAllState);
       }
-      items = roxxySearchAllItems.slice(roxxyNextSkip, roxxyNextSkip + ROXXY_PAGE_SIZE);
       if (requestId !== roxxyCatalogRequest) return;
-      window._roxxyItems = reset ? items : (window._roxxyItems || []).concat(items);
-      renderCatalogCards(items, !reset);
-      roxxyNextSkip += items.length;
-      roxxyHasMore = roxxyNextSkip < roxxySearchAllItems.length;
+      roxxyHasMore = allSearchHasMore(roxxySearchAllState);
+      applyCatalogSearchFilter();
+      if (!window._roxxyItems.length) {
+        $('catalog-results').innerHTML = '<div class="col-span-full py-12 text-center text-sm text-slate-500">Tidak ada hasil katalog ditemukan.</div>';
+      }
+      const failed = catalogs.filter(c => (roxxySearchAllState.status[catalogKey(c)] || {}).state === 'error').length;
+      const label = `Selesai — ${window._roxxyItems.length} hasil` + (failed ? `, ${failed} katalog gagal` : '');
+      setCatalogSearchProgress(100, label);
+      setStatus(label + '. Pilih chip katalog untuk memfilter tanpa mencari ulang.');
     } else {
+      // Single-catalog mode keeps its own pagination and genre filter.
+      const hadAllState = !!roxxySearchAllState;
+      if (hadAllState) {
+        roxxySearchAllState = null;
+        renderCatalogSearchSummary(null);
+        window._roxxyItems = [];
+        roxxyNextSkip = 0;
+      }
+      if (reset || hadAllState) {
+        const keepGenre = ($('genre-select').value || '').startsWith('cat:') ? '' : ($('genre-select').value || '');
+        populateSelectedCatalogGenres(selectedCatalog, keepGenre);
+      }
+      const rawGenre = $('genre-select').value || '';
+      const genre = rawGenre.startsWith('cat:') ? '' : rawGenre;
       const singleRequest = fetchOneCatalog(selectedCatalog, roxxyNextSkip, query, genre);
       setCatalogSearchProgress(25, 'Mengirim permintaan ke server Video Feeds…');
       const progressStages = [
         setTimeout(() => { if (requestId === roxxyCatalogRequest && roxxyPageLoading) setCatalogSearchProgress(55, 'Menerima hasil katalog…'); }, 450),
         setTimeout(() => { if (requestId === roxxyCatalogRequest && roxxyPageLoading) setCatalogSearchProgress(82, 'Memproses metadata hasil…'); }, 1100)
       ];
-      items = await singleRequest;
+      const items = await singleRequest;
       progressStages.forEach(clearTimeout);
       if (requestId !== roxxyCatalogRequest) return;
-      window._roxxyItems = reset ? items : (window._roxxyItems || []).concat(items);
-      renderCatalogCards(items, !reset);
+      const useReset = reset || hadAllState;
+      window._roxxyItems = useReset ? items : (window._roxxyItems || []).concat(items);
+      renderCatalogCards(items, !useReset);
       roxxyNextSkip += items.length;
       roxxyHasMore = items.length === ROXXY_PAGE_SIZE;
+      $('result-count').textContent = `${window._roxxyItems.length} judul`;
+      setCatalogSearchProgress(100, `Selesai — ${window._roxxyItems.length} hasil ditampilkan.`);
+      finishCatalogSearchProgress(`Pencarian selesai — ${window._roxxyItems.length} hasil.`);
+      setStatus(items.length ? (useReset ? 'Katalog berhasil dimuat.' : `${items.length} judul tambahan dimuat.`) : 'Tidak ada hasil tambahan.');
     }
-    $('result-count').textContent = `${window._roxxyItems.length} judul`;
-    setCatalogSearchProgress(100, `Selesai — ${window._roxxyItems.length} hasil ditampilkan.`);
-    finishCatalogSearchProgress(`Pencarian selesai — ${window._roxxyItems.length} hasil.`);
-    setStatus(items.length ? (reset ? 'Katalog berhasil dimuat.' : `${items.length} judul tambahan dimuat.`) : 'Tidak ada hasil tambahan.');
   } catch (e) {
     if (requestId === roxxyCatalogRequest) {
       setCatalogSearchProgress(100, 'Pencarian gagal.');
@@ -493,7 +663,7 @@ async function openMeta(i) {
     setStatus('Mengambil metadata & daftar stream…');
     const type = item._roxxyType || selectedCatalog.type;
     const m = await api(`/api/roxxy/meta/${encodeURIComponent(type)}/${encodeURIComponent(item.id)}`);
-    selectedMeta = m.meta;
+    selectedMeta = { ...m.meta, _roxxyType: type, _roxxyCatalogId: item._roxxyCatalogId || '' };
     renderMeta(selectedMeta);
     const s = await api(`/api/roxxy/streams/${encodeURIComponent(type)}/${encodeURIComponent(item.id)}`);
     renderStreams(s.streams || [], s.subtitles || []);
@@ -851,6 +1021,9 @@ async function checkTorboxCache(i) {
 }
 
 $('search-query').addEventListener('keydown', e => { if (e.key === 'Enter') loadCatalog(); });
+// Catalog filter and genre choice are client-side only; a new network search
+// starts exclusively from the Cari button (or Enter).
+$('genre-select').addEventListener('change', applyCatalogSearchFilter);
 // Always keep the header badge and TorBox panel fresh, including downloads
 // started before this page was opened. The status route is memory-only.
 setInterval(refreshRoxxyTorboxStatus, 5000);

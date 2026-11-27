@@ -138,6 +138,60 @@ class DownloaderAccelerationTests(unittest.TestCase):
         self.assertIn("--part", cmd)
         self.assertEqual(cmd[cmd.index("-o") + 1], "C:/downloads/Title.%(ext)s")
 
+    def test_ytdlp_command_hardens_network_retries(self):
+        cmd = rde._ytdlp_command("yt-dlp.exe", "C:/downloads/Title.mp4", "https://cdn.example/live.m3u8")
+        self.assertEqual(cmd[cmd.index("--retries") + 1], "10")
+        self.assertEqual(cmd[cmd.index("--retry-sleep") + 1], "2")
+        self.assertEqual(cmd[cmd.index("--socket-timeout") + 1], "20")
+        self.assertEqual(cmd[cmd.index("--throttled-rate") + 1], "100K")
+
+    def test_process_output_sanitizer_redacts_urls_and_tokens(self):
+        safe = rde._sanitize_process_line(
+            "ERROR: unable to download https://cdn.example/a?token=SECRET&expires=1"
+        )
+        self.assertNotIn("SECRET", safe)
+        self.assertNotIn("https://", safe)
+        self.assertIn("<url>", safe)
+        self.assertNotIn("SECRET", rde._sanitize_process_line("retry &token=SECRET now"))
+
+    def test_expiry_error_detector_matches_signed_link_failures(self):
+        for text in (
+            "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+            "HTTP Error 410: Gone",
+            "token expired",
+            "ERROR: unable to download fragment 1304",
+            "The read operation timed out",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(rde._looks_like_expiry_error(text))
+        self.assertFalse(rde._looks_like_expiry_error("HTTP Error 404: Not Found"))
+
+    def test_refresh_stream_url_matches_the_same_cdn_path(self):
+        payload = {"streams": [
+            {"url": "https://cdn.example/other/file.mp4?sig=old"},
+            {"url": "https://cdn.example/media/abc/video.m3u8?sig=new"},
+        ]}
+        with patch.object(rm, "_roxxy_get", return_value=payload) as fetch:
+            url = rde._refresh_stream_url(
+                {"id": "pornhub:1", "_roxxyType": "Pornhub"},
+                {"url": "https://cdn.example/media/abc/video.m3u8?sig=old"},
+            )
+        self.assertEqual(url, "https://cdn.example/media/abc/video.m3u8?sig=new")
+        self.assertIn("stream/Pornhub/", fetch.call_args.args[0])
+
+    def test_refresh_stream_url_falls_back_to_the_expected_filename(self):
+        payload = {"streams": [
+            {"url": "https://cdn.example/media/new/video.m3u8?sig=new",
+             "behaviorHints": {"filename": "Title.mp4"}},
+        ]}
+        with patch.object(rm, "_roxxy_get", return_value=payload):
+            url = rde._refresh_stream_url(
+                {"id": "pornhub:2", "type": "Pornhub"},
+                {"url": "https://cdn.example/media/old/video.m3u8?sig=old",
+                 "behaviorHints": {"filename": "Title.mp4"}},
+            )
+        self.assertEqual(url, "https://cdn.example/media/new/video.m3u8?sig=new")
+
     def test_remove_incomplete_output_drops_partial_and_control_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = os.path.join(tmp, "Title.mp4")
@@ -152,6 +206,19 @@ class DownloaderAccelerationTests(unittest.TestCase):
             self.assertFalse(os.path.exists(target + ".aria2"))
             self.assertFalse(os.path.exists(target + ".part"))
             self.assertTrue(os.path.exists(keep))
+
+    def test_remove_incomplete_output_drops_stale_fragment_temp_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "Title.mp4")
+            orphan = target + ".part-Frag1304.part"
+            with open(orphan, "wb") as fh:
+                fh.write(b"")
+            other = os.path.join(tmp, "Other.mp4.part-Frag1.part")
+            with open(other, "wb") as fh:
+                fh.write(b"x")
+            rde._remove_incomplete_output(target)
+            self.assertFalse(os.path.exists(orphan))
+            self.assertTrue(os.path.exists(other))
 
     def test_mp4_stream_is_routed_to_aria2c(self):
         class _Response:
@@ -306,10 +373,10 @@ class JobFallbackTests(unittest.TestCase):
                         fh.write(b"partial")
                     with open(target + ".aria2", "wb") as fh:
                         fh.write(b"control")
-                    return 1
+                    return 1, ""
                 with open(target, "wb") as fh:
                     fh.write(b"complete")
-                return 0
+                return 0, ""
 
             with patch.object(rde.shutil, "which", return_value="exe"), \
                  patch.object(rde, "_run_download_process", side_effect=fake_run), \
@@ -335,7 +402,7 @@ class JobFallbackTests(unittest.TestCase):
                 template = cmd[cmd.index("-o") + 1]
                 with open(template.replace("%(ext)s", "mp4"), "wb") as fh:
                     fh.write(b"new")
-                return 0
+                return 0, ""
 
             with patch.object(rde.shutil, "which", return_value="exe"), \
                  patch.object(rde, "_run_download_process", side_effect=fake_run), \
@@ -349,13 +416,53 @@ class JobFallbackTests(unittest.TestCase):
     def test_both_engines_failing_marks_job_failed(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.object(rde.shutil, "which", return_value="exe"), \
-                 patch.object(rde, "_run_download_process", return_value=1):
+                 patch.object(rde, "_run_download_process", return_value=(1, "")):
                 rde._run_job(self.job_id, "aria2c", "https://cdn.example/x", tmp, "Title.mp4")
 
             job = rde._jobs[self.job_id]
             self.assertEqual(job["status"], "failed")
             self.assertIn("aria2c: exit 1", job["message"])
             self.assertIn("yt-dlp: exit 1", job["message"])
+
+    def test_expired_link_is_refreshed_and_retried_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with rde._lock:
+                rde._jobs[self.job_id].update(
+                    meta_snapshot={"id": "pornhub:1", "_roxxyType": "Pornhub"},
+                    stream_snapshot={"url": "https://cdn.example/v?sig=old"},
+                )
+            calls = []
+
+            def fake_run(job_id, engine, cmd):
+                calls.append(cmd[-1])
+                if len(calls) == 1:
+                    return 1, "ERROR: HTTP Error 403: Forbidden"
+                with open(os.path.join(tmp, "Title.mp4"), "wb") as fh:
+                    fh.write(b"complete")
+                return 0, ""
+
+            with patch.object(rde.shutil, "which", return_value="exe"), \
+                 patch.object(rde, "_run_download_process", side_effect=fake_run), \
+                 patch.object(rde, "_refresh_stream_url", return_value="https://cdn.example/v?sig=new") as refresh, \
+                 patch.object(rde.db, "enqueue_roxxy_library_task", return_value=7):
+                rde._run_job(self.job_id, "yt-dlp", "https://cdn.example/v?sig=old", tmp, "Title.mp4")
+
+            job = rde._jobs[self.job_id]
+            self.assertEqual(job["status"], "completed")
+            self.assertEqual(calls, ["https://cdn.example/v?sig=old", "https://cdn.example/v?sig=new"])
+            refresh.assert_called_once()
+
+    def test_failure_message_keeps_the_sanitized_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.object(rde.shutil, "which", return_value="exe"), \
+                 patch.object(rde, "_run_download_process",
+                              return_value=(1, "ERROR: HTTP Error 404: Not Found <url>")):
+                rde._run_job(self.job_id, "yt-dlp", "https://cdn.example/x", tmp, "Title.mp4")
+
+            job = rde._jobs[self.job_id]
+            self.assertEqual(job["status"], "failed")
+            self.assertIn("HTTP Error 404", job["message"])
+            self.assertNotIn("https://", job["message"])
 
 
 class ProvidedSubtitleTests(unittest.TestCase):

@@ -14,7 +14,7 @@ import threading
 import subprocess
 import uuid
 from datetime import datetime
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse, unquote, quote
 from email.message import Message
 from typing import Any, Dict, List
 
@@ -236,7 +236,8 @@ def _ytdlp_command(exe: str, target: str, url: str) -> List[str]:
     return [
         exe, "--newline", "--no-playlist", "--continue", "--part",
         "--concurrent-fragments", str(YTDLP_FRAGMENT_CONCURRENCY),
-        "--fragment-retries", "10",
+        "--fragment-retries", "10", "--retries", "10", "--retry-sleep", "2",
+        "--socket-timeout", "20", "--throttled-rate", "100K",
         "--progress-template", "download:%(progress._percent_str)s",
         "-o", template, url,
     ]
@@ -284,15 +285,35 @@ def _remove_incomplete_output(target: str) -> None:
                 os.remove(path)
         except OSError:
             pass
+    # yt-dlp leaves per-fragment temp files behind when an HLS/DASH download dies.
+    directory = os.path.dirname(os.path.abspath(target))
+    prefix = os.path.basename(target) + ".part-Frag"
+    try:
+        for name in os.listdir(directory):
+            if name.startswith(prefix):
+                os.remove(os.path.join(directory, name))
+    except OSError:
+        pass
 
 
-def _run_download_process(job_id: str, engine: str, cmd: List[str]) -> int:
+def _sanitize_process_line(line: str) -> str:
+    """Return a short, token-free tail line safe to store and show in the GUI."""
+    text = re.sub(r"https?://\S+", "<url>", str(line or ""))
+    text = re.sub(
+        r"([?&](?:token|sig|signature|expires|key|auth|hdnts)=)[^\s&]+",
+        r"\1<redacted>", text, flags=re.I,
+    )
+    return text.strip()[:200]
+
+
+def _run_download_process(job_id: str, engine: str, cmd: List[str]) -> tuple:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, encoding="utf-8", errors="replace",
                             bufsize=1, creationflags=creationflags)
     with _lock:
         _jobs[job_id]["pid"] = proc.pid
+    tail: List[str] = []
     for line in proc.stdout or []:
         line = line.strip()
         pct = None
@@ -306,10 +327,71 @@ def _run_download_process(job_id: str, engine: str, cmd: List[str]) -> int:
                 pct = float(m.group(1))
         if pct is not None:
             _set(job_id, progress=max(0.0, min(100.0, pct)))
+            continue
         # Keep only a short sanitized tail; never store URL/command.
-        if line and not line.startswith(("http://", "https://")):
-            _set(job_id, message=line[:180])
-    return proc.wait()
+        safe = _sanitize_process_line(line) if line and not line.startswith(("http://", "https://")) else ""
+        if safe:
+            tail = (tail + [safe])[-6:]
+            _set(job_id, message=safe[:180])
+    return proc.wait(), (tail[-1] if tail else "")
+
+
+def _stream_path(url: str) -> str:
+    try:
+        return urlparse(str(url or "")).path
+    except Exception:
+        return ""
+
+
+def _refresh_stream_url(meta: Dict[str, Any], stream_snapshot: Dict[str, Any]) -> str:
+    """Ask Video Feeds for a freshly signed URL for the same stream.
+
+    Signed CDN links expire while a long download is still running, which is
+    the main cause of downloads that die half-way. The refresh keeps the same
+    stream by comparing the URL path first and the expected filename second.
+    """
+    meta_type = str(meta.get("_roxxyType") or meta.get("type") or "").strip()
+    meta_id = str(meta.get("id") or "").strip()
+    if not meta_type or not meta_id:
+        return ""
+    import roxxy_module  # local import: keeps module startup free of a cycle
+    data = roxxy_module._roxxy_get(
+        f"stream/{quote(meta_type, safe='')}/{quote(meta_id, safe=':')}.json"
+    )
+    streams = data.get("streams") or []
+    old_url = str(stream_snapshot.get("url") or "")
+    old_path = _stream_path(old_url)
+    old_name = str((stream_snapshot.get("behaviorHints") or {}).get("filename") or "").strip().lower()
+    candidates = []
+    for stream in streams:
+        candidate = str(stream.get("url") or "").strip()
+        if candidate.startswith(("http://", "https://")):
+            candidates.append((stream, candidate))
+    for _, candidate in candidates:
+        if old_path and _stream_path(candidate) == old_path:
+            try:
+                return _validate_http_url(candidate)
+            except Exception:
+                continue
+    if old_name:
+        for stream, candidate in candidates:
+            hints = stream.get("behaviorHints") or {}
+            name = str(hints.get("filename") or stream.get("filename") or "").strip().lower()
+            if name == old_name:
+                try:
+                    return _validate_http_url(candidate)
+                except Exception:
+                    continue
+    return ""
+
+
+def _looks_like_expiry_error(text: str) -> bool:
+    """Transient CDN failures worth one fresh-link retry: expiry, 403/410, drops."""
+    return bool(re.search(
+        r"http error (401|403|410)|expired|forbidden|gone|token|"
+        r"unable to download fragment|timeout|timed out|connection (reset|aborted)",
+        text or "", re.I,
+    ))
 
 
 def _validate_completed_file(path: str) -> Dict[str, Any]:
@@ -655,9 +737,24 @@ def _run_job(job_id: str, engine: str, url: str, output_dir: str, filename: str,
                     target = f"{stem} ({n}){ext}"
                     n += 1
             _set(job_id, target_path=target)
+            if resume:
+                # A manual retry may reuse a signed URL that has already expired;
+                # resolve a fresh link for the same stream when possible.
+                try:
+                    with _lock:
+                        meta_snapshot = dict(_jobs.get(job_id, {}).get("meta_snapshot") or {})
+                        stream_snapshot = dict(_jobs.get(job_id, {}).get("stream_snapshot") or {})
+                    refreshed = _refresh_stream_url(meta_snapshot, stream_snapshot)
+                except Exception:
+                    refreshed = ""
+                if refreshed:
+                    url = refreshed
+                    _set(job_id, url=url, message="Tautan CDN diperbarui; melanjutkan download.")
             attempted: List[str] = []
             final_engine = engine
             succeeded = False
+            last_tail = ""
+            last_engine = ""
             plan = _engine_sequence(engine)
             for index, current in enumerate(plan):
                 exe = shutil.which(current)
@@ -672,16 +769,45 @@ def _run_job(job_id: str, engine: str, url: str, output_dir: str, filename: str,
                     _set(job_id, progress=0.0, message=f"{plan[index - 1]} gagal, mencoba {current}.")
                 _set(job_id, engine_active=current)
                 cmd = _engine_command(current, exe, target, output_dir, url)
-                exit_code = _run_download_process(job_id, current, cmd)
+                exit_code, tail = _run_download_process(job_id, current, cmd)
+                last_engine = current
                 if exit_code == 0:
                     final_engine = current
                     succeeded = True
                     break
-                attempted.append(f"{current}: exit {exit_code}")
-                _set(job_id, message=f"{current} gagal dengan exit code {exit_code}.")
+                last_tail = tail or last_tail
+                detail = f" — {tail[:90]}" if tail else ""
+                attempted.append(f"{current}: exit {exit_code}{detail}")
+                _set(job_id, message=(f"{current} gagal (exit {exit_code}){detail}")[:250])
+
+            if not succeeded and _looks_like_expiry_error(last_tail):
+                # Signed CDN links expire while a long download is still running.
+                # Ask Video Feeds for a fresh link and resume once before giving up.
+                try:
+                    with _lock:
+                        meta_snapshot = dict(_jobs.get(job_id, {}).get("meta_snapshot") or {})
+                        stream_snapshot = dict(_jobs.get(job_id, {}).get("stream_snapshot") or {})
+                    refreshed = _refresh_stream_url(meta_snapshot, stream_snapshot)
+                except Exception as refresh_exc:
+                    refreshed = ""
+                    attempted.append(f"refresh tautan: {str(refresh_exc)[:80]}")
+                exe = shutil.which(last_engine) if refreshed else None
+                if refreshed and exe:
+                    _set(job_id, progress=0.0, engine_active=last_engine,
+                         message="Tautan CDN kedaluwarsa; mencoba ulang dengan tautan baru.")
+                    cmd = _engine_command(last_engine, exe, target, output_dir, refreshed)
+                    exit_code, tail = _run_download_process(job_id, last_engine, cmd)
+                    if exit_code == 0:
+                        final_engine = last_engine
+                        succeeded = True
+                    else:
+                        detail = f" — {tail[:90]}" if tail else ""
+                        attempted.append(f"{last_engine} (tautan baru): exit {exit_code}{detail}")
+                        last_tail = tail or last_tail
 
             if not succeeded:
-                raise RuntimeError("; ".join(attempted) or "Tidak ada downloader lokal yang tersedia.")
+                last_error = attempted[-1] if attempted else "Tidak ada downloader lokal yang tersedia."
+                raise RuntimeError(("; ".join(attempted) or last_error)[:240])
 
             _set(job_id, status="completed", progress=100.0, message="Download selesai.",
                  completed_at=datetime.now().isoformat(timespec="seconds"), engine_active=final_engine)
