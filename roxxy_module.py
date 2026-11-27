@@ -71,7 +71,12 @@ ROXXY_SOURCE_LABELS = {
 }
 # Category enforced for downloads that come from a dedicated addon. The
 # IndonesiaMovies addon always lands in "indo_movie"; the adult and Donghua
-# addons reuse the existing categories.
+# addons reuse the existing categories. JAV is deliberately absent: the JAV
+# Library surface requires a verified production code (D3 refuses a "jav" row
+# without one) and JAV catalogues also publish code-less leaks. A JAV download
+# is therefore filed as "jav" only when the classifier extracts that code;
+# otherwise the Indo/English Adult evidence decides, and a non-adult verdict is
+# left uncategorized for review instead of being filed as a family title.
 ROXXY_SOURCE_CATEGORIES = {
     "english_adult": "english_adult",
     "onlyfans": "english_adult",
@@ -114,6 +119,19 @@ def _canonical_source(source: str) -> str:
     value = str(source or "").strip().lower()
     value = ROXXY_SOURCE_ALIASES.get(value, value)
     return value if value in ROXXY_SOURCES else "english_adult"
+
+
+def source_category(source: str) -> str:
+    """Category a manifest selector declares, including the legacy aliases.
+
+    Returns an empty string for JAV (code-verified instead) and for anything
+    that is not a known selector, so an unknown payload value can never be
+    filed as English Adult by the default in ``_canonical_source``.
+    """
+    value = str(source or "").strip().lower()
+    if value not in ROXXY_ALL_SOURCES:
+        return ""
+    return ROXXY_SOURCE_CATEGORIES.get(_canonical_source(value), "")
 
 
 def _manifest_url(source: str = "main") -> str:

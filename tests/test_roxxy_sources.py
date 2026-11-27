@@ -2,6 +2,7 @@
 import base64
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -474,10 +475,178 @@ class ManifestCategoryLockTests(unittest.TestCase):
             )
             resolve.assert_called_once()
 
+    def test_empty_category_uses_the_manifest_selector(self):
+        with patch.object(app_module, "_resolve_import_category") as resolve:
+            self.assertEqual(
+                app_module._apply_manifest_category_lock(
+                    "", {"name": "Soul Land", "_roxxySource": "donghua"}, "05.mkv"
+                ),
+                "donghua",
+            )
+            self.assertEqual(
+                app_module._apply_manifest_category_lock(
+                    "", {"name": "Massage", "_roxxySource": "onlyfans"}, "a.mp4"
+                ),
+                "english_adult",
+            )
+            resolve.assert_not_called()
+
+    def test_manifest_selector_wins_over_a_stale_client_category(self):
+        self.assertEqual(
+            app_module._apply_manifest_category_lock(
+                "english_adult",
+                {"name": "Film Indonesia", "_roxxySource": "indo_movie"},
+                "film.mkv",
+            ),
+            "indo_movie",
+        )
+
+    def test_jav_is_not_provenance_locked(self):
+        # Decision: the JAV Library needs a verified production code, so the
+        # addon selector alone cannot file a code-less title as JAV.
+        self.assertNotIn("jav", app_module._MANIFEST_LOCKED_CATEGORIES)
+        self.assertEqual(rm.source_category("jav"), "")
+        with patch.object(app_module, "_resolve_import_category", return_value="jav") as resolve:
+            self.assertEqual(
+                app_module._apply_manifest_category_lock(
+                    "", {"name": "SSIS-123", "_roxxySource": "jav"}, "SSIS-123.mkv"
+                ),
+                "jav",
+            )
+            resolve.assert_called_once()
+
+    def test_adult_only_addon_never_lands_in_a_family_category(self):
+        with patch.object(app_module, "_resolve_import_category", return_value="tv_show"):
+            self.assertEqual(
+                app_module._apply_manifest_category_lock(
+                    "", {"name": "Uncensored Leak", "_roxxySource": "jav"}, "E01.mkv"
+                ),
+                "uncategorized",
+            )
+
     def test_unknown_category_falls_back_to_uncategorized(self):
         self.assertEqual(
             app_module._apply_manifest_category_lock("bogus", {}, ""),
             "uncategorized",
+        )
+
+
+class ReimportCategoryLockTests(unittest.TestCase):
+    """A second classification pass must not undo the manifest category."""
+
+    @staticmethod
+    def _verdict(category):
+        return {
+            "classification_status": "classified",
+            "detected_category": category,
+            "classification_method": "provider_media_type_series",
+            "category_confidence": 94,
+            "signals": [],
+            "warnings": [],
+        }
+
+    def test_donghua_import_stays_donghua(self):
+        guarded = app_module._guard_adult_reclassification(
+            {"content_category": "donghua"}, self._verdict("tv_show")
+        )
+        self.assertEqual(guarded["classification_status"], "needs_review")
+        self.assertIsNone(guarded["detected_category"])
+        self.assertTrue(guarded["warnings"])
+
+    def test_indo_movie_import_stays_indo_movie(self):
+        guarded = app_module._guard_adult_reclassification(
+            {"content_category": "indo_movie"}, self._verdict("general_movie")
+        )
+        self.assertEqual(guarded["classification_status"], "needs_review")
+        self.assertIsNone(guarded["detected_category"])
+
+    def test_english_adult_can_still_be_promoted_to_indo(self):
+        guarded = app_module._guard_adult_reclassification(
+            {"content_category": "english_adult"}, self._verdict("indo")
+        )
+        self.assertEqual(guarded["detected_category"], "indo")
+        self.assertEqual(guarded["classification_status"], "classified")
+
+    def test_uncategorized_jav_import_is_not_refiled_as_family(self):
+        guarded = app_module._guard_adult_reclassification(
+            {"content_category": "uncategorized"},
+            self._verdict("tv_show"),
+            source="jav",
+        )
+        self.assertEqual(guarded["classification_status"], "needs_review")
+        self.assertIsNone(guarded["detected_category"])
+
+    def test_adult_source_check_needs_the_selector(self):
+        guarded = app_module._guard_adult_reclassification(
+            {"content_category": "uncategorized"}, self._verdict("tv_show")
+        )
+        self.assertEqual(guarded["detected_category"], "tv_show")
+
+
+class ImportHintSourceTests(unittest.TestCase):
+    def test_known_addon_selector_survives_sanitising(self):
+        cleaned = app_module._sanitize_import_metadata(
+            {"name": "Film", "_roxxySource": " Indo_Movie ", "signed_url": "x"}
+        )
+        self.assertEqual(cleaned["_roxxySource"], "indo_movie")
+        self.assertNotIn("signed_url", cleaned)
+
+    def test_unknown_selector_is_dropped(self):
+        cleaned = app_module._sanitize_import_metadata({"name": "Film", "_roxxySource": "../../evil"})
+        self.assertNotIn("_roxxySource", cleaned)
+
+
+class LocalIdentifyCategoryTests(unittest.TestCase):
+    """D2 classification uses the same one-definition source policy."""
+
+    @staticmethod
+    def _classification(category, code=None):
+        return {
+            "classification_status": "classified",
+            "detected_category": category,
+            "classification_method": "provider_media_type_series",
+            "category_confidence": 94,
+            "signals": [],
+            "warnings": [],
+            "detected_code": code,
+        }
+
+    def test_donghua_source_forces_the_addon_category(self):
+        with patch.object(
+            engine.classification_engine,
+            "classify_media",
+            return_value=self._classification("tv_show"),
+        ):
+            result = engine._identify_roxxy_media(
+                {
+                    "file_path": "Soul.Land.S01E03.mkv",
+                    "metadata": {"name": "Soul Land", "_roxxySource": "donghua"},
+                },
+                {"size": 10},
+            )
+        identification = result["validation"]["d2_identification"]
+        self.assertEqual(identification["category"], "donghua")
+        self.assertEqual(identification["classification_method"], "roxxy_source_donghua")
+        self.assertEqual(result["status"], "identified")
+
+    def test_jav_source_stays_code_verified(self):
+        with patch.object(
+            engine.classification_engine,
+            "classify_media",
+            return_value=self._classification("jav", code=None),
+        ):
+            result = engine._identify_roxxy_media(
+                {
+                    "file_path": "Uncensored.Leak.mp4",
+                    "metadata": {"name": "Uncensored Leak", "_roxxySource": "jav"},
+                },
+                {"size": 10},
+            )
+        identification = result["validation"]["d2_identification"]
+        self.assertEqual(identification["category"], "jav")
+        self.assertEqual(result["status"], "needs_review")
+        self.assertTrue(
+            any("verified production code" in warning for warning in identification["warnings"])
         )
 
 
@@ -497,6 +666,15 @@ class RoxxyTemplateAnalysisTests(unittest.TestCase):
         self.assertIn("JSON.stringify({ magnets })", self.template)
         self.assertIn("queueTorboxCacheCheck(i)", self.template)
         self.assertNotIn("checkTorboxCache(i);", self.template)
+
+    def test_ui_source_category_map_matches_the_server_policy(self):
+        # The server re-derives the category from `_roxxySource`; if the UI map
+        # drifts it must drift in the same direction. JAV stays absent.
+        match = re.search(r"const map = \{([^}]*)\};", self.template)
+        self.assertIsNotNone(match)
+        pairs = dict(re.findall(r"(\w+): '([^']*)'", match.group(1)))
+        self.assertEqual(pairs, rm.ROXXY_SOURCE_CATEGORIES)
+        self.assertNotIn("jav", pairs)
 
     def test_catalog_filter_has_its_own_dropdown(self):
         self.assertIn('id="catalog-filter-select"', self.template)

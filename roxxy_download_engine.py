@@ -442,17 +442,6 @@ def _validate_completed_file(path: str) -> Dict[str, Any]:
     return {"valid": True, "extension": ext, "size": second, "mtime": os.path.getmtime(path)}
 
 
-# Downloads from a dedicated addon keep that addon's category even when the
-# title alone would classify differently (e.g. IndonesiaMovies is always
-# "indo_movie"). JAV still requires a verified production code.
-ROXXY_SOURCE_CATEGORIES = {
-    "english_adult": "english_adult",
-    "onlyfans": "english_adult",
-    "indo_movie": "indo_movie",
-    "donghua": "donghua",
-}
-
-
 def _identify_roxxy_media(task: Dict[str, Any], validation: Dict[str, Any]) -> Dict[str, Any]:
     """D2: classify the downloaded title and detect a verified JAV duplicate."""
     metadata = task.get("metadata") or {}
@@ -468,7 +457,10 @@ def _identify_roxxy_media(task: Dict[str, Any], validation: Dict[str, Any]) -> D
         metadata=metadata,
     )
     source = str(metadata.get("_roxxySource") or "").strip().lower()
-    forced_category = ROXXY_SOURCE_CATEGORIES.get(source)
+    # One policy definition for every path; JAV is absent on purpose and stays
+    # code-verified (see ROXXY_SOURCE_CATEGORIES in roxxy_module).
+    import roxxy_module  # local import: keeps module startup free of a cycle
+    forced_category = roxxy_module.source_category(source)
     if forced_category:
         classification = dict(classification)
         classification["detected_category"] = forced_category

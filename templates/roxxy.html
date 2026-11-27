@@ -1103,6 +1103,9 @@ function downloadMeta() {
   };
 }
 
+// The server re-derives the category from `_roxxySource` before saving, so this
+// map only makes older payloads explicit. JAV is absent on purpose: a JAV
+// download is filed by its verified production code, not by the addon.
 function roxxyCategory(meta) {
   const source = String(meta?._roxxySource || '').toLowerCase();
   const map = { english_adult: 'english_adult', onlyfans: 'english_adult', indo_movie: 'indo_movie', donghua: 'donghua' };

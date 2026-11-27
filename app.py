@@ -30,7 +30,13 @@ import dual_subtitle_engine as dual_subs
 import subtitle_quality_audit as subtitle_audit
 import platform_support as platform_env
 import webdl_resolver as webdl
-from roxxy_module import invalidate_library_index, roxxy_bp
+from roxxy_module import (
+    ROXXY_ALL_SOURCES,
+    ROXXY_SOURCE_CATEGORIES,
+    invalidate_library_index,
+    roxxy_bp,
+    source_category,
+)
 
 APP_VERSION = "v1.3D9"  # single source of truth; templates render this
 
@@ -661,6 +667,11 @@ def _sanitize_import_metadata(raw: Any) -> Dict[str, Any]:
             items = [str(v).strip()[:200] for v in value if isinstance(v, (str, int, float)) and str(v).strip()]
             if items:
                 out[key] = items[:20]
+    # The addon a download came from decides its category, so the sanitized
+    # hint must keep the selector; only known values are accepted.
+    source = str(raw.get("_roxxySource") or "").strip().lower()
+    if source in ROXXY_ALL_SOURCES:
+        out["_roxxySource"] = source
     return out
 
 
@@ -780,8 +791,18 @@ _ADULT_CATEGORIES = {"jav", "english_adult", "indo"}
 _NON_ADULT_CATEGORIES = {"general_movie", "tv_show", "anime", "donghua", "indo_movie"}
 # Categories fixed by the Roxxy addon a download came from. The hint classifier
 # must not override them, otherwise an IndonesiaMovies title could land in Indo
-# and a Donghua episode could become a plain TV show.
-_MANIFEST_LOCKED_CATEGORIES = {"english_adult", "indo_movie", "donghua"}
+# and a Donghua episode could become a plain TV show. JAV is not in this set:
+# its Library surface needs a verified production code, so the source alone
+# cannot decide the category (see roxxy_module.ROXXY_SOURCE_CATEGORIES).
+_MANIFEST_LOCKED_CATEGORIES = set(ROXXY_SOURCE_CATEGORIES.values())
+# Non-adult addon categories are sticky in every automatic pass. The adult
+# addons stay refinable: an Indonesian file name may correctly promote an
+# English Adult import to Indo, while a demotion to a non-adult category is
+# already blocked above.
+_STICKY_MANIFEST_CATEGORIES = {"indo_movie", "donghua"}
+# Addons that only publish adult titles. A non-adult verdict for these sources
+# is treated as a classifier miss instead of filing porn as a family title.
+_ADULT_MANIFEST_SOURCES = {"jav"}
 
 
 def _apply_manifest_category_lock(
@@ -793,29 +814,46 @@ def _apply_manifest_category_lock(
     """Keep an addon-defined category, otherwise let the hint re-classify.
 
     English Adult/OnlyFans, IndonesiaMovies and Donghua downloads keep the
-    category their manifest defines; only unspecific submissions are classified
-    from the stored hint. Unknown categories fall back to ``uncategorized``.
+    category their manifest declares, and the manifest wins over a stale client
+    value. JAV is deliberately not provenance-locked: its Library surface needs
+    a verified production code, so a JAV title becomes "jav" only when the
+    classifier extracts one; a non-adult verdict for that adult-only addon is
+    left uncategorized for review. Unknown categories fall back to
+    ``uncategorized``.
     """
     category = str(category or "").strip()
-    if hint_metadata and category not in _MANIFEST_LOCKED_CATEGORIES:
+    source = str((hint_metadata or {}).get("_roxxySource") or "").strip().lower()
+    declared = source_category(source)
+    if declared:
+        category = declared
+    elif hint_metadata and category not in _MANIFEST_LOCKED_CATEGORIES:
         category = _resolve_import_category(
             category,
             hint_metadata,
             expected_filename,
             parent_name,
         )
+        if source in _ADULT_MANIFEST_SOURCES and category in _NON_ADULT_CATEGORIES:
+            category = "uncategorized"
     if category not in db.VALID_CATEGORIES:
         category = "uncategorized"
     return category
 
 
-def _guard_adult_reclassification(item: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
-    """Never strip an adult category because weaker evidence appeared later.
+def _guard_adult_reclassification(
+    item: Dict[str, Any],
+    result: Dict[str, Any],
+    source: str = "",
+) -> Dict[str, Any]:
+    """Never strip an adult addon category because weaker evidence appeared later.
 
     Reclassification runs from stored media fields, which can be thinner than the
-    original provider metadata. An Indo item is never demoted, and an adult item
-    is never moved into a non-adult category; both cases become Needs Review while
-    the previous category stays visible.
+    original provider metadata. An Indo item is never demoted, an adult item is
+    never moved into a non-adult category, and IndonesiaMovies/Donghua titles
+    keep their addon category in every automatic pass. Each of those cases
+    becomes Needs Review while the previous category stays visible; only a
+    manual classification may move them elsewhere. ``source`` is the Roxxy addon
+    the download came from, when it is still known.
     """
     old_category = str(item.get("content_category") or "uncategorized")
     new_category = result.get("detected_category")
@@ -823,15 +861,24 @@ def _guard_adult_reclassification(item: Dict[str, Any], result: Dict[str, Any]) 
         return result
     demoted_indo = old_category == "indo" and new_category != "indo"
     demoted_adult = old_category in _ADULT_CATEGORIES and new_category in _NON_ADULT_CATEGORIES
-    # IndonesiaMovies downloads are always filed under that category, even when
-    # a filename-only reclassification suggests something else.
-    demoted_roxxy_movie = old_category == "indo_movie" and new_category != "indo_movie"
-    if demoted_indo or demoted_adult or demoted_roxxy_movie:
+    # Download categories defined by a Roxxy manifest are authoritative: a
+    # Donghua episode must not turn into a plain TV show just because the file
+    # name looks episodic.
+    demoted_manifest = (
+        old_category in _STICKY_MANIFEST_CATEGORIES and new_category != old_category
+    )
+    # An adult-only addon never publishes a family title, so a non-adult verdict
+    # for one of its downloads is a classifier miss, not a correction.
+    misclassified_adult_source = (
+        str(source or "").strip().lower() in _ADULT_MANIFEST_SOURCES
+        and new_category in _NON_ADULT_CATEGORIES
+    )
+    if demoted_indo or demoted_adult or demoted_manifest or misclassified_adult_source:
         guarded = dict(result)
         guarded["classification_status"] = "needs_review"
         guarded["detected_category"] = None
         guarded["warnings"] = list(result.get("warnings") or []) + [
-            "Reclassification suggested a weaker category; the previous adult category was kept for review."
+            "Reclassification suggested a weaker category; the previous addon category was kept for review."
         ]
         return guarded
     return result
@@ -1213,6 +1260,7 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
         verdict = _guard_adult_reclassification(
             {"content_category": entry.get("content_category") or "uncategorized"},
             verdict,
+            source=hint_metadata.get("_roxxySource") or "",
         )
         try:
             saved_item = db.save_classification_result(
@@ -1391,9 +1439,11 @@ def _classify_pending_worker() -> None:
                 elif (
                     result.get("classification_status") == "classified"
                     and result.get("detected_category") == "indo"
+                    and old_category not in _STICKY_MANIFEST_CATEGORIES
                 ):
                     # Recover an Indo item that was stored in another bucket, but
-                    # never move a non-Indo row between non-adult categories.
+                    # never move a non-Indo row between non-adult categories and
+                    # never move a manifest category (IndonesiaMovies/Donghua).
                     saved = db.save_classification_result(
                         int(item["id"]), result,
                         changed_by="classifier",
