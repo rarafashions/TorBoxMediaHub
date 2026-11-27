@@ -761,6 +761,7 @@
     let activeMediaId = null;
     let playlistScope = "unassigned";
     let searchTimer = null;
+    let mediaRequestSeq = 0;
     let taskPollTimer = null;
     let torboxWatchTimer = null;
     let isTaskRunning = false;
@@ -1892,7 +1893,7 @@
         } else {
           loadMedia();
         }
-      }, 280);
+      }, 420);
     }
 
     function handleCategoryChange() {
@@ -1955,15 +1956,33 @@
           startTorboxWatchPolling();
         }
       } catch (e) {}
+
+      // Deep link dari GUI v2: /?discover=1 langsung membuka Discovery Hub.
+      try {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get("discover") === "1") {
+          openDiscoveryModal();
+          params.delete("discover");
+          const qs = params.toString();
+          history.replaceState(null, "", `${window.location.pathname}${qs ? `?${qs}` : ""}`);
+        }
+      } catch (e) {}
     }
 
     async function loadMedia() {
-      const res = await fetch(`/api/media?${buildFilterQuery()}`);
-      const data = await res.json();
-      if (!data.ok) return;
-      updateStats(data.stats);
-      allItems = data.items || [];
-      renderLibraryView();
+      const seq = ++mediaRequestSeq;
+      try {
+        const res = await fetch(`/api/media?${buildFilterQuery()}`);
+        const data = await res.json();
+        // Abaikan respons lama bila pengguna sudah mengetik pencarian berikutnya.
+        if (seq !== mediaRequestSeq) return;
+        if (!data.ok) return;
+        updateStats(data.stats);
+        allItems = data.items || [];
+        renderLibraryView();
+      } catch (e) {
+        if (seq === mediaRequestSeq) console.warn("loadMedia gagal:", e);
+      }
     }
 
     function groupItemsBySeries(items) {

@@ -112,8 +112,12 @@
     return CATEGORY_LABEL[cat] || "Lainnya";
   }
 
-  function posterUrl(id) {
-    return `/api/media/${id}/poster`;
+  function posterUrl(item) {
+    const id = item && typeof item === "object" ? item.id : item;
+    const version = item && typeof item === "object" ? item.updated_at || "" : "";
+    return version
+      ? `/api/media/${id}/poster?v=${encodeURIComponent(version)}`
+      : `/api/media/${id}/poster`;
   }
 
   /* ------------------------------ Toast --------------------------------- */
@@ -137,6 +141,8 @@
 
   /* ------------------------------ API ----------------------------------- */
 
+  let loadController = null;
+
   async function api(path, options) {
     const res = await fetch(path, options);
     let data = null;
@@ -151,14 +157,21 @@
     return data;
   }
 
-  async function load(query) {
+  async function load(query, options) {
+    const opts = options || {};
+    if (loadController) loadController.abort();
+    const controller = new AbortController();
+    loadController = controller;
+
     state.loading = true;
-    renderSkeleton();
+    // Pencarian memakai skeleton: false agar grid lama tidak berkedip.
+    if (opts.skeleton !== false) renderSkeleton();
     try {
       const params = new URLSearchParams();
       if (query) params.set("search", query);
       params.set("playlist_scope", "all");
-      const data = await api(`/api/bootstrap?${params.toString()}`);
+      const data = await api(`/api/bootstrap?${params.toString()}`, { signal: controller.signal });
+      if (controller.signal.aborted) return;
       state.items = Array.isArray(data.items) ? data.items : [];
       state.playlists = data.playlists || [];
       state.stats = data.stats || null;
@@ -167,8 +180,11 @@
       state.loading = false;
       render();
     } catch (err) {
+      if (err.name === "AbortError" || controller.signal.aborted) return;
       state.loading = false;
       renderError(err.message);
+    } finally {
+      if (loadController === controller) loadController = null;
     }
   }
 
@@ -211,7 +227,7 @@
       { class: "billboard", "aria-label": "Sorotan utama" },
       el("div", {
         class: "billboard__art",
-        style: item.has_poster ? `background-image:url('${posterUrl(item.id)}')` : "",
+        style: item.has_poster ? `background-image:url('${posterUrl(item)}')` : "",
       }),
       el("div", { class: "billboard__scrim" }),
       el(
@@ -259,7 +275,7 @@
         alt: "",
         loading: "lazy",
         decoding: "async",
-        src: posterUrl(item.id),
+        src: posterUrl(item),
       });
       img.addEventListener("load", () => img.classList.add("is-loaded"));
       img.addEventListener("error", () => img.remove());
@@ -521,7 +537,7 @@
 
     state.detailId = Number(item.id);
     const poster = item.has_poster
-      ? el("img", { class: "detail__poster", alt: "", src: posterUrl(item.id) })
+      ? el("img", { class: "detail__poster", alt: "", src: posterUrl(item) })
       : el("div", { class: "detail__poster card__fallback", text: initials(item.title || item.file_name) });
 
     const metaRow = el("div", { class: "detail__meta" });
@@ -547,7 +563,7 @@
         { class: "detail__hero" },
         el("div", {
           class: "detail__art",
-          style: item.has_poster ? `background-image:url('${posterUrl(item.id)}')` : "",
+          style: item.has_poster ? `background-image:url('${posterUrl(item)}')` : "",
         }),
         el("div", { class: "detail__scrim" }),
         el(
@@ -683,9 +699,12 @@
       input.addEventListener("input", () => {
         clearTimeout(timer);
         timer = setTimeout(() => {
-          state.query = input.value.trim();
-          load(state.query);
-        }, 320);
+          const next = input.value.trim();
+          // Hindari fetch ulang bila kata kunci belum berubah.
+          if (next === state.query) return;
+          state.query = next;
+          load(state.query, { skeleton: false });
+        }, 420);
       });
       input.addEventListener("keydown", (ev) => {
         if (ev.key === "Escape") {
