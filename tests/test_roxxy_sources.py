@@ -205,5 +205,34 @@ class IndonesiaMovieGuardTests(unittest.TestCase):
         self.assertIsNone(result["detected_category"])
 
 
+class RoxxyTemplateGenreTests(unittest.TestCase):
+    """The /roxxy template drives genre reloads and all-catalog search."""
+
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates", "roxxy.html")
+        with open(path, encoding="utf-8") as fh:
+            cls.template = fh.read()
+
+    def test_genre_change_reloads_catalog_from_addon(self):
+        self.assertIn("$('genre-select').addEventListener('change', applyGenreSelection)", self.template)
+        self.assertIn("async function fetchCatalogPage(reset = false)", self.template)
+        self.assertIn("fetchCatalogPage(true)", self.template)
+
+    def test_required_genre_defaults_to_first_option(self):
+        self.assertIn("required ? (options[0] || '')", self.template)
+
+    def test_single_object_extra_is_normalized(self):
+        self.assertIn("Array.isArray(c?.extra) ? c.extra : (c?.extra ? [c.extra] : [])", self.template)
+
+    def test_all_search_only_contacts_searchable_catalogs(self):
+        self.assertIn("if (query && catalogSupportsSearch(catalog)) p.set('search', query)", self.template)
+        self.assertIn("activeCatalogs().filter(catalogSupportsSearch)", self.template)
+        self.assertIn("searchableCatalogs()", self.template)
+
+    def test_all_search_sends_required_genre(self):
+        self.assertIn("fetchOneCatalog(c, st.skip, state.query, catalogRequiredGenre(c))", self.template)
+
+
 if __name__ == "__main__":
     unittest.main()

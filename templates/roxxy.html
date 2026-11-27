@@ -539,7 +539,7 @@ function renderCatalogSearchSummary(state) {
   if (!select || !state) return;
   const current = select.value || '';
   const total = (window._roxxyItems || []).length;
-  const active = activeCatalogs();
+  const active = (state.catalogs && state.catalogs.length) ? state.catalogs : activeCatalogs();
   const pending = active.some(c => {
     const st = state.status[catalogKey(c)] || {};
     return !st.state || st.state === 'pending';
@@ -560,11 +560,29 @@ function renderCatalogSearchSummary(state) {
   }
 }
 
+// Manifest extras are normally an array, but some addons emit a single object
+// (`"extra":{"name":"skip"}`); every helper normalizes before searching.
+function catalogExtras(c) {
+  return Array.isArray(c?.extra) ? c.extra : (c?.extra ? [c.extra] : []);
+}
+
+function catalogExtra(c, name) {
+  return catalogExtras(c).find(x => x && x.name === name) || null;
+}
+
+function catalogSupportsSearch(c) {
+  return !!catalogExtra(c, 'search');
+}
+
+function catalogRequiredGenre(c) {
+  const extra = catalogExtra(c, 'genre');
+  if (!extra || !extra.isRequired) return '';
+  const options = Array.isArray(extra.options) ? extra.options : [];
+  return options[0] || '';
+}
+
 function populateSelectedCatalogGenres(c, keep = '') {
-  // Manifest extras are normally an array, but some addons emit a single
-  // object (`"extra":{"name":"skip"}`); normalize before searching.
-  const extras = Array.isArray(c?.extra) ? c.extra : (c?.extra ? [c.extra] : []);
-  const extra = extras.find(x => x && x.name === 'genre');
+  const extra = catalogExtra(c, 'genre');
   const options = Array.isArray(extra?.options) ? extra.options : [];
   const required = !!extra?.isRequired;
   // A required genre (e.g. MissAV) must be sent on the first load; otherwise
@@ -649,7 +667,9 @@ function updateLoadMoreButton() {
 async function fetchOneCatalog(catalog, skip, query, genre) {
   const p = new URLSearchParams();
   p.set('skip', String(skip));
-  if (query) p.set('search', query);
+  // Addons that do not declare a `search` extra reject the extra path segment
+  // (MissAV answers 502), so only send the query where it is supported.
+  if (query && catalogSupportsSearch(catalog)) p.set('search', query);
   if (genre) p.set('genre', genre);
   // Each addon has its own token manifest, so the request must say which one.
   p.set('source', catalog.source || 'english_adult');
@@ -664,8 +684,17 @@ async function fetchOneCatalog(catalog, skip, query, genre) {
   }));
 }
 
+function searchableCatalogs() {
+  return activeCatalogs().filter(catalogSupportsSearch);
+}
+
 function newAllSearchState(query) {
-  return { query, requestId: roxxyCatalogRequest, status: {}, done: 0, seen: new Set() };
+  // Only catalogs that declare a `search` extra can answer an all-catalog
+  // search; lists such as MissAV/Jable categories do not and answer 502.
+  return {
+    query, requestId: roxxyCatalogRequest, status: {}, done: 0, seen: new Set(),
+    catalogs: searchableCatalogs(),
+  };
 }
 
 function allSearchHasMore(state) {
@@ -684,14 +713,25 @@ function appendAllSearchItems(state, fresh) {
 }
 
 async function fetchAllCatalogsProgressive(state) {
-  const list = activeCatalogs();
-  const total = list.length;
+  const list = (state && Array.isArray(state.catalogs) && state.catalogs.length)
+    ? state.catalogs
+    : activeCatalogs().filter(catalogSupportsSearch);
   if (!list.length) {
-    setCatalogSearchProgress(100, 'Manifest belum dimuat.');
+    setCatalogSearchProgress(100, 'Tidak ada katalog dengan dukungan pencarian di addon ini.');
     return;
   }
+  // "Load more" only asks catalogs that have not already returned a short page.
+  const queue = list.filter(c => {
+    const st = state.status[catalogKey(c)];
+    return !st || !st.exhausted;
+  });
+  if (!queue.length) {
+    setCatalogSearchProgress(100, 'Semua katalog sudah habis.');
+    return;
+  }
+  const total = queue.length;
   state.done = 0;
-  list.forEach(c => {
+  queue.forEach(c => {
     const key = catalogKey(c);
     const st = state.status[key] || (state.status[key] = {
       key, type: c.type, id: String(c.id), name: c.name, count: 0, skip: 0, exhausted: false,
@@ -703,10 +743,11 @@ async function fetchAllCatalogsProgressive(state) {
   setCatalogSearchProgress(2, `Mencari di ${total} katalog secara paralel…`);
   // No artificial batch limit: every catalog is requested at once, and each
   // response is appended immediately so fast providers are visible right away.
-  const tasks = list.map(async c => {
+  const tasks = queue.map(async c => {
     const st = state.status[catalogKey(c)];
     try {
-      const items = await fetchOneCatalog(c, st.skip, state.query, '');
+      // Required genres (e.g. MissAV) must be supplied even during a search.
+      const items = await fetchOneCatalog(c, st.skip, state.query, catalogRequiredGenre(c));
       if (state.requestId !== roxxyCatalogRequest) {
         st.state = 'ok';
         return;
@@ -758,6 +799,13 @@ async function fetchCatalogPage(reset = false) {
     roxxyHasMore = false;
     $('catalog-results').innerHTML = '<div data-search-placeholder class="col-span-full py-12 text-center text-sm text-slate-500">Memuat katalog…</div>';
   }
+  if (allMode && !searchableCatalogs().length) {
+    $('catalog-results').innerHTML = '<div class="col-span-full py-12 text-center text-sm text-slate-500">Addon ini belum punya katalog dengan dukungan pencarian.</div>';
+    setStatus('Tidak ada katalog pencarian di addon ini.');
+    finishCatalogSearchProgress('Tidak ada katalog pencarian.');
+    updateLoadMoreButton();
+    return;
+  }
   const requestId = roxxyCatalogRequest;
   roxxyPageLoading = true;
   updateLoadMoreButton();
@@ -771,7 +819,7 @@ async function fetchCatalogPage(reset = false) {
         // as it arrives, so slow providers never block fast ones.
         roxxySearchAllState = newAllSearchState(query);
         renderCatalogSearchSummary(roxxySearchAllState);
-        setStatus(`Mencari "${query}" di ${active.length} katalog secara paralel…`);
+        setStatus(`Mencari "${query}" di ${roxxySearchAllState.catalogs.length} katalog secara paralel…`);
         await fetchAllCatalogsProgressive(roxxySearchAllState);
       } else {
         // Load more: request the next page from every catalog that still has results.
@@ -785,7 +833,7 @@ async function fetchCatalogPage(reset = false) {
       if (!window._roxxyItems.length) {
         $('catalog-results').innerHTML = '<div class="col-span-full py-12 text-center text-sm text-slate-500">Tidak ada hasil katalog ditemukan.</div>';
       }
-      const failed = active.filter(c => (roxxySearchAllState.status[catalogKey(c)] || {}).state === 'error').length;
+      const failed = (roxxySearchAllState.catalogs || active).filter(c => (roxxySearchAllState.status[catalogKey(c)] || {}).state === 'error').length;
       const label = `Selesai — ${window._roxxyItems.length} hasil` + (failed ? `, ${failed} katalog gagal` : '');
       finishCatalogSearchProgress(label);
       setStatus(label + '. Filter katalog ada di dropdown genre, tanpa mencari ulang.');
@@ -803,6 +851,7 @@ async function fetchCatalogPage(reset = false) {
       }
       const rawGenre = $('genre-select').value || '';
       const genre = rawGenre.startsWith('cat:') ? '' : rawGenre;
+      const searchIgnored = !!query && !catalogSupportsSearch(selectedCatalog);
       const singleRequest = fetchOneCatalog(selectedCatalog, roxxyNextSkip, query, genre);
       setCatalogSearchProgress(25, 'Mengirim permintaan ke server Video Feeds…');
       const progressStages = [
@@ -820,7 +869,8 @@ async function fetchCatalogPage(reset = false) {
       $('result-count').textContent = `${window._roxxyItems.length} judul`;
       setCatalogSearchProgress(100, `Selesai — ${window._roxxyItems.length} hasil ditampilkan.`);
       finishCatalogSearchProgress(`Pencarian selesai — ${window._roxxyItems.length} hasil.`);
-      setStatus(items.length ? (useReset ? 'Katalog berhasil dimuat.' : `${items.length} judul tambahan dimuat.`) : 'Tidak ada hasil tambahan.');
+      setStatus((items.length ? (useReset ? 'Katalog berhasil dimuat.' : `${items.length} judul tambahan dimuat.`) : 'Tidak ada hasil tambahan.')
+        + (searchIgnored ? ' Katalog ini tidak mendukung pencarian; daftar default dimuat.' : ''));
     }
   } catch (e) {
     if (requestId === roxxyCatalogRequest) {
