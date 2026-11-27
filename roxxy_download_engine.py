@@ -16,7 +16,7 @@ import uuid
 from datetime import datetime
 from urllib.parse import urlparse, unquote, quote
 from email.message import Message
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import requests
 from flask import Blueprint, jsonify, request
@@ -381,9 +381,13 @@ def _refresh_stream_url(meta: Dict[str, Any], stream_snapshot: Dict[str, Any]) -
     meta_id = str(meta.get("id") or "").strip()
     if not meta_type or not meta_id:
         return ""
+    source = str(meta.get("_roxxySource") or "main").strip().lower()
+    if source not in ("main", "extra"):
+        source = "main"
     import roxxy_module  # local import: keeps module startup free of a cycle
     data = roxxy_module._roxxy_get(
-        f"stream/{quote(meta_type, safe='')}/{quote(meta_id, safe=':')}.json"
+        f"stream/{quote(meta_type, safe='')}/{quote(meta_id, safe=':')}.json",
+        source=source,
     )
     streams = data.get("streams") or []
     old_url = str(stream_snapshot.get("url") or "")
@@ -503,6 +507,15 @@ def _roxxy_runtime_minutes(value: Any) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _episode_int(value: Any) -> Optional[int]:
+    """Positive integer or None; season/episode numbers are optional."""
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
 def _register_roxxy_media(task: Dict[str, Any]) -> Dict[str, Any]:
     """D3: create/update one local Library record using the Roxxy metadata snapshot."""
     metadata = task.get("metadata") or {}
@@ -537,6 +550,11 @@ def _register_roxxy_media(task: Dict[str, Any]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         rating = None
     unique_path = os.path.normcase(os.path.abspath(path))
+    # A Donghua episode must stay attached to its series so the Library can
+    # group it under the right season/episode instead of a loose movie row.
+    season_value = _episode_int(metadata.get("season_num"))
+    episode_value = _episode_int(metadata.get("episode_num"))
+    series_title = str(metadata.get("series_title") or "").strip() or None
     media_data = {
         "unique_key": "local:" + unique_path,
         "source_type": "local",
@@ -554,6 +572,9 @@ def _register_roxxy_media(task: Dict[str, Any]) -> Dict[str, Any]:
         "is_adult": 1 if category in ("jav", "english_adult", "indo") else 0,
         "has_metadata": 1,
         "metadata_source": "roxxy",
+        "season_num": season_value,
+        "episode_num": episode_value,
+        "series_title": series_title,
         "poster_url": metadata.get("poster") or metadata.get("background") or None,
         "genres": genres,
         "rating": rating,

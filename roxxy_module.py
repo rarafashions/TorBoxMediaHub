@@ -36,7 +36,7 @@ def _settings() -> Dict[str, str]:
 def _save_private_settings(values: Dict[str, str]) -> None:
     # Separate Roxxy keys are stored in the existing settings table. They are
     # deliberately not added to DEFAULT_SETTINGS, so V1.2 settings UI ignores them.
-    allowed = {"roxxy_manifest_url", "roxxy_download_path"}
+    allowed = {"roxxy_manifest_url", "roxxy_extra_manifest_url", "roxxy_download_path"}
     with db.get_connection() as conn:
         for key, value in values.items():
             if key not in allowed:
@@ -49,24 +49,60 @@ def _save_private_settings(values: Dict[str, str]) -> None:
         conn.commit()
 
 
-def _manifest_url() -> str:
+# One Roxxy installation can hold more than one addon: the hoster pack and, for
+# example, the Donghua catalogue. Every addon has its own token-protected
+# manifest, so catalog/meta/stream requests carry a `source` selector.
+ROXXY_SOURCES = ("main", "extra")
+_MANIFEST_SETTINGS = {"main": "roxxy_manifest_url", "extra": "roxxy_extra_manifest_url"}
+_MANIFEST_ENV = {"main": "ROXXY_MANIFEST_URL", "extra": "ROXXY_EXTRA_MANIFEST_URL"}
+_MANIFEST_ERROR = (
+    "Manifest URL harus HTTPS dari hub.roxxy-tech.com dan diakhiri /manifest.json."
+)
+
+
+def _manifest_url(source: str = "main") -> str:
+    key = _MANIFEST_SETTINGS.get(source, _MANIFEST_SETTINGS["main"])
     s = _settings()
-    return (s.get("roxxy_manifest_url") or os.environ.get("ROXXY_MANIFEST_URL") or "").strip()
+    return (s.get(key) or os.environ.get(_MANIFEST_ENV.get(source, "")) or "").strip()
 
 
-def _base_url() -> str:
-    raw = _manifest_url()
+def _validate_manifest_url(raw: str) -> None:
+    p = urlparse(raw or "")
+    if p.scheme != "https" or p.hostname != "hub.roxxy-tech.com" or not p.path.endswith("/manifest.json"):
+        raise ValueError(_MANIFEST_ERROR)
+
+
+def _base_url(source: str = "main") -> str:
+    raw = _manifest_url(source)
+    if not raw:
+        raise ValueError("Manifest sumber ini belum diatur di Settings.")
+    _validate_manifest_url(raw)
     p = urlparse(raw)
-    if p.scheme != "https" or p.hostname != "hub.roxxy-tech.com":
-        raise ValueError("Manifest URL harus HTTPS dari hub.roxxy-tech.com.")
     path = p.path
-    if not path.endswith("/manifest.json"):
-        raise ValueError("URL manifest harus diakhiri /manifest.json.")
     return f"{p.scheme}://{p.netloc}{path[:-len('manifest.json')]}"
 
 
-def _roxxy_get(path: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    url = _base_url() + path.lstrip("/")
+def _masked_manifest(source: str = "main") -> str:
+    raw = _manifest_url(source)
+    if not raw:
+        return ""
+    p = urlparse(raw)
+    # Only scheme/host/last component: the token segment must never be echoed.
+    return f"{p.scheme}://{p.netloc}/…/{p.path.rsplit('/', 1)[-1]}"
+
+
+def _source_arg() -> str:
+    """Read the addon selector; unknown values fall back to the main addon."""
+    value = (request.args.get("source") or "main").strip().lower()
+    return value if value in ROXXY_SOURCES else "main"
+
+
+def _roxxy_get(
+    path: str,
+    params: Optional[Dict[str, Any]] = None,
+    source: str = "main",
+) -> Dict[str, Any]:
+    url = _base_url(source) + path.lstrip("/")
     response = HTTP.get(url, params=params or {}, timeout=TIMEOUT)
     response.raise_for_status()
     data = response.json()
@@ -85,6 +121,90 @@ def _safe_error(exc: Exception) -> str:
 def _extract_code(text: str) -> str:
     m = CODE_RE.search((text or "").upper())
     return m.group(0).upper() if m else ""
+
+
+# --- Series/season structure ------------------------------------------------
+# Stremio-style meta resources list every episode in `videos[]`. Roxxy keeps the
+# list untouched and adds a grouped, sorted view so the UI can show a season
+# selector plus an episode grid instead of a flat stream list.
+_SEASON_SUFFIX_RE = re.compile(r"(?i)\s*(?:season\s*\d+|s\d{1,2})\s*$")
+_EPISODE_PREFIX_RE = re.compile(
+    r"(?i)^(?:season\s*\d+\s*)?(?:(?:episode|ep\.?)\s*\d+)"
+)
+
+
+def _series_base_name(name: Any) -> str:
+    """Drop a trailing "Season 5"/"S05" so both forms can be compared."""
+    return _SEASON_SUFFIX_RE.sub("", str(name or "")).strip(" -:–|")
+
+
+def _as_positive_int(value: Any, fallback: Optional[int] = None) -> Optional[int]:
+    try:
+        number = int(str(value).strip())
+    except (TypeError, ValueError):
+        return fallback
+    return number if number > 0 else fallback
+
+
+def _episode_display_title(title: Any, series_name: Any) -> str:
+    """Shorten "Show Season 5 Episode 219 Multiple Subtitles" to its suffix."""
+    text = str(title or "").strip()
+    if not text:
+        return ""
+    for candidate in (str(series_name or "").strip(), _series_base_name(series_name)):
+        if candidate and text.casefold().startswith(candidate.casefold()):
+            text = text[len(candidate):].strip(" -:–|")
+            break
+    text = _EPISODE_PREFIX_RE.sub("", text).strip(" -:–|")
+    return text
+
+
+def _build_series_index(videos: Any, series_name: Any) -> Optional[Dict[str, Any]]:
+    """Group ``videos[]`` into seasons with ascending episode numbers."""
+    if not isinstance(videos, list) or not videos:
+        return None
+    grouped: Dict[int, list] = {}
+    for video in videos:
+        if not isinstance(video, dict):
+            continue
+        video_id = str(video.get("id") or "").strip()
+        if not video_id:
+            continue
+        season = _as_positive_int(video.get("season"), 1) or 1
+        episode = _as_positive_int(video.get("episode"))
+        title = str(video.get("title") or "").strip()
+        grouped.setdefault(season, []).append({
+            "id": video_id,
+            "season": season,
+            "episode": episode,
+            "title": title,
+            "display_title": _episode_display_title(title, series_name),
+            "label": f"E{episode}" if episode is not None else "E?",
+        })
+    if not grouped:
+        return None
+    seasons = []
+    for season in sorted(grouped):
+        episodes = sorted(
+            grouped[season],
+            key=lambda item: (item["episode"] is None, item["episode"] or 0, item["title"].casefold()),
+        )
+        seasons.append({"season": season, "episodes": episodes})
+    multi_season = len(seasons) > 1
+    if multi_season:
+        for group in seasons:
+            for episode in group["episodes"]:
+                if episode["episode"] is not None:
+                    episode["label"] = f"S{group['season']:02d}·E{episode['episode']}"
+    newest = seasons[-1]["episodes"][-1]
+    return {
+        "seasons": seasons,
+        "episode_count": sum(len(group["episodes"]) for group in seasons),
+        "season_count": len(seasons),
+        "multi_season": multi_season,
+        "default_episode_id": newest["id"],
+        "default_season": seasons[-1]["season"],
+    }
 
 
 # --- Library presence -------------------------------------------------------
@@ -126,24 +246,55 @@ def _library_match_key(value: Any) -> str:
     return key
 
 
+def _series_episode_key(series_title: Any, season: Any, episode: Any) -> str:
+    """Key for one exact episode: normalized series title plus S/E numbers."""
+    base = _library_match_key(series_title)
+    season_number = _as_positive_int(season)
+    episode_number = _as_positive_int(episode)
+    if not base or season_number is None or episode_number is None:
+        return ""
+    return f"{base}|s{season_number}|e{episode_number}"
+
+
 def _build_library_index(rows: Any) -> Dict[str, Dict[str, Any]]:
     """Index library rows for one request; newest row wins on a shared key."""
     by_code: Dict[str, Dict[str, Any]] = {}
     by_title: Dict[str, Dict[str, Any]] = {}
+    by_episode_title: Dict[str, Dict[str, Any]] = {}
+    by_series: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         item = dict(row)
         code = str(item.get("code_id") or "").strip().upper()
         if code:
             by_code.setdefault(code, item)
         # Episodes share their series title, so a title hit would not prove that
-        # this exact episode is already available.
+        # this exact episode is already available. They are indexed by their own
+        # title plus a series/season/episode key instead.
         if item.get("season_num") is not None or item.get("episode_num") is not None:
+            for field in ("title", "file_name"):
+                key = _library_match_key(item.get(field))
+                if key:
+                    by_episode_title.setdefault(key, item)
+            series_name = (
+                item.get("series_title") or item.get("title") or item.get("file_name")
+            )
+            for candidate in (series_name, _series_base_name(series_name)):
+                key = _series_episode_key(
+                    candidate, item.get("season_num"), item.get("episode_num")
+                )
+                if key:
+                    by_series.setdefault(key, item)
             continue
         for field in ("title", "file_name"):
             key = _library_match_key(item.get(field))
             if key:
                 by_title.setdefault(key, item)
-    return {"by_code": by_code, "by_title": by_title}
+    return {
+        "by_code": by_code,
+        "by_title": by_title,
+        "by_episode_title": by_episode_title,
+        "by_series": by_series,
+    }
 
 
 def _load_library_index() -> Dict[str, Dict[str, Any]]:
@@ -201,6 +352,66 @@ def _library_match_for_meta(
     return None
 
 
+def _episode_library_match(
+    series_name: Any,
+    season: Any,
+    episode: Any,
+    episode_title: Any,
+    index: Dict[str, Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Return the library row holding this exact episode, if any.
+
+    The episode title is tried first because it is unique per episode; the
+    series/season/episode key covers rows imported from other sources that only
+    carry the series title.
+    """
+    if not index:
+        return None
+    title_key = _library_match_key(episode_title)
+    if title_key:
+        match = index.get("by_episode_title", {}).get(title_key)
+        if match:
+            return dict(match, match_reason="episode_title")
+    for candidate in (series_name, _series_base_name(series_name)):
+        key = _series_episode_key(candidate, season, episode)
+        if not key:
+            continue
+        match = index.get("by_series", {}).get(key)
+        if match:
+            return dict(match, match_reason="series_episode")
+    return None
+
+
+_EPISODE_MATCH_FIELDS = ("id", "title", "file_name", "season_num", "episode_num")
+
+
+def _annotate_episodes(meta: Dict[str, Any], index: Dict[str, Dict[str, Any]]) -> bool:
+    """Attach the grouped series view and per-episode IN LIBRARY flags."""
+    series = _build_series_index(meta.get("videos"), meta.get("name"))
+    if not series:
+        return False
+    series_name = str(meta.get("name") or "")
+    owned = 0
+    for group in series["seasons"]:
+        for episode in group["episodes"]:
+            match = _episode_library_match(
+                series_name, episode["season"], episode["episode"], episode["title"], index
+            )
+            episode["in_library"] = match is not None
+            if match:
+                owned += 1
+                episode["library_match"] = {
+                    field: match.get(field) for field in _EPISODE_MATCH_FIELDS
+                }
+                episode["library_match"]["match_reason"] = match.get("match_reason")
+            else:
+                episode["library_match"] = None
+    series["library_count"] = owned
+    meta["series"] = series
+    meta["is_series"] = True
+    return True
+
+
 @roxxy_bp.get("/roxxy")
 def page():
     return render_template("roxxy.html", download_path=(_settings().get("roxxy_download_path") or DEFAULT_DOWNLOAD_PATH))
@@ -209,16 +420,13 @@ def page():
 @roxxy_bp.get("/api/roxxy/config")
 def api_config():
     s = _settings()
-    raw = s.get("roxxy_manifest_url") or os.environ.get("ROXXY_MANIFEST_URL") or ""
-    p = urlparse(raw)
-    masked = ""
-    if raw:
-        # Show only scheme/host and final path component; never echo the access token.
-        masked = f"{p.scheme}://{p.netloc}/…/{p.path.rsplit('/', 1)[-1]}"
+    extra_raw = s.get("roxxy_extra_manifest_url") or os.environ.get("ROXXY_EXTRA_MANIFEST_URL") or ""
     return jsonify({
         "ok": True,
-        "configured": bool(raw),
-        "manifest_display": masked,
+        "configured": bool(s.get("roxxy_manifest_url") or os.environ.get("ROXXY_MANIFEST_URL")),
+        "manifest_display": _masked_manifest("main"),
+        "extra_configured": bool(extra_raw.strip()),
+        "extra_manifest_display": _masked_manifest("extra"),
         "download_path": s.get("roxxy_download_path") or DEFAULT_DOWNLOAD_PATH,
     })
 
@@ -227,24 +435,66 @@ def api_config():
 def api_save_config():
     payload = request.get_json(silent=True) or {}
     manifest = (payload.get("manifest_url") or "").strip()
+    extra = (payload.get("extra_manifest_url") or "").strip()
     folder = (payload.get("download_path") or DEFAULT_DOWNLOAD_PATH).strip()
-    if manifest:
-        p = urlparse(manifest)
-        if p.scheme != "https" or p.hostname != "hub.roxxy-tech.com" or not p.path.endswith("/manifest.json"):
-            return jsonify({"ok": False, "error": "Manifest URL tidak valid. Gunakan URL manifest Video Feeds HTTPS yang berakhir /manifest.json."}), 400
+    try:
+        if manifest:
+            _validate_manifest_url(manifest)
+        if extra:
+            _validate_manifest_url(extra)
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     if not folder:
         return jsonify({"ok": False, "error": "Folder download tidak boleh kosong."}), 400
-    _save_private_settings({"roxxy_manifest_url": manifest, "roxxy_download_path": folder})
+    values: Dict[str, str] = {"roxxy_download_path": folder}
+    # The settings form leaves the token field empty unless it is replaced; an
+    # empty value must not wipe an already configured manifest.
+    if manifest:
+        values["roxxy_manifest_url"] = manifest
+    if extra:
+        values["roxxy_extra_manifest_url"] = extra
+    _save_private_settings(values)
     return jsonify({"ok": True, "message": "Konfigurasi Video Feeds disimpan. Token tidak ditampilkan kembali."})
 
 
 @roxxy_bp.get("/api/roxxy/manifest")
 def api_manifest():
+    """Merge every configured addon so Donghua sits next to the hoster pack."""
     try:
-        data = _roxxy_get("manifest.json")
-        return jsonify({"ok": True, "name": data.get("name", "Video Feeds"), "version": data.get("version"),
-                        "types": data.get("types", []), "catalogs": data.get("catalogs", []),
-                        "resources": data.get("resources", [])})
+        sources = ["main"]
+        if _manifest_url("extra"):
+            sources.append("extra")
+        catalogs: list = []
+        types: list = []
+        name = "Video Feeds"
+        version = None
+        extra_error = ""
+        for position, source in enumerate(sources):
+            try:
+                data = _roxxy_get("manifest.json", source=source)
+            except Exception as exc:
+                if position == 0:
+                    raise
+                extra_error = _safe_error(exc)
+                continue
+            if position == 0:
+                name = data.get("name", name)
+                version = data.get("version")
+            for item in data.get("catalogs") or []:
+                if not isinstance(item, dict):
+                    continue
+                catalogs.append({**item, "source": source})
+            for item_type in data.get("types") or []:
+                if item_type not in types:
+                    types.append(item_type)
+        return jsonify({
+            "ok": True,
+            "name": name,
+            "version": version,
+            "types": types,
+            "catalogs": catalogs,
+            "extra_error": extra_error,
+        })
     except Exception as exc:
         return jsonify({"ok": False, "error": _safe_error(exc)}), 502
 
@@ -252,6 +502,7 @@ def api_manifest():
 @roxxy_bp.get("/api/roxxy/catalog/<catalog_type>/<path:catalog_id>")
 def api_catalog(catalog_type: str, catalog_id: str):
     try:
+        source = _source_arg()
         skip = max(0, int(request.args.get("skip", 0)))
         params: Dict[str, Any] = {"skip": skip}
         genre = (request.args.get("genre") or "").strip()
@@ -265,7 +516,7 @@ def api_catalog(catalog_type: str, catalog_id: str):
             extras.append(f"search={quote(search, safe='')}")
         suffix = ("/" + "/".join(extras)) if extras else ""
         path = f"catalog/{quote(catalog_type, safe='')}/{quote(catalog_id, safe=':')}{suffix}.json"
-        data = _roxxy_get(path, params)
+        data = _roxxy_get(path, params, source=source)
         metas = data.get("metas") or []
         index = _load_library_index()
         for item in metas:
@@ -281,13 +532,18 @@ def api_catalog(catalog_type: str, catalog_id: str):
 @roxxy_bp.get("/api/roxxy/meta/<meta_type>/<path:meta_id>")
 def api_meta(meta_type: str, meta_id: str):
     try:
+        source = _source_arg()
         path = f"meta/{quote(meta_type, safe='')}/{quote(meta_id, safe=':')}.json"
-        data = _roxxy_get(path)
+        data = _roxxy_get(path, source=source)
         meta = data.get("meta") or {}
         meta["jav_code"] = _extract_code(f"{meta.get('id','')} {meta.get('name','')} {meta.get('description','')}")
-        match = _library_match_for_meta(meta, _load_library_index())
+        index = _load_library_index()
+        match = _library_match_for_meta(meta, index)
         meta["in_library"] = match is not None
         meta["library_match"] = match
+        # Donghua/general series arrive as one title with every episode in
+        # `videos[]`; group them and flag the episodes already in the Library.
+        _annotate_episodes(meta, index)
         return jsonify({"ok": True, "meta": meta})
     except Exception as exc:
         return jsonify({"ok": False, "error": _safe_error(exc)}), 502
@@ -296,8 +552,9 @@ def api_meta(meta_type: str, meta_id: str):
 @roxxy_bp.get("/api/roxxy/streams/<stream_type>/<path:stream_id>")
 def api_streams(stream_type: str, stream_id: str):
     try:
+        source = _source_arg()
         path = f"stream/{quote(stream_type, safe='')}/{quote(stream_id, safe=':')}.json"
-        data = _roxxy_get(path)
+        data = _roxxy_get(path, source=source)
         streams = data.get("streams") or []
         # Preserve Roxxy's original fields; add a conservative routing hint only.
         for stream in streams:
