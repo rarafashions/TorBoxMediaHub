@@ -1,4 +1,6 @@
 """Five Roxxy addon slots, source categories, and automatic stream analysis."""
+import base64
+import json
 import os
 import tempfile
 import unittest
@@ -330,6 +332,171 @@ class RoxxyTemplateGenreTests(unittest.TestCase):
 
     def test_all_search_sends_required_genre(self):
         self.assertIn("fetchOneCatalog(c, st.skip, state.query, catalogRequiredGenre(c))", self.template)
+
+
+class DownloadOptionGuardTests(unittest.TestCase):
+    def test_unresolved_http_stream_disables_local_engines(self):
+        options = rm._stream_download_options(
+            {"engine": "pending_http_inspection", "resolved": False},
+            "https://forwarder.example/1080p",
+        )
+        self.assertEqual([o["engine"] for o in options], ["yt-dlp", "aria2c"])
+        for option in options:
+            self.assertTrue(option["disabled"])
+            self.assertIn("probe header", option["disabled_reason"])
+            self.assertFalse(option.get("recommended"))
+
+    def test_resolved_http_stream_keeps_buttons_enabled(self):
+        options = rm._stream_download_options(
+            {"engine": "yt-dlp", "resolved": True},
+            "https://cdn.example/movie.m3u8",
+        )
+        self.assertFalse(any(o.get("disabled") for o in options))
+        self.assertEqual([o["engine"] for o in options if o.get("recommended")], ["yt-dlp"])
+
+    def test_torbox_routes_are_never_disabled(self):
+        magnet = "magnet:?xt=urn:btih:" + "a" * 40
+        options = rm._stream_download_options(
+            {"engine": "torbox", "resolved": True, "magnet": magnet}, magnet
+        )
+        self.assertEqual([o["mode"] for o in options], ["cached", "uncached"])
+        self.assertFalse(any(o.get("disabled") for o in options))
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+class TorboxCacheBatchTests(unittest.TestCase):
+    def setUp(self):
+        self.client = app_module.app.test_client()
+        self.hashes = ["a" * 40, "b" * 40]
+        self.magnets = [f"magnet:?xt=urn:btih:{h}" for h in self.hashes]
+
+    def _post(self, payload, data=None):
+        body = {"success": True, "data": data if data is not None else []}
+        with patch.object(rm.db, "get_settings", return_value={"torbox_api_key": "k"}), \
+                patch.object(rm.requests, "get", return_value=_FakeResponse(body)) as get:
+            response = self.client.post("/api/roxxy/torbox-cache-check", json=payload)
+        return response, get
+
+    def test_one_request_checks_every_magnet_and_maps_results(self):
+        response, get = self._post({"magnets": self.magnets}, [{"hash": self.hashes[0].upper()}])
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(get.call_args.kwargs["params"]["hash"], ",".join(self.hashes))
+        self.assertEqual(payload["results"], {self.hashes[0]: True, self.hashes[1]: False})
+        self.assertEqual(payload["hashes"], self.hashes)
+        self.assertTrue(payload["cached"])
+
+    def test_single_magnet_keeps_legacy_fields(self):
+        response, get = self._post({"magnet": self.magnets[0]}, [{"hash": self.hashes[0]}])
+        payload = response.get_json()
+        self.assertEqual(get.call_args.kwargs["params"]["hash"], self.hashes[0])
+        self.assertTrue(payload["cached"])
+        self.assertEqual(payload["hash"], self.hashes[0])
+        self.assertEqual(payload["results"], {self.hashes[0]: True})
+
+    def test_invalid_magnet_is_rejected_before_any_request(self):
+        response, get = self._post({"magnets": self.magnets + ["https://hoster.example/file"]})
+        self.assertEqual(response.status_code, 400)
+        get.assert_not_called()
+
+    def test_batch_is_capped_at_one_hundred_hashes(self):
+        magnets = [f"magnet:?xt=urn:btih:{i:040x}" for i in range(101)]
+        response, get = self._post({"magnets": magnets})
+        self.assertEqual(response.status_code, 400)
+        get.assert_not_called()
+
+
+class ForwardedPayloadTests(unittest.TestCase):
+    @staticmethod
+    def _forward(payload, host="rt-openclaw.roxxy-tech.com", path="/nzb/dl"):
+        token = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+        return f"https://{host}{path}?d={token}"
+
+    def test_nzb_payload_keys_are_all_accepted(self):
+        for key in ("n", "nzb", "u", "url", "link"):
+            url = self._forward({key: "https://hoster.example/release.nzb"})
+            self.assertEqual(rm._decode_forwarded_nzb(url), "https://hoster.example/release.nzb")
+
+    def test_nzb_payload_accepts_percent_encoded_link(self):
+        url = self._forward({"u": "https%3A%2F%2Fhoster.example%2Ffile.nzb"})
+        self.assertEqual(rm._decode_forwarded_nzb(url), "https://hoster.example/file.nzb")
+
+    def test_nzb_forwarder_rejects_unknown_host_and_path(self):
+        payload = {"u": "https://hoster.example/release.nzb"}
+        self.assertIsNone(rm._decode_forwarded_nzb(self._forward(payload, host="evil.example")))
+        self.assertIsNone(rm._decode_forwarded_nzb(self._forward(payload, path="/other/dl")))
+        self.assertIsNone(rm._decode_forwarded_nzb("https://hoster.example/release.nzb"))
+
+    def test_magnet_forwarder_extracts_only_real_magnets(self):
+        magnet = "magnet:?xt=urn:btih:" + "c" * 40
+        url = self._forward({"m": magnet}, path="/torrent/dl")
+        self.assertEqual(rm._decode_forwarded_magnet(url), magnet)
+        self.assertIsNone(rm._decode_forwarded_magnet(
+            self._forward({"m": "not-a-magnet"}, path="/torrent/dl")))
+        self.assertIsNone(rm._decode_forwarded_magnet(
+            self._forward({"m": magnet}, path="/nzb/dl")))
+
+    def test_nzb_url_detection_covers_paths_and_extensions(self):
+        self.assertTrue(rm._looks_like_nzb_url("https://hoster.example/release.nzb"))
+        self.assertTrue(rm._looks_like_nzb_url("https://hoster.example/nzb/dl?x=1"))
+        self.assertFalse(rm._looks_like_nzb_url("https://hoster.example/release.mkv"))
+
+
+class ManifestCategoryLockTests(unittest.TestCase):
+    def test_addon_locked_categories_ignore_hint_classification(self):
+        with patch.object(app_module, "_resolve_import_category") as resolve:
+            for category in ("english_adult", "indo_movie", "donghua"):
+                self.assertEqual(
+                    app_module._apply_manifest_category_lock(
+                        category, {"name": "Film Indonesia"}, "file.mkv"
+                    ),
+                    category,
+                )
+            resolve.assert_not_called()
+
+    def test_unspecific_category_uses_hint_verdict(self):
+        with patch.object(app_module, "_resolve_import_category", return_value="jav") as resolve:
+            self.assertEqual(
+                app_module._apply_manifest_category_lock(
+                    "general_movie", {"name": "ABP-123"}, "ABP-123.mkv", "Folder"
+                ),
+                "jav",
+            )
+            resolve.assert_called_once()
+
+    def test_unknown_category_falls_back_to_uncategorized(self):
+        self.assertEqual(
+            app_module._apply_manifest_category_lock("bogus", {}, ""),
+            "uncategorized",
+        )
+
+
+class RoxxyTemplateAnalysisTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates", "roxxy.html")
+        with open(path, encoding="utf-8") as fh:
+            cls.template = fh.read()
+
+    def test_unresolved_options_render_as_disabled_buttons(self):
+        self.assertIn("if (option.disabled)", self.template)
+        self.assertIn("perlu probe header", self.template)
+
+    def test_cache_checks_are_batched_into_one_request(self):
+        self.assertIn("checkTorboxCacheBatch", self.template)
+        self.assertIn("JSON.stringify({ magnets })", self.template)
+        self.assertIn("queueTorboxCacheCheck(i)", self.template)
+        self.assertNotIn("checkTorboxCache(i);", self.template)
 
 
 if __name__ == "__main__":

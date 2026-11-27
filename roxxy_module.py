@@ -915,8 +915,17 @@ def _stream_download_options(analysis: Dict[str, Any], url: str) -> list:
         {"engine": "yt-dlp", "mode": "local", "label": "yt-dlp (lokal)"},
         {"engine": "aria2c", "mode": "local", "label": "aria2c (lokal)"},
     ]
+    resolved = bool(analysis.get("resolved"))
     for option in options:
-        option["recommended"] = option["engine"] == preferred
+        option["recommended"] = option["engine"] == preferred and resolved
+        if not resolved:
+            # Header inspection failed, so the downloader cannot yet tell a
+            # media stream from a random HTTP response. Offer the route but
+            # keep it unusable instead of letting the click fail with a 400.
+            option["disabled"] = True
+            option["disabled_reason"] = (
+                "Perlu probe header server: tipe konten belum teridentifikasi."
+            )
     return options
 
 
@@ -964,15 +973,45 @@ def api_analyze_stream():
     return jsonify({"ok": True, "analysis": analysis})
 
 
+_CACHE_CHECK_MAX_HASHES = 100
+_MAGNET_HASH_RE = re.compile(r"urn:btih:([A-Fa-f0-9]{40}|[A-Za-z2-7]{32})", re.I)
+
+
+def _magnet_hash(magnet: str) -> str:
+    """Normalised torrent hash from a Magnet URI, or '' when malformed."""
+    match = _MAGNET_HASH_RE.search(str(magnet or ""))
+    return match.group(1).lower() if match else ""
+
+
 @roxxy_bp.post("/api/roxxy/torbox-cache-check")
 def api_torbox_cache_check():
-    """Check a Roxxy Magnet against TorBox cache without submitting the torrent."""
+    """Check one or many Roxxy magnets against TorBox cache in a single call.
+
+    TorBox accepts comma separated hashes on one request (about 100 per call),
+    so a stream list is checked at once instead of hammering the endpoint once
+    per magnet.
+    """
     payload = request.get_json(silent=True) or {}
-    magnet = str(payload.get("magnet") or "").strip()
-    match = re.search(r"urn:btih:([A-Fa-f0-9]{40}|[A-Za-z2-7]{32})", magnet, re.I)
-    if not magnet.lower().startswith("magnet:?") or not match:
+    single = str(payload.get("magnet") or "").strip()
+    listed = payload.get("magnets")
+    if isinstance(listed, list) and listed:
+        magnets = [str(item or "").strip() for item in listed]
+    elif single:
+        magnets = [single]
+    else:
         return jsonify({"ok": False, "error": "Magnet/hash torrent tidak valid."}), 400
-    torrent_hash = match.group(1).lower()
+    if len(magnets) > _CACHE_CHECK_MAX_HASHES:
+        return jsonify({
+            "ok": False,
+            "error": f"Maksimal {_CACHE_CHECK_MAX_HASHES} magnet per pemeriksaan.",
+        }), 400
+    hashes: list = []
+    for magnet in magnets:
+        torrent_hash = _magnet_hash(magnet)
+        if not magnet.lower().startswith("magnet:?") or not torrent_hash:
+            return jsonify({"ok": False, "error": "Magnet/hash torrent tidak valid."}), 400
+        if torrent_hash not in hashes:
+            hashes.append(torrent_hash)
     settings = db.get_settings()
     api_key = (settings.get("torbox_api_key") or "").strip()
     if not api_key:
@@ -981,20 +1020,34 @@ def api_torbox_cache_check():
         response = requests.get(
             "https://api.torbox.app/v1/api/torrents/checkcached",
             headers={"Authorization": f"Bearer {api_key}"},
-            params={"hash": torrent_hash, "format": "list"},
-            timeout=(8, 20),
+            params={"hash": ",".join(hashes), "format": "list"},
+            timeout=(8, 25),
         )
         response.raise_for_status()
         body = response.json()
         if body.get("success") is False:
             return jsonify({"ok": False, "error": "TorBox tidak berhasil memeriksa cache."}), 502
         data = body.get("data") or []
-        cached = False
+        cached_hashes = set()
         if isinstance(data, list):
-            cached = any(str(entry.get("hash") or "").lower() == torrent_hash for entry in data if isinstance(entry, dict))
+            cached_hashes = {
+                str(entry.get("hash") or "").lower()
+                for entry in data
+                if isinstance(entry, dict)
+            }
         elif isinstance(data, dict):
-            cached = bool(data.get(torrent_hash) or data.get(torrent_hash.upper()))
-        return jsonify({"ok": True, "cached": cached, "hash": torrent_hash})
+            cached_hashes = {
+                str(key).lower() for key, value in data.items() if value
+            }
+        results = {torrent_hash: torrent_hash in cached_hashes for torrent_hash in hashes}
+        return jsonify({
+            "ok": True,
+            "results": results,
+            "hashes": hashes,
+            # Legacy single-magnet fields keep older clients working.
+            "cached": results[hashes[0]],
+            "hash": hashes[0],
+        })
     except requests.RequestException:
         return jsonify({"ok": False, "error": "TorBox cache check tidak dapat dihubungi."}), 502
     except Exception:

@@ -784,6 +784,31 @@ _NON_ADULT_CATEGORIES = {"general_movie", "tv_show", "anime", "donghua", "indo_m
 _MANIFEST_LOCKED_CATEGORIES = {"english_adult", "indo_movie", "donghua"}
 
 
+def _apply_manifest_category_lock(
+    category: str,
+    hint_metadata: Dict[str, Any],
+    expected_filename: str,
+    parent_name: str = "",
+) -> str:
+    """Keep an addon-defined category, otherwise let the hint re-classify.
+
+    English Adult/OnlyFans, IndonesiaMovies and Donghua downloads keep the
+    category their manifest defines; only unspecific submissions are classified
+    from the stored hint. Unknown categories fall back to ``uncategorized``.
+    """
+    category = str(category or "").strip()
+    if hint_metadata and category not in _MANIFEST_LOCKED_CATEGORIES:
+        category = _resolve_import_category(
+            category,
+            hint_metadata,
+            expected_filename,
+            parent_name,
+        )
+    if category not in db.VALID_CATEGORIES:
+        category = "uncategorized"
+    return category
+
+
 def _guard_adult_reclassification(item: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
     """Never strip an adult category because weaker evidence appeared later.
 
@@ -2986,15 +3011,12 @@ def api_torbox_add_cached():
     # Addon-sourced downloads keep the category their manifest defines
     # (English Adult/OnlyFans, IndonesiaMovies, Donghua); only unspecific
     # submissions are re-classified from the hint.
-    if hint_metadata and category not in _MANIFEST_LOCKED_CATEGORIES:
-        category = _resolve_import_category(
-            category,
-            hint_metadata,
-            expected_filename,
-            str(payload.get("parent_name") or ""),
-        )
-    if category not in db.VALID_CATEGORIES:
-        category = "uncategorized"
+    category = _apply_manifest_category_lock(
+        category,
+        hint_metadata,
+        expected_filename,
+        str(payload.get("parent_name") or ""),
+    )
 
     settings = db.get_settings()
     api_key = (settings.get("torbox_api_key") or "").strip()
@@ -3262,15 +3284,12 @@ def api_torbox_webdl_add():
     # Addon-sourced downloads keep the category their manifest defines
     # (English Adult/OnlyFans, IndonesiaMovies, Donghua); only unspecific
     # submissions are re-classified from the hint.
-    if hint_metadata and category not in _MANIFEST_LOCKED_CATEGORIES:
-        category = _resolve_import_category(
-            category,
-            hint_metadata,
-            expected_filename,
-            str(payload.get("parent_name") or ""),
-        )
-    if category not in db.VALID_CATEGORIES:
-        category = "uncategorized"
+    category = _apply_manifest_category_lock(
+        category,
+        hint_metadata,
+        expected_filename,
+        str(payload.get("parent_name") or ""),
+    )
 
     settings = db.get_settings()
     api_key = (settings.get("torbox_api_key") or "").strip()

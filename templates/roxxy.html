@@ -1276,6 +1276,8 @@ function renderStreams(streams, subs) {
   // Every source is analysed automatically so the user only has to choose a
   // route (yt-dlp, aria2c, cached/uncached TorBox, NZB) instead of pressing one
   // button per stream. Three probes run at a time to stay friendly to hosters.
+  // A new stream list or a re-analysis invalidates queued cache results.
+  window._roxxyAnalysisGeneration = (window._roxxyAnalysisGeneration || 0) + 1;
   window._roxxyAnalyses = {};
   if (streams.length) analyzeAllStreams();
 }
@@ -1283,6 +1285,7 @@ function renderStreams(streams, subs) {
 function analyzeAllStreams() {
   const streamsRef = window._roxxyStreams || [];
   const queue = streamsRef.map((_, i) => i);
+  window._roxxyAnalysisGeneration = (window._roxxyAnalysisGeneration || 0) + 1;
   window._roxxyAnalyses = {};
   const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
     while (queue.length) {
@@ -1304,6 +1307,11 @@ function analysisActions(a, i) {
     }
     if (option.engine === 'torbox' && option.kind === 'usenet') {
       return `<button class="rounded-lg bg-emerald-500 px-3.5 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-emerald-400${recommended}" onclick="sendNzbToTorBox(${i})">NZB ke TorBox</button>`;
+    }
+    if (option.disabled) {
+      // The server could not probe the URL headers, so this route would fail
+      // with a 400. Show it greyed out with the reason instead of hiding it.
+      return `<button type="button" disabled title="${esc(option.disabled_reason || 'Perlu probe header server')}" class="cursor-not-allowed rounded-lg bg-slate-800 px-3.5 py-1.5 text-xs font-bold text-slate-500${recommended}">⬇ ${esc(option.label)} · perlu probe header</button>`;
     }
     return `<button class="rounded-lg bg-sky-500 px-3.5 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-sky-400${recommended}" onclick="startLocalDownload(${i}, '${option.engine}')">⬇ ${esc(option.label)}</button>`;
   }).join('');
@@ -1340,7 +1348,7 @@ async function analyzeStream(i) {
     if (status) status.innerHTML = a.resolved
       ? '<span class="h-2 w-2 rounded-full bg-emerald-400"></span> Sumber siap diunduh'
       : '<span class="h-2 w-2 rounded-full bg-amber-400"></span> Pilih sumber secara manual';
-    if (a.engine === 'torbox' && a.magnet) checkTorboxCache(i);
+    if (a.engine === 'torbox' && a.magnet) queueTorboxCacheCheck(i);
   } catch (e) {
     if (out) out.textContent = 'Analisis gagal: ' + e.message;
     const status = out?.parentElement?.querySelector('[data-analysis-status]');
@@ -1654,23 +1662,73 @@ async function sendNzbToTorBox(i) {
   }
 }
 
-async function checkTorboxCache(i) {
-  const a = (window._roxxyAnalyses || {})[i];
-  if (!a || !a.magnet) return;
-  const box = $(`stream-analysis-${i}`);
+let roxxyCacheTimer = null;
+let roxxyCacheGeneration = 0;
+const roxxyCacheQueue = new Set();
+
+async function checkTorboxCacheBatch(indices) {
+  const analyses = window._roxxyAnalyses || {};
+  const pairs = [];
+  const magnets = [];
+  const seen = new Set();
+  for (const i of indices) {
+    const a = analyses[i];
+    if (!a || !a.magnet) continue;
+    const hash = magnetHash(a.magnet);
+    if (!hash) continue;
+    pairs.push({ i, hash });
+    if (!seen.has(hash)) { seen.add(hash); magnets.push(a.magnet); }
+  }
+  if (!pairs.length) return;
+  const generation = roxxyCacheGeneration;
+  const target = i => document.querySelector(`#stream-analysis-${i} [data-cache-state]`);
   try {
-    const r = await fetch('/api/roxxy/torbox-cache-check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ magnet: a.magnet }) });
+    // One TorBox request for the whole list instead of one per magnet.
+    const r = await fetch('/api/roxxy/torbox-cache-check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ magnets }) });
     const j = await r.json();
     if (!r.ok || !j.ok) throw new Error(j.error || `HTTP ${r.status}`);
-    const target = box.querySelector('[data-cache-state]');
-    if (target) {
-      target.className = 'mt-1 text-xs font-medium ' + (j.cached ? 'text-emerald-400' : 'text-amber-400');
-      target.textContent = j.cached ? '✓ Instant Cached di TorBox. Pilih Cached TorBox.' : '⚠ Belum ter-cache. TorBox akan mengunduh torrent terlebih dahulu.';
+    // A new title/re-analysis replaces the stream list; drop stale results.
+    if (generation !== (window._roxxyAnalysisGeneration || 0)) return;
+    const results = j.results || {};
+    for (const { i, hash } of pairs) {
+      const box = target(i);
+      if (!box) continue;
+      const cached = !!results[hash];
+      box.className = 'mt-1 text-xs font-medium ' + (cached ? 'text-emerald-400' : 'text-amber-400');
+      box.textContent = cached ? '✓ Instant Cached di TorBox. Pilih Cached TorBox.' : '⚠ Belum ter-cache. TorBox akan mengunduh torrent terlebih dahulu.';
     }
   } catch (e) {
-    const target = box.querySelector('[data-cache-state]');
-    if (target) { target.className = 'mt-1 text-xs text-amber-400'; target.textContent = 'Status cache tidak tersedia: ' + e.message; }
+    if (generation !== (window._roxxyAnalysisGeneration || 0)) return;
+    for (const { i } of pairs) {
+      const box = target(i);
+      if (!box) continue;
+      box.className = 'mt-1 text-xs text-amber-400';
+      box.textContent = 'Status cache tidak tersedia: ' + e.message;
+    }
   }
+}
+
+function magnetHash(magnet) {
+  const match = String(magnet || '').match(/urn:btih:([A-Fa-f0-9]{40}|[A-Za-z2-7]{32})/i);
+  return match ? match[1].toLowerCase() : '';
+}
+
+// Analysed magnets are queued for a moment so the whole stream list shares one
+// cache check; a re-analysis starts a new generation and drops stale results.
+function queueTorboxCacheCheck(i) {
+  const generation = window._roxxyAnalysisGeneration || 0;
+  if (generation !== roxxyCacheGeneration) {
+    roxxyCacheQueue.clear();
+    roxxyCacheGeneration = generation;
+  }
+  roxxyCacheQueue.add(i);
+  if (roxxyCacheTimer) return;
+  roxxyCacheTimer = setTimeout(() => {
+    roxxyCacheTimer = null;
+    const batch = Array.from(roxxyCacheQueue);
+    roxxyCacheQueue.clear();
+    checkTorboxCacheBatch(batch);
+  }, 300);
 }
 
 $('search-query').addEventListener('keydown', e => { if (e.key === 'Enter') loadCatalog(); });
