@@ -41,6 +41,7 @@ POSTER_MIGRATION_ID = "tbh_v1_2_phase4_poster_reliability"
 TITLE_OVERRIDE_MIGRATION_ID = "tbh_v1_2_manual_title_override"
 DUAL_SUBTITLE_MIGRATION_ID = "tbh_v1_2_phase6b_dual_subtitles"
 TORBOX_HINT_MIGRATION_ID = "tbh_v1_3d4_torbox_hint_metadata"
+CLASSIFIER_VERSION_MIGRATION_ID = "tbh_v1_3d5_multicat5_indo"
 VALID_POSTER_STATUSES = {"not_checked", "found", "missing", "invalid_url", "invalid_image", "unreachable", "load_error", "manual"}
 
 
@@ -128,6 +129,16 @@ def get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 30000;")
     conn.execute("PRAGMA foreign_keys = ON;")
     return conn
+
+
+def _classifier_version() -> str:
+    """Return the active classifier revision without a module-level import cycle."""
+    try:
+        from classification_engine import CLASSIFIER_VERSION
+
+        return CLASSIFIER_VERSION
+    except Exception:
+        return "d2-multicat-5"
 
 
 def _run_vacuum_standalone() -> None:
@@ -584,6 +595,7 @@ def migrate_classification_schema(conn: Optional[sqlite3.Connection] = None) -> 
             ("classification_signals_json", "TEXT NOT NULL DEFAULT '[]'"),
             ("classification_locked", "INTEGER NOT NULL DEFAULT 0"),
             ("classification_updated_at", "TEXT"),
+            ("classifier_version", "TEXT"),
         ]
         for name, declaration in additions:
             if name not in columns:
@@ -617,12 +629,20 @@ def migrate_classification_schema(conn: Optional[sqlite3.Connection] = None) -> 
             "ON media_items(classification_status, classification_locked)"
         )
         conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_media_classifier_version "
+            "ON media_items(classifier_version, content_category)"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_classification_history_media "
             "ON media_classification_history(media_id, id DESC)"
         )
         conn.execute(
             "INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
             (CLASSIFICATION_MIGRATION_ID, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
+            (CLASSIFIER_VERSION_MIGRATION_ID, datetime.now().isoformat(timespec="seconds")),
         )
         conn.execute(f"RELEASE SAVEPOINT {savepoint}")
         if own_conn:
@@ -851,8 +871,13 @@ def save_classification_result(
     changed_by: str = "classifier",
     note: Optional[str] = None,
     force: bool = False,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Persist a classifier result; Needs Review never overwrites the current category."""
+    """Persist a classifier result; Needs Review never overwrites the current category.
+
+    Pass ``conn`` to reuse a caller-managed transaction (the caller commits).
+    Manual classifications are only overwritten when ``force=True``.
+    """
     status = str(result.get("classification_status") or "").strip().lower()
     if status not in ("classified", "needs_review"):
         raise ValueError("Classifier status must be 'classified' or 'needs_review'.")
@@ -868,15 +893,21 @@ def save_classification_result(
     confidence = result.get("category_confidence")
     confidence = float(confidence) if confidence is not None else None
     signals_json = _classification_json(result.get("signals", []))
+    version = str(result.get("classifier_version") or "").strip() or _classifier_version()
     now = datetime.now().isoformat(timespec="seconds")
 
-    with get_connection() as conn:
+    own_conn = conn is None
+    if own_conn:
+        conn = get_connection()
+    try:
         row = conn.execute("SELECT * FROM media_items WHERE id = ?", (media_id,)).fetchone()
         if not row:
             return None
         old = dict(row)
         if int(old.get("classification_locked") or 0) and not force:
             raise PermissionError("This media classification is locked for manual review.")
+        if old.get("classification_status") == "manually_classified" and not force:
+            raise PermissionError("This media classification is manual; pass force=True to override.")
 
         new_category = category if category is not None else old["content_category"]
         new_status = status
@@ -889,12 +920,13 @@ def save_classification_result(
                 classification_method = ?,
                 category_confidence = ?,
                 classification_signals_json = ?,
+                classifier_version = ?,
                 classification_updated_at = ?,
                 updated_at = ?
             WHERE id = ?""",
             (normalized_title, new_category,
              int(new_category in ("jav", "english_adult", "indo")), new_status, method, confidence,
-             signals_json, now, now, media_id),
+             signals_json, version, now, now, media_id),
         )
         changed = (
             old.get("content_category") != new_category
@@ -920,7 +952,11 @@ def save_classification_result(
                  int(old.get("classification_locked") or 0),
                  method, confidence, signals_json, changed_by, note, now),
             )
-        conn.commit()
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
     return get_media_item(media_id)
 
 
@@ -1053,6 +1089,49 @@ def get_pending_classification_candidates(limit: int = 500) -> List[Dict[str, An
         ).fetchall()
         pl_map = _get_media_playlist_map(conn)
     return [serialize_row(r, pl_map) for r in rows]
+
+
+# Reclassification always applies to the surfaces the product still curates by
+# keyword. Rows in TV Show, Anime, Donghua, and General Movie are only rewritten
+# when the new verdict is Indo, so an Indo item stored in the wrong bucket is
+# recovered without churning the other categories.
+RECLASSIFY_CATEGORIES = ("uncategorized", "indo", "english_adult")
+
+
+def get_reclassify_candidates(limit: int = 5000) -> List[Dict[str, Any]]:
+    """Return locked-free rows whose stored verdict predates the active classifier.
+
+    This includes already-categorized rows, which the pending-only query never
+    revisits. Rows the user classified manually are excluded by status.
+    """
+    safe_limit = max(1, min(int(limit), 5000))
+    version = _classifier_version()
+    with get_connection() as conn:
+        rows = conn.execute(
+            """SELECT * FROM media_items
+               WHERE classification_locked = 0
+                 AND classification_status IN ('pending', 'classified', 'needs_review')
+                 AND COALESCE(classifier_version, '') <> ?
+               ORDER BY id ASC LIMIT ?""",
+            (version, safe_limit),
+        ).fetchall()
+        pl_map = _get_media_playlist_map(conn)
+    return [serialize_row(r, pl_map) for r in rows]
+
+
+def mark_classifier_version(media_id: int, version: Optional[str] = None) -> bool:
+    """Stamp the active classifier revision without changing category or status.
+
+    Used for rows outside the curated surfaces whose verdict was computed but
+    intentionally not applied, so the next pass does not process them again.
+    """
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_connection() as conn:
+        cur = conn.execute(
+            "UPDATE media_items SET classifier_version = ?, updated_at = ? WHERE id = ?",
+            ((version or _classifier_version()), now, int(media_id)),
+        )
+        return cur.rowcount > 0
 
 
 def get_cached_series_seasons(series_key: str) -> Optional[Dict[str, Any]]:
@@ -1360,13 +1439,18 @@ def claim_roxxy_registration_task() -> Optional[Dict[str, Any]]:
 
 
 def promote_roxxy_validated_tasks_for_identification() -> int:
-    """Queue tasks not yet processed by the current D2 classifier revision."""
+    """Queue tasks not yet processed by the current D2 classifier revision.
+
+    Only tasks whose downloaded file still exists are re-queued. Re-identifying a
+    record whose file was moved or deleted would turn a healthy entry into a
+    failed task, so those rows keep their previous verdict.
+    """
     now = datetime.now().isoformat(timespec="seconds")
-    classifier_version = "d2-multicat-4"
+    classifier_version = _classifier_version()
     promoted = 0
     with get_connection() as conn:
         rows = conn.execute(
-            "SELECT id, status, validation_json FROM roxxy_library_tasks "
+            "SELECT id, status, file_path, validation_json FROM roxxy_library_tasks "
             "WHERE status IN ('validated','identified','needs_review','duplicate')"
         ).fetchall()
         for row in rows:
@@ -1375,12 +1459,16 @@ def promote_roxxy_validated_tasks_for_identification() -> int:
             except Exception:
                 payload = {}
             identification = payload.get("d2_identification") or {}
-            if identification.get("classifier_version") != classifier_version:
-                conn.execute(
-                    "UPDATE roxxy_library_tasks SET status='queued', error=NULL, updated_at=? WHERE id=?",
-                    (now, int(row["id"])),
-                )
-                promoted += 1
+            if identification.get("classifier_version") == classifier_version:
+                continue
+            path = str(row["file_path"] or "")
+            if not path or not os.path.exists(path):
+                continue
+            conn.execute(
+                "UPDATE roxxy_library_tasks SET status='queued', error=NULL, updated_at=? WHERE id=?",
+                (now, int(row["id"])),
+            )
+            promoted += 1
     return promoted
 
 

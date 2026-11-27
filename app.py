@@ -30,7 +30,7 @@ import platform_support as platform_env
 import webdl_resolver as webdl
 from roxxy_module import roxxy_bp
 
-APP_VERSION = "v1.3D4"  # single source of truth; templates render this
+APP_VERSION = "v1.3D5"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -605,7 +605,16 @@ def _import_hint_media_payload(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return payload
 
 
-def _classify_import_hint(metadata: Dict[str, Any], expected_filename: str) -> str:
+def _classify_import_hint(
+    metadata: Dict[str, Any],
+    expected_filename: str,
+    parent_name: str = "",
+) -> Dict[str, Any]:
+    """Return the full classifier verdict for a TorBox import.
+
+    The file name and parent folder travel with the import so regional evidence
+    is not lost when the provider title is generic or English.
+    """
     try:
         # The JAV code is valid evidence, so include it when Roxxy did not
         # provide a usable filename for the torrent.
@@ -614,19 +623,61 @@ def _classify_import_hint(metadata: Dict[str, Any], expected_filename: str) -> s
         normalized_title = str(metadata.get("name") or "")
         if code and code.lower() not in normalized_title.lower():
             normalized_title = f"{normalized_title} {code}".strip()
-        result = class_eng.classify_media(
+        if not normalized_title and not filename_hint:
+            return {}
+        return class_eng.classify_media(
             filename=filename_hint,
-            normalized_title=normalized_title,
+            parent_name=parent_name or "",
+            normalized_title=normalized_title or None,
             metadata=metadata,
         )
-        if (
-            result.get("classification_status") == "classified"
-            and result.get("detected_category") in db.VALID_CATEGORIES
-        ):
-            return result["detected_category"]
     except Exception:
-        pass
-    return ""
+        return {}
+
+
+def _resolve_import_category(
+    category: str,
+    hint_metadata: Dict[str, Any],
+    expected_filename: str,
+    parent_name: str = "",
+) -> str:
+    """Prefer a classified hint verdict over the caller-supplied category."""
+    if not hint_metadata:
+        return category
+    verdict = _classify_import_hint(hint_metadata, expected_filename, parent_name)
+    detected = verdict.get("detected_category")
+    if verdict.get("classification_status") == "classified" and detected in db.VALID_CATEGORIES:
+        return detected
+    return category
+
+
+_ADULT_CATEGORIES = {"jav", "english_adult", "indo"}
+_NON_ADULT_CATEGORIES = {"general_movie", "tv_show", "anime", "donghua"}
+
+
+def _guard_adult_reclassification(item: Dict[str, Any], result: Dict[str, Any]) -> Dict[str, Any]:
+    """Never strip an adult category because weaker evidence appeared later.
+
+    Reclassification runs from stored media fields, which can be thinner than the
+    original provider metadata. An Indo item is never demoted, and an adult item
+    is never moved into a non-adult category; both cases become Needs Review while
+    the previous category stays visible.
+    """
+    old_category = str(item.get("content_category") or "uncategorized")
+    new_category = result.get("detected_category")
+    if result.get("classification_status") != "classified":
+        return result
+    demoted_indo = old_category == "indo" and new_category != "indo"
+    demoted_adult = old_category in _ADULT_CATEGORIES and new_category in _NON_ADULT_CATEGORIES
+    if demoted_indo or demoted_adult:
+        guarded = dict(result)
+        guarded["classification_status"] = "needs_review"
+        guarded["detected_category"] = None
+        guarded["warnings"] = list(result.get("warnings") or []) + [
+            "Reclassification suggested a weaker category; the previous adult category was kept for review."
+        ]
+        return guarded
+    return result
 
 
 def _get_lan_ip() -> str:
@@ -988,6 +1039,36 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
                 TASK_MGR.update(current=idx, message=f"Syncing Cloud ({idx}/{len(discovered)})...")
         conn.commit()
 
+    # Re-classify imported items with the file name and parent folder available.
+    # The add-time hint only sees the provider title, so this second pass can
+    # recover regional evidence that is stored on the TorBox entry itself.
+    for mid, entry in zip(new_or_updated_ids, discovered):
+        hint_metadata = entry.get("hint_metadata") or {}
+        if not hint_metadata:
+            continue
+        verdict = _classify_import_hint(
+            hint_metadata,
+            entry.get("file_name") or "",
+            entry.get("parent_name") or "",
+        )
+        if verdict.get("classification_status") not in ("classified", "needs_review"):
+            continue
+        verdict = _guard_adult_reclassification(
+            {"content_category": entry.get("content_category") or "uncategorized"},
+            verdict,
+        )
+        try:
+            saved_item = db.save_classification_result(
+                mid,
+                verdict,
+                changed_by="import_auto",
+                note="TorBox import classification",
+            )
+        except PermissionError:
+            continue
+        if saved_item and saved_item.get("content_category"):
+            entry["content_category"] = saved_item["content_category"]
+
     if auto_enrich and new_or_updated_ids:
         non_indo_ids = [mid for mid, entry in zip(new_or_updated_ids, discovered)
                         if (entry.get("content_category") or "") != "indo"]
@@ -1116,26 +1197,54 @@ def _scan_local_folders_worker(auto_enrich: bool = False) -> None:
 
 
 def _classify_pending_worker() -> None:
-    """Classify only pending + uncategorized records; legacy categorized media are untouched."""
+    """Re-run the classifier for new and outdated verdicts on the curated surfaces."""
     try:
-        candidates = db.get_pending_classification_candidates(limit=5000)
+        candidates = db.get_reclassify_candidates(limit=5000)
         total = len(candidates)
-        TASK_MGR.update(total=total, current=0, message=f"Classifying {total} new/unclassified items...")
+        TASK_MGR.update(total=total, current=0, message=f"Reclassifying {total} items...")
         classified_count = 0
         review_count = 0
         skipped_count = 0
         for idx, item in enumerate(candidates, start=1):
             try:
+                # media_items stores provider evidence separately; feed it back so
+                # a reclassification does not lose studio/genre signals that the
+                # original import used.
+                metadata = {
+                    "name": item.get("title") or "",
+                    "studio": item.get("studio") or "",
+                    "genres": item.get("genres") or [],
+                    "description": item.get("plot") or "",
+                    "year": item.get("year") or None,
+                }
                 result = class_eng.classify_media(
                     item.get("file_name") or "",
                     item.get("parent_name") or "",
-                    normalized_title=item.get("normalized_title") or None,
+                    normalized_title=item.get("normalized_title") or item.get("title") or None,
+                    metadata=metadata,
                 )
-                saved = db.save_classification_result(
-                    int(item["id"]), result,
-                    changed_by="classifier",
-                    note="Phase 3 batch classification",
-                )
+                old_category = str(item.get("content_category") or "uncategorized")
+                if old_category in db.RECLASSIFY_CATEGORIES:
+                    result = _guard_adult_reclassification(item, result)
+                    saved = db.save_classification_result(
+                        int(item["id"]), result,
+                        changed_by="classifier",
+                        note="Batch reclassification",
+                    )
+                elif (
+                    result.get("classification_status") == "classified"
+                    and result.get("detected_category") == "indo"
+                ):
+                    # Recover an Indo item that was stored in another bucket, but
+                    # never move a non-Indo row between non-adult categories.
+                    saved = db.save_classification_result(
+                        int(item["id"]), result,
+                        changed_by="classifier",
+                        note="Indo recovery during batch reclassification",
+                    )
+                else:
+                    db.mark_classifier_version(int(item["id"]))
+                    saved = None
                 if saved:
                     if result.get("classification_status") == "classified":
                         classified_count += 1
@@ -2730,9 +2839,12 @@ def api_torbox_add_cached():
         payload.get("poster_url") or hint_metadata.get("poster") or ""
     ).strip()[:2048]
     if hint_metadata:
-        detected_category = _classify_import_hint(hint_metadata, expected_filename)
-        if detected_category:
-            category = detected_category
+        category = _resolve_import_category(
+            category,
+            hint_metadata,
+            expected_filename,
+            str(payload.get("parent_name") or ""),
+        )
     if category not in db.VALID_CATEGORIES:
         category = "uncategorized"
 
@@ -3000,9 +3112,12 @@ def api_torbox_webdl_add():
         title = f"WebDL {urlparse(url).hostname or 'link'}"[:200]
 
     if hint_metadata:
-        detected_category = _classify_import_hint(hint_metadata, expected_filename)
-        if detected_category:
-            category = detected_category
+        category = _resolve_import_category(
+            category,
+            hint_metadata,
+            expected_filename,
+            str(payload.get("parent_name") or ""),
+        )
     if category not in db.VALID_CATEGORIES:
         category = "uncategorized"
 

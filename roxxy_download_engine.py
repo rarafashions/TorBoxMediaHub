@@ -450,7 +450,7 @@ def _identify_roxxy_media(task: Dict[str, Any], validation: Dict[str, Any]) -> D
 
     result = dict(validation or {})
     result["d2_identification"] = {
-        "classifier_version": "d2-multicat-4",
+        "classifier_version": classification_engine.CLASSIFIER_VERSION,
         "category": category,
         "classification_status": classification.get("classification_status"),
         "classification_method": classification.get("classification_method"),

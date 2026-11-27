@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 import database_manager as db
+import classification_engine as classifier
 
 
 class ClassificationDatabaseFixtureMixin:
@@ -185,6 +186,86 @@ class ClassificationDatabaseOperationsTests(ClassificationDatabaseFixtureMixin, 
         item = db.get_media_item(1)
         self.assertEqual(item["content_category"], "jav")
         self.assertEqual(item["classification_status"], "pending")
+
+    def _insert_reclass_row(self, unique_key: str, category: str = "english_adult") -> int:
+        with db.get_connection() as conn:
+            cur = conn.execute(
+                "INSERT INTO media_items (unique_key, file_name, title, content_category, "
+                "classification_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (unique_key, "Tante di Jakarta 720p.mp4", "Tante di Jakarta",
+                 category, "pending", "2026-11-01", "2026-11-01"),
+            )
+            return int(cur.lastrowid)
+
+    def test_reclassify_candidates_include_stale_categorized_rows(self):
+        db.migrate_classification_schema()
+        media_id = self._insert_reclass_row("stale-1")
+        candidates = db.get_reclassify_candidates()
+        keys = [c["unique_key"] for c in candidates]
+        self.assertIn("stale-1", keys)
+        # Every stale row is returned so the worker can recover an Indo item that
+        # was stored in the wrong bucket. Applying the verdict stays conservative.
+        self.assertIn("old-2", keys)
+
+        item = next(c for c in candidates if c["unique_key"] == "stale-1")
+        result = classifier.classify_media(
+            item["file_name"],
+            item.get("parent_name") or "",
+            normalized_title=item.get("title"),
+        )
+        saved = db.save_classification_result(media_id, result, changed_by="classifier")
+        self.assertEqual(saved["content_category"], "indo")
+        self.assertEqual(saved["classifier_version"], classifier.CLASSIFIER_VERSION)
+        self.assertNotIn("stale-1", [c["unique_key"] for c in db.get_reclassify_candidates()])
+
+    def test_mark_classifier_version_excludes_row_without_changing_category(self):
+        db.migrate_classification_schema()
+        media_id = self._insert_reclass_row("mark-1", category="tv_show")
+        self.assertTrue(db.mark_classifier_version(media_id))
+        item = db.get_media_item(media_id)
+        self.assertEqual(item["content_category"], "tv_show")
+        self.assertEqual(item["classifier_version"], classifier.CLASSIFIER_VERSION)
+        self.assertNotIn("mark-1", [c["unique_key"] for c in db.get_reclassify_candidates()])
+
+    def test_reclassify_skips_manual_classifications(self):
+        db.migrate_classification_schema()
+        media_id = self._insert_reclass_row("manual-1")
+        db.apply_manual_classification(
+            media_id, category="english_adult", normalized_title="Manual Title", note="user confirmed"
+        )
+        self.assertNotIn("manual-1", [c["unique_key"] for c in db.get_reclassify_candidates()])
+
+    def test_manual_status_requires_force_to_overwrite(self):
+        db.migrate_classification_schema()
+        media_id = self._insert_reclass_row("manual-2")
+        db.apply_manual_classification(
+            media_id, category="english_adult", normalized_title="Manual Title", lock=False
+        )
+        with self.assertRaises(PermissionError):
+            db.save_classification_result(
+                media_id,
+                {
+                    "classification_status": "classified",
+                    "detected_category": "indo",
+                    "normalized_title": "Auto Guess",
+                    "classification_method": "test",
+                    "category_confidence": 94,
+                    "signals": [],
+                },
+            )
+        forced = db.save_classification_result(
+            media_id,
+            {
+                "classification_status": "classified",
+                "detected_category": "indo",
+                "normalized_title": "Auto Guess",
+                "classification_method": "test",
+                "category_confidence": 94,
+                "signals": [],
+            },
+            force=True,
+        )
+        self.assertEqual(forced["content_category"], "indo")
 
 
 if __name__ == "__main__":

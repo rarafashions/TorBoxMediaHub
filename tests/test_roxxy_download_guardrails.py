@@ -579,10 +579,71 @@ class ImportHintMetadataTests(unittest.TestCase):
         self.assertEqual(app_module._import_hint_media_payload({}), {})
 
     def test_classification_uses_jav_code_when_filename_is_missing(self):
-        category = app_module._classify_import_hint(
+        verdict = app_module._classify_import_hint(
             {"name": "Sample JAV Title", "jav_code": "ABP-123"}, ""
         )
-        self.assertEqual(category, "jav")
+        self.assertEqual(verdict.get("classification_status"), "classified")
+        self.assertEqual(verdict.get("detected_category"), "jav")
+        self.assertTrue(verdict.get("classifier_version"))
+
+    def test_adult_category_is_not_downgraded_by_reclassification(self):
+        guarded = app_module._guard_adult_reclassification(
+            {"content_category": "english_adult"},
+            {
+                "classification_status": "classified",
+                "detected_category": "general_movie",
+                "classification_method": "title_plus_year",
+                "category_confidence": 82,
+                "normalized_title": "Some Title",
+                "signals": [],
+                "warnings": [],
+            },
+        )
+        self.assertEqual(guarded["classification_status"], "needs_review")
+        self.assertIsNone(guarded["detected_category"])
+        self.assertTrue(guarded["warnings"])
+
+    def test_uncategorized_item_can_become_a_new_category(self):
+        result = {
+            "classification_status": "classified",
+            "detected_category": "general_movie",
+            "classification_method": "title_plus_year",
+            "category_confidence": 82,
+            "normalized_title": "Some Title",
+            "signals": [],
+            "warnings": [],
+        }
+        guarded = app_module._guard_adult_reclassification({"content_category": "uncategorized"}, result)
+        self.assertEqual(guarded["detected_category"], "general_movie")
+
+    def test_indo_category_is_never_demoted(self):
+        guarded = app_module._guard_adult_reclassification(
+            {"content_category": "indo"},
+            {
+                "classification_status": "classified",
+                "detected_category": "english_adult",
+                "classification_method": "explicit_adult_keyword",
+                "category_confidence": 88,
+                "normalized_title": "Some Title",
+                "signals": [],
+                "warnings": [],
+            },
+        )
+        self.assertEqual(guarded["classification_status"], "needs_review")
+        self.assertIsNone(guarded["detected_category"])
+
+    def test_english_adult_can_become_indo(self):
+        result = {
+            "classification_status": "classified",
+            "detected_category": "indo",
+            "classification_method": "indo_keyword_classifier",
+            "category_confidence": 94,
+            "normalized_title": "Some Title",
+            "signals": [],
+            "warnings": [],
+        }
+        guarded = app_module._guard_adult_reclassification({"content_category": "english_adult"}, result)
+        self.assertEqual(guarded["detected_category"], "indo")
 
 
 class TorboxHintPersistenceTests(unittest.TestCase):

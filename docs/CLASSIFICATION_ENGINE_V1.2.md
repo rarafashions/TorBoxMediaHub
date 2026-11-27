@@ -143,3 +143,27 @@ Before wiring this engine into Sync/Scan or Enrich Meta:
 4. Keep `file_name` immutable; store user edits only in `normalized_title`.
 5. Require explicit confirmation for manual category overrides.
 6. Add the Needs Review API/UI only after database migration tests pass.
+
+## Revision d2-multicat-5 (2026-11-27)
+
+The engine order did not change: Indo, JAV, English Adult, then the episodic and movie
+categories. The revision fixes Indo recall on the TorBox auto-add path.
+
+- `classify_media` returns `classifier_version`. Store it; the media row carries the
+  same value in `media_items.classifier_version` (migration
+  `tbh_v1_3d5_multicat5_indo`).
+- `classify_indo` accepts `filename` and `parent_name` as evidence. The cloud import
+  path used to drop both when a provider title existed.
+- Dictionary phrases accept common suffixes (`-nya`, `-ku`, `-mu`, `-lah`, `-kah`,
+  `-pun`), so `Tetangganya` matches `tetangga`.
+- The supporting dictionary now covers kinship, work roles, housing settings,
+  regions/cities, Indonesian function words, and address terms. None of them are
+  English adult descriptors.
+- Two independent supporting clues are enough (`score >= 2`); one weight-1 clue is
+  still rejected, and a lone country adjective remains weak evidence.
+- Reclassification reads stored `studio`, `genres`, `plot`, and `year` so the verdict
+  is not thinner than the original import. `app._guard_adult_reclassification` keeps
+  an Indo item from being demoted and an adult item from moving into a non-adult
+  category; those rows become `needs_review` instead.
+- Rows outside `uncategorized`, `indo`, and `english_adult` are only rewritten when
+  the new verdict is `indo`; otherwise only `classifier_version` is stamped.

@@ -26,6 +26,9 @@ VALID_CATEGORIES = {
 NEEDS_REVIEW = "needs_review"
 CLASSIFIED = "classified"
 REVIEW_THRESHOLD = 70
+# Bump when an engine rule or keyword set changes the expected outcome.
+# d2-multicat-5: Indo accepts file/folder evidence, affix variants, two clues.
+CLASSIFIER_VERSION = "d2-multicat-5"
 
 
 def _plain_tokens(value: str) -> str:
@@ -153,6 +156,11 @@ def classify_media(
         "description": f"{parent_name} {metadata_description}",
         "original_url": _as_text(metadata.get("url") or metadata.get("original_url")),
         "overview": metadata_description,
+        # File name and parent folder are valid regional evidence. They are
+        # deliberately absent from adult_evidence below so a local file name
+        # can never promote a Western scene into English Adult.
+        "filename": filename,
+        "parent_name": parent_name,
     })
     selected_indo = indo_title_verdict if indo_title_verdict.get("is_indo") else indo_verdict
     if selected_indo.get("is_indo"):
@@ -317,6 +325,7 @@ def classify_media(
         "original_filename": filename,
         "parent_name": parent_name,
         "normalized_title": normalized,
+        "classifier_version": CLASSIFIER_VERSION,
         # Contract (docs/CLASSIFICATION_ENGINE_V1.2.md): a Needs Review result
         # never exposes a candidate category to the caller.
         "detected_category": category if status == CLASSIFIED else None,

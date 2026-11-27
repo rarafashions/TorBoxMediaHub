@@ -154,6 +154,37 @@ class IndoKeywordPriorityTests(unittest.TestCase):
         result = classify_media("English Teen Anal Blowjob Scene.mp4")
         self.assertEqual(result["detected_category"], "english_adult")
 
+    def test_two_supporting_clues_are_enough(self):
+        verdict = indo_eng.classify_indo({"title": "Tante di Jakarta"})
+        self.assertTrue(verdict["is_indo"], verdict)
+        self.assertEqual(verdict["score"], 2)
+
+    def test_single_supporting_clue_is_not_enough(self):
+        verdict = indo_eng.classify_indo({"title": "Tante malam minggu"})
+        self.assertFalse(verdict["is_indo"], verdict)
+
+    def test_possessive_suffix_matches_regional_word(self):
+        verdict = indo_eng.classify_indo({"title": "Tetangganya di kontrakan"})
+        self.assertTrue(verdict["is_indo"], verdict)
+        self.assertIn("tetangga", verdict["matched_keywords"])
+
+    def test_filename_evidence_can_classify_indo(self):
+        result = classify_media(
+            "janda anak kos 720p.mp4",
+            normalized_title="Generic Amateur Scene",
+            metadata={"genres": ["Amateur"]},
+        )
+        self.assertEqual(result["classification_status"], "classified", result)
+        self.assertEqual(result["detected_category"], "indo")
+        self.assertEqual(result["classifier_version"], "d2-multicat-5")
+
+    def test_neutral_filename_does_not_flip_english_adult(self):
+        result = classify_media(
+            "scene.2024.1080p.mp4",
+            normalized_title="[Blacked] Riley Steele - The Wedding Singer",
+        )
+        self.assertEqual(result["detected_category"], "english_adult")
+
 
 if __name__ == "__main__":
     unittest.main()
