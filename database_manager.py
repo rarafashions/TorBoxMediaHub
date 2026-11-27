@@ -2213,6 +2213,7 @@ def get_telemetry_stats() -> Dict[str, Any]:
                 SUM(CASE WHEN content_category = 'tv_show' THEN 1 ELSE 0 END) AS series_count,
                 SUM(CASE WHEN content_category = 'anime' THEN 1 ELSE 0 END) AS anime_count,
                 SUM(CASE WHEN content_category = 'donghua' THEN 1 ELSE 0 END) AS donghua_count,
+                SUM(CASE WHEN content_category = 'indo_movie' THEN 1 ELSE 0 END) AS indo_movie_count,
                 SUM(CASE WHEN is_watched = 1 THEN 1 ELSE 0 END) AS watched_count,
                 SUM(CASE WHEN classification_status = 'pending' THEN 1 ELSE 0 END) AS classification_pending_count,
                 SUM(CASE WHEN classification_status = 'classified' THEN 1 ELSE 0 END) AS classification_classified_count,

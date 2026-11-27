@@ -14,7 +14,7 @@ import time
 from collections import OrderedDict
 from urllib.parse import parse_qs, unquote
 from urllib.parse import quote, urlparse
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 from flask import Blueprint, current_app, jsonify, render_template, request
@@ -541,23 +541,43 @@ def api_save_config():
         return jsonify({"ok": False, "error": "Folder download tidak boleh kosong."}), 400
     # The settings form leaves a token field empty unless it is replaced; an
     # empty value must not wipe an already configured manifest.
+    current = _settings()
     values: Dict[str, str] = {"roxxy_download_path": folder}
+    updated: List[str] = []
     for source, raw in candidates.items():
         values[_MANIFEST_SETTINGS[source]] = raw
+        # Compare against the effective value so a re-saved token (including a
+        # legacy/env one) is not reported as a fresh update.
+        if _manifest_url(source) != raw:
+            updated.append(source)
     # Legacy columns are still written because older jobs/UI read them directly.
     if "english_adult" in candidates:
         values["roxxy_manifest_url"] = candidates["english_adult"]
     if "donghua" in candidates:
         values["roxxy_extra_manifest_url"] = candidates["donghua"]
     _save_private_settings(values)
-    changed = len(candidates)
+    folder_changed = (current.get("roxxy_download_path") or DEFAULT_DOWNLOAD_PATH).strip() != folder
+    changed = len(updated)
+    if updated:
+        labels = ", ".join(ROXXY_SOURCE_LABELS.get(src, src) for src in updated)
+        message = (
+            f"Konfigurasi Video Feeds disimpan ({changed} manifest diperbarui: {labels}). "
+            + ("Folder download juga diperbarui. " if folder_changed else "")
+            + "Token tidak ditampilkan kembali."
+        )
+    elif folder_changed:
+        message = (
+            "Konfigurasi Video Feeds disimpan (folder download diperbarui, "
+            "tidak ada manifest yang berubah). Token tidak ditampilkan kembali."
+        )
+    else:
+        message = "Konfigurasi Video Feeds tidak berubah; tidak ada manifest atau folder yang perlu diperbarui."
     return jsonify({
         "ok": True,
         "changed": changed,
-        "message": (
-            f"Konfigurasi Video Feeds disimpan ({changed} manifest diperbarui). "
-            "Token tidak ditampilkan kembali."
-        ),
+        "updated_sources": updated,
+        "folder_changed": folder_changed,
+        "message": message,
     })
 
 

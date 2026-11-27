@@ -106,7 +106,7 @@
       <!-- STICKY CONTROLS WRAPPER (TELEMETRY + SCOPE + FILTER BAR + SERIES SUBNAV) -->
       <div id="library-sticky-controls" class="sticky z-20 bg-slate-950/95 backdrop-blur -mx-4 px-4 pt-1 pb-3 mb-3 border-b border-slate-800/80 shadow-md" style="top: 65px;">
         <!-- TELEMETRY STRIP -->
-        <div class="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2 mb-3">
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 2xl:grid-cols-9 gap-2 mb-3">
           <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
             <div class="text-[11px] text-slate-400">Total Media</div>
             <div class="text-lg font-bold text-white"><span id="stat-total">0</span> <span class="text-[11px] font-normal text-emerald-400">(Free: <span id="stat-unassigned">0</span>)</span></div>
@@ -134,6 +134,10 @@
           <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
             <div class="text-[11px] text-slate-400">JAV / English Adult</div>
             <div class="text-sm font-bold text-rose-400 mt-1"><span id="stat-jav">0</span> / <span id="stat-adult">0</span></div>
+          </div>
+          <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
+            <div class="text-[11px] text-slate-400">Indonesia Movies</div>
+            <div class="text-sm font-bold text-orange-400 mt-1"><span id="stat-indo">0</span></div>
           </div>
           <div class="bg-slate-900 border border-slate-800 rounded-lg p-2.5">
             <div class="text-[11px] text-slate-400">Watched</div>
@@ -1845,6 +1849,7 @@
       document.getElementById("stat-donghua").textContent = stats.donghua_count || 0;
       document.getElementById("stat-jav").textContent = stats.jav_count || 0;
       document.getElementById("stat-adult").textContent = stats.english_adult_count || 0;
+      document.getElementById("stat-indo").textContent = stats.indo_movie_count || 0;
       document.getElementById("stat-watched").textContent = stats.watched_count || 0;
       document.getElementById("stat-uncat").textContent = stats.uncategorized_count || 0;
 

@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import app as app_module
+import database_manager as db
 import roxxy_download_engine as engine
 import roxxy_module as rm
 
@@ -203,6 +204,103 @@ class IndonesiaMovieGuardTests(unittest.TestCase):
         )
         self.assertEqual(result["classification_status"], "needs_review")
         self.assertIsNone(result["detected_category"])
+
+
+class ConfigSaveMessageTests(unittest.TestCase):
+    """Saving config must say what actually changed, not just echo a count."""
+
+    def setUp(self):
+        self.client = app_module.app.test_client()
+
+    def _post(self, payload, settings):
+        with patch.object(rm, "_settings", return_value=settings), \
+                patch.object(rm, "_save_private_settings"):
+            response = self.client.post("/api/roxxy/config", json=payload)
+        self.assertEqual(response.status_code, 200)
+        return response.get_json()
+
+    def test_folder_only_change_does_not_claim_a_manifest_update(self):
+        settings = {**_settings(), "roxxy_download_path": r"E:\Old"}
+        payload = self._post({"download_path": r"E:\New"}, settings)
+        self.assertEqual(payload["changed"], 0)
+        self.assertEqual(payload["updated_sources"], [])
+        self.assertTrue(payload["folder_changed"])
+        self.assertIn("folder download diperbarui", payload["message"])
+        self.assertNotIn("0 manifest diperbarui", payload["message"])
+
+    def test_unchanged_settings_report_no_change(self):
+        settings = {**_settings(), "roxxy_download_path": r"E:\Movies"}
+        payload = self._post({
+            "manifests": {"jav": _manifest("jav")},
+            "download_path": r"E:\Movies",
+        }, settings)
+        self.assertEqual(payload["changed"], 0)
+        self.assertFalse(payload["folder_changed"])
+        self.assertIn("tidak berubah", payload["message"])
+
+    def test_replaced_manifest_is_named_in_the_message(self):
+        replacement = "https://hub.roxxy-tech.com/" + "z" * 40 + "/manifest.json"
+        payload = self._post({
+            "manifests": {"jav": replacement},
+            "download_path": r"E:\Movies",
+        }, {**_settings(), "roxxy_download_path": r"E:\Movies"})
+        self.assertEqual(payload["changed"], 1)
+        self.assertEqual(payload["updated_sources"], ["jav"])
+        self.assertIn("JAV", payload["message"])
+        self.assertNotIn("z" * 40, payload["message"])
+
+    def test_legacy_slot_resaved_is_not_reported_as_an_update(self):
+        settings = {"roxxy_manifest_url": _manifest("english_adult")}
+        payload = self._post({
+            "manifest_url": _manifest("english_adult"),
+            "download_path": r"E:\Movies",
+        }, settings)
+        self.assertEqual(payload["changed"], 0)
+        self.assertEqual(payload["updated_sources"], [])
+
+
+class TelemetryCategoryCountTests(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self._old = (db.DB_DIR, db.DB_PATH, db.CACHE_DIR, db.BACKUP_DIR, db.PLAYLIST_DIR)
+        for name, value in (
+            ("DB_DIR", self.temp_dir.name),
+            ("DB_PATH", os.path.join(self.temp_dir.name, "torbox_media_hub.db")),
+            ("CACHE_DIR", os.path.join(self.temp_dir.name, "cache")),
+            ("BACKUP_DIR", os.path.join(self.temp_dir.name, "backups")),
+            ("PLAYLIST_DIR", os.path.join(self.temp_dir.name, "playlists")),
+        ):
+            setattr(db, name, value)
+        db.init_db()
+
+    def tearDown(self):
+        (db.DB_DIR, db.DB_PATH, db.CACHE_DIR, db.BACKUP_DIR, db.PLAYLIST_DIR) = self._old
+        self.temp_dir.cleanup()
+
+    def _insert(self, unique_key, category, is_adult=0):
+        with db.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO media_items (unique_key, file_name, title, content_category, is_adult, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (unique_key, unique_key + ".mkv", unique_key, category, is_adult, "2026-01-01", "2026-01-01"),
+            )
+
+    def test_indonesia_movies_have_their_own_telemetry_bucket(self):
+        self._insert("films-1", "indo_movie")
+        self._insert("jav-1", "jav", 1)
+        stats = db.get_telemetry_stats()
+        self.assertEqual(stats["indo_movie_count"], 1)
+        self.assertEqual(stats["jav_count"], 1)
+        self.assertEqual(stats["total"], 2)
+
+
+class HomeStatsTemplateTests(unittest.TestCase):
+    def test_indonesia_movies_card_is_rendered_and_populated(self):
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "templates", "index.html")
+        with open(path, encoding="utf-8") as fh:
+            html = fh.read()
+        self.assertIn('id="stat-indo"', html)
+        self.assertIn("stats.indo_movie_count", html)
 
 
 class RoxxyTemplateGenreTests(unittest.TestCase):
