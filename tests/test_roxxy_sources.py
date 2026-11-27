@@ -498,6 +498,19 @@ class RoxxyTemplateAnalysisTests(unittest.TestCase):
         self.assertIn("queueTorboxCacheCheck(i)", self.template)
         self.assertNotIn("checkTorboxCache(i);", self.template)
 
+    def test_catalog_filter_has_its_own_dropdown(self):
+        self.assertIn('id="catalog-filter-select"', self.template)
+        self.assertIn("$('catalog-filter-select').addEventListener('change', applyCatalogSearchFilter)", self.template)
+        self.assertIn("const raw = $('catalog-filter-select')?.value || ''", self.template)
+        # The genre control stays dedicated to the addon's genre extra.
+        self.assertNotIn("$('genre-select').innerHTML = `<option value=\"cat:", self.template)
+
+    def test_toolbar_swaps_genre_for_catalog_filter_in_all_mode(self):
+        self.assertIn("function updateCatalogControls(allMode)", self.template)
+        self.assertIn("genre.classList.toggle('hidden', !!allMode)", self.template)
+        self.assertIn("filter.classList.toggle('hidden', !allMode)", self.template)
+        self.assertIn("updateCatalogControls(allMode)", self.template)
+
 
 if __name__ == "__main__":
     unittest.main()

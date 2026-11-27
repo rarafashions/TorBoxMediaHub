@@ -55,8 +55,11 @@
         <select id="catalog-select" class="min-w-[165px] rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-200 outline-none transition focus:border-sky-500 focus:bg-slate-900">
           <option value="">Load manifest dulu</option>
         </select>
-        <select id="genre-select" title="Filter genre atau hasil per katalog" class="min-w-[150px] max-w-[240px] rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-200 outline-none transition focus:border-sky-500 focus:bg-slate-900">
+        <select id="genre-select" title="Genre katalog ini" class="min-w-[150px] max-w-[240px] rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-200 outline-none transition focus:border-sky-500 focus:bg-slate-900">
           <option value="">Semua Genre</option>
+        </select>
+        <select id="catalog-filter-select" title="Filter hasil per katalog" class="hidden min-w-[150px] max-w-[240px] rounded-full border border-white/10 bg-white/5 px-3.5 py-2 text-xs font-medium text-slate-200 outline-none transition focus:border-sky-500 focus:bg-slate-900">
+          <option value="">Semua katalog</option>
         </select>
         <div class="relative flex-1 min-w-[180px]">
           <input id="search-query" placeholder="Cari kode atau judul..." class="w-full rounded-full border border-white/10 bg-white/5 pl-4 pr-20 py-2 text-xs text-white placeholder-slate-400 outline-none transition focus:border-sky-500 focus:bg-slate-900">
@@ -493,6 +496,9 @@ function selectCatalog() {
   $('result-count').textContent = '0 judul';
   $('load-more-wrap').classList.add('hidden');
   roxxySearchAllState = null;
+  updateCatalogControls(false);
+  const filterSelect = $('catalog-filter-select');
+  if (filterSelect) filterSelect.value = '';
   populateSelectedCatalogGenres(c);
   if (selectedCatalog) loadCatalog();
 }
@@ -531,11 +537,12 @@ let roxxySearchAllState = null;
 
 function catalogKey(c) { return `${c.source || 'english_adult'}:${c.type}:${c.id}`; }
 
-// The per-catalog search summary lives inside the Genre dropdown: one compact
-// combo box instead of a chip row that eats grid space. Only catalogs that
-// actually returned results are listed, so the list stays short.
+// The per-catalog result filter owns its own dropdown; the Genre dropdown is
+// reserved for the addon's `genre` extra so the two never fight for one
+// control in all-catalog search mode. Only catalogs that actually returned
+// results are listed, so the list stays short.
 function renderCatalogSearchSummary(state) {
-  const select = $('genre-select');
+  const select = $('catalog-filter-select');
   if (!select || !state) return;
   const current = select.value || '';
   const total = (window._roxxyItems || []).length;
@@ -544,7 +551,7 @@ function renderCatalogSearchSummary(state) {
     const st = state.status[catalogKey(c)] || {};
     return !st.state || st.state === 'pending';
   });
-  const options = [`<option value="">Semua: ${total}${pending ? ' …' : ''}</option>`];
+  const options = [`<option value="">Semua katalog: ${total}${pending ? ' …' : ''}</option>`];
   const perCatalog = [];
   for (const c of active) {
     const key = catalogKey(c);
@@ -593,13 +600,13 @@ function populateSelectedCatalogGenres(c, keep = '') {
     + options.map(x => `<option value="${esc(x)}"${x === selected ? ' selected' : ''}>${esc(x)}</option>`).join('');
   $('genre-select').title = required
     ? 'Genre wajib untuk katalog ini'
-    : 'Filter genre atau hasil per katalog';
+    : 'Genre katalog ini';
   if (selected) $('genre-select').value = selected;
   window._roxxyGenre = selected;
 }
 
 function applyCatalogSearchFilter() {
-  const raw = $('genre-select').value || '';
+  const raw = $('catalog-filter-select')?.value || '';
   const filter = raw.startsWith('cat:') ? raw.slice(4) : '';
   let visible = 0;
   document.querySelectorAll('#catalog-results [data-catalog]').forEach(card => {
@@ -611,25 +618,29 @@ function applyCatalogSearchFilter() {
   $('result-count').textContent = filter ? `${visible} dari ${total} judul` : `${total} judul`;
 }
 
+// All-catalog search has no single genre to choose, so the genre control hides
+// and the per-catalog result filter takes its place in the toolbar.
+function updateCatalogControls(allMode) {
+  const genre = $('genre-select');
+  const filter = $('catalog-filter-select');
+  if (!genre || !filter) return;
+  genre.classList.toggle('hidden', !!allMode);
+  filter.classList.toggle('hidden', !allMode);
+}
+
 // A catalog genre (e.g. MissAV -> Uncensored Leak) is an addon-side filter:
 // hiding already-loaded cards would only ever show the default page. Selecting
 // one reloads the catalog with `?genre=` so the addon returns the right items.
 function applyGenreSelection() {
   const raw = $('genre-select').value || '';
-  if (raw.startsWith('cat:')) {
-    applyCatalogSearchFilter();
-    return;
-  }
   // Clearing a genre must fetch the unfiltered catalog again, so a real change
   // (including back to "Semua Genre") always reloads from the addon.
   const previous = window._roxxyGenre || '';
-  if (!selectedCatalog || raw === previous) {
-    applyCatalogSearchFilter();
-    return;
-  }
+  if (!selectedCatalog || raw === previous) return;
   const allBox = $('search-all-catalogs');
   if (allBox && allBox.checked) allBox.checked = false;
   roxxySearchAllState = null;
+  updateCatalogControls(false);
   setStatus(raw
     ? `Memuat genre "${raw}" dari ${selectedCatalog.name}…`
     : `Memuat ulang ${selectedCatalog.name} tanpa filter genre…`);
@@ -788,6 +799,7 @@ async function fetchCatalogPage(reset = false) {
   const wantsAllCatalogs = !!$('search-all-catalogs')?.checked;
   const query = $('search-query').value.trim();
   const allMode = wantsAllCatalogs && !!query;
+  updateCatalogControls(allMode);
   if (!allMode && !selectedCatalog) {
     setStatus(wantsAllCatalogs ? 'Isi kata kunci dulu untuk mencari di semua katalog.' : 'Pilih katalog dulu.');
     return;
@@ -797,9 +809,13 @@ async function fetchCatalogPage(reset = false) {
     window._roxxyItems = [];
     roxxyNextSkip = 0;
     roxxyHasMore = false;
+    const filterSelect = $('catalog-filter-select');
+    if (filterSelect) filterSelect.value = '';
     $('catalog-results').innerHTML = '<div data-search-placeholder class="col-span-full py-12 text-center text-sm text-slate-500">Memuat katalog…</div>';
   }
   if (allMode && !searchableCatalogs().length) {
+    const filterSelect = $('catalog-filter-select');
+    if (filterSelect) filterSelect.innerHTML = '<option value="">Tidak ada hasil</option>';
     $('catalog-results').innerHTML = '<div class="col-span-full py-12 text-center text-sm text-slate-500">Addon ini belum punya katalog dengan dukungan pencarian.</div>';
     setStatus('Tidak ada katalog pencarian di addon ini.');
     finishCatalogSearchProgress('Tidak ada katalog pencarian.');
@@ -836,7 +852,7 @@ async function fetchCatalogPage(reset = false) {
       const failed = (roxxySearchAllState.catalogs || active).filter(c => (roxxySearchAllState.status[catalogKey(c)] || {}).state === 'error').length;
       const label = `Selesai — ${window._roxxyItems.length} hasil` + (failed ? `, ${failed} katalog gagal` : '');
       finishCatalogSearchProgress(label);
-      setStatus(label + '. Filter katalog ada di dropdown genre, tanpa mencari ulang.');
+      setStatus(label + '. Filter hasil per katalog ada di dropdown katalog, tanpa mencari ulang.');
     } else {
       // Single-catalog mode keeps its own pagination and genre filter.
       const hadAllState = !!roxxySearchAllState;
@@ -844,13 +860,13 @@ async function fetchCatalogPage(reset = false) {
         roxxySearchAllState = null;
         window._roxxyItems = [];
         roxxyNextSkip = 0;
+        const filterSelect = $('catalog-filter-select');
+        if (filterSelect) filterSelect.value = '';
       }
       if (reset || hadAllState) {
-        const keepGenre = ($('genre-select').value || '').startsWith('cat:') ? '' : ($('genre-select').value || '');
-        populateSelectedCatalogGenres(selectedCatalog, keepGenre);
+        populateSelectedCatalogGenres(selectedCatalog, $('genre-select').value || '');
       }
-      const rawGenre = $('genre-select').value || '';
-      const genre = rawGenre.startsWith('cat:') ? '' : rawGenre;
+      const genre = $('genre-select').value || '';
       const searchIgnored = !!query && !catalogSupportsSearch(selectedCatalog);
       const singleRequest = fetchOneCatalog(selectedCatalog, roxxyNextSkip, query, genre);
       setCatalogSearchProgress(25, 'Mengirim permintaan ke server Video Feeds…');
@@ -1735,6 +1751,15 @@ $('search-query').addEventListener('keydown', e => { if (e.key === 'Enter') load
 // Catalog-result filters are client-side; a real catalog genre reloads the
 // catalog from the addon with its `genre` extra so the server does the filtering.
 $('genre-select').addEventListener('change', applyGenreSelection);
+$('catalog-filter-select').addEventListener('change', applyCatalogSearchFilter);
+$('search-all-catalogs').addEventListener('change', e => {
+  // Swap the toolbar controls as soon as the mode changes, not only on "Cari".
+  const allMode = e.target.checked && !!$('search-query').value.trim();
+  updateCatalogControls(allMode);
+  if (allMode && !roxxySearchAllState) {
+    $('catalog-filter-select').innerHTML = '<option value="">Semua katalog</option>';
+  }
+});
 // Always keep the header badge and TorBox panel fresh, including downloads
 // started before this page was opened. The status route is memory-only.
 setInterval(refreshRoxxyTorboxStatus, 5000);
