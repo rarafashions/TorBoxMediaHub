@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import json
 import logging.handlers
 import os
@@ -3034,6 +3035,41 @@ def api_series_check_torbox_cache():
     )
 
 
+def _validate_usenet_link(raw_url: str) -> Tuple[bool, str]:
+    """Validate an NZB link before TorBox Usenet fetches it.
+
+    The URL travels to TorBox, not to this process, so this only rejects what
+    can never work or should never be submitted: non-HTTP schemes, embedded
+    credentials, over-long links, and local/private destinations. The Roxxy
+    forwarder itself stays allowed, because a failed decode falls back to it.
+    """
+    text = str(raw_url or "").strip()
+    if not text:
+        return False, "NZB URL wajib diisi."
+    if len(text) > 2048:
+        return False, "NZB URL terlalu panjang (maksimum 2048 karakter)."
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return False, "NZB URL tidak valid."
+    if parsed.scheme.lower() not in ("http", "https"):
+        return False, "NZB URL harus memakai http atau https."
+    if not parsed.hostname:
+        return False, "NZB URL tidak memiliki nama host."
+    if parsed.username or parsed.password:
+        return False, "NZB URL yang memuat kredensial tidak diizinkan."
+    host = parsed.hostname.rstrip(".").lower()
+    if host in {"localhost", "localhost.localdomain"} or host.endswith((".local", ".internal")):
+        return False, "Host jaringan lokal tidak diizinkan."
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        return False, "Alamat IP privat/reserved tidak diizinkan."
+    return True, ""
+
+
 @app.route("/api/torbox/add-cached", methods=["POST"])
 def api_torbox_add_cached():
     """
@@ -3076,8 +3112,9 @@ def api_torbox_add_cached():
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
         if kind == "usenet":
-            if not nzb_url:
-                return jsonify({"ok": False, "error": "NZB URL is missing."}), 400
+            safe, url_error = _validate_usenet_link(nzb_url)
+            if not safe:
+                return jsonify({"ok": False, "error": url_error}), 400
             multipart_fields = {
                 "link": (None, nzb_url),
                 "name": (None, name or "Usenet Download"),

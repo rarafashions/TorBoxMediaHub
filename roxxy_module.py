@@ -742,57 +742,98 @@ def api_streams(stream_type: str, stream_id: str):
         return jsonify({"ok": False, "error": _safe_error(exc)}), 502
 
 
-def _decode_forwarded_magnet(raw_url: str) -> Optional[str]:
-    """Extract a Magnet URI from Roxxy's known torrent/dl forwarding payload.
+# Roxxy serves signed forwarder links from its own domain. Only payloads from
+# these domains may be decoded; anything else is left untouched so a look-alike
+# host cannot smuggle a URL into a TorBox submission. `ROXXY_FORWARD_HOSTS`
+# accepts extra comma-separated domains for other deployments.
+ROXXY_FORWARD_DOMAINS = tuple(
+    entry.strip().lstrip(".").rstrip(".").lower()
+    for entry in (os.environ.get("ROXXY_FORWARD_HOSTS") or "roxxy-tech.com").split(",")
+    if entry.strip()
+)
+_FORWARD_PAYLOAD_MAX = 8192
 
-    Roxxy may mark this stream kind=direct even though its `d` parameter
-    contains a base64 JSON object whose `m` field is the actual magnet.
+
+def _is_forward_host(host: Optional[str]) -> bool:
+    """True when ``host`` is an allowlisted Roxxy forwarder domain (or subdomain)."""
+    value = str(host or "").strip().rstrip(".").lower()
+    if not value:
+        return False
+    return any(
+        value == domain or value.endswith("." + domain)
+        for domain in ROXXY_FORWARD_DOMAINS
+    )
+
+
+def _decode_forwarded_payload(raw_url: str) -> Dict[str, Any]:
+    """Decode the signed ``d=<base64url JSON>`` payload of a forwarder URL.
+
+    Roxxy marks several stream kinds as ``direct`` even though the real target
+    (magnet, NZB or media URL) only exists inside this payload, sometimes on a
+    path that does not carry a file extension. The host allowlist decides which
+    URLs may be decoded at all, the payload is bounded, and a payload that is a
+    bare URL is returned as ``{"u": ...}``.
     """
-    parsed = urlparse(raw_url)
+    parsed = urlparse(str(raw_url or ""))
     if parsed.scheme not in ("http", "https"):
-        return None
-    if parsed.hostname not in {"rt-openclaw.roxxy-tech.com"}:
-        return None
-    if not parsed.path.endswith("/torrent/dl"):
-        return None
+        return {}
+    if not _is_forward_host(parsed.hostname):
+        return {}
     encoded = (parse_qs(parsed.query).get("d") or [""])[0]
-    if not encoded:
-        return None
+    if not encoded or len(encoded) > _FORWARD_PAYLOAD_MAX:
+        return {}
     try:
         padded = encoded + "=" * (-len(encoded) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-        magnet = unquote(str(payload.get("m") or "")).strip()
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8")
+    except Exception:
+        return {}
+    text = decoded.strip()[: _FORWARD_PAYLOAD_MAX]
+    if text.startswith(("http://", "https://")):
+        return {"u": text}
+    try:
+        payload = json.loads(text)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _decode_forwarded_magnet(raw_url: str) -> Optional[str]:
+    """Extract a Magnet URI from Roxxy's forwarding payload.
+
+    Roxxy may mark this stream kind=direct even though its ``d`` parameter
+    contains the actual magnet in the ``m`` field. Only the known torrent
+    forwarder path is decoded, so a magnet-shaped field elsewhere cannot
+    hijack a stream that was routed differently.
+    """
+    parsed = urlparse(str(raw_url or ""))
+    if not parsed.path.endswith("/torrent/dl"):
+        return None
+    payload = _decode_forwarded_payload(raw_url)
+    for key in ("m", "magnet"):
+        magnet = unquote(str(payload.get(key) or "")).strip()
         if magnet.lower().startswith("magnet:?xt=urn:btih:"):
             return magnet
-    except Exception:
-        return None
     return None
 
 
 def _decode_forwarded_nzb(raw_url: str) -> Optional[str]:
     """Extract an NZB link from Roxxy's usenet forwarding payload.
 
-    The hoster addon wraps NZB downloads in a signed ``/nzb/dl?d=<base64>``
-    URL. TorBox needs the real NZB URL, not the forwarder.
+    The hoster addon wraps NZB downloads in a signed ``/nzb/dl?d=<base64>`` URL.
+    TorBox needs the real NZB URL, not the forwarder. Explicit ``n``/``nzb``
+    fields are trusted on any forwarder path, while the weaker ``u``/``url``/...
+    aliases only count when the path itself declares an NZB; that keeps a
+    forwarded HLS/media payload from being misrouted to Usenet.
     """
-    parsed = urlparse(raw_url)
-    if parsed.scheme not in ("http", "https"):
+    payload = _decode_forwarded_payload(raw_url)
+    if not payload:
         return None
-    if parsed.hostname not in {"rt-openclaw.roxxy-tech.com"}:
-        return None
-    if "/nzb/" not in parsed.path and not parsed.path.endswith(".nzb"):
-        return None
-    encoded = (parse_qs(parsed.query).get("d") or [""])[0]
-    if not encoded:
-        return None
-    try:
-        padded = encoded + "=" * (-len(encoded) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8"))
-    except Exception:
-        return None
-    if not isinstance(payload, dict):
-        return None
-    for key in ("n", "nzb", "u", "url", "link"):
+    path = urlparse(str(raw_url or "")).path.lower()
+    declares_nzb = "/nzb/" in path or path.endswith((".nzb", "/nzb"))
+    keys = ["n", "nzb"]
+    if declares_nzb:
+        keys += ["u", "url", "link", "download", "file"]
+    for key in keys:
         value = unquote(str(payload.get(key) or "")).strip()
         if value.startswith(("http://", "https://")):
             return value
@@ -800,6 +841,7 @@ def _decode_forwarded_nzb(raw_url: str) -> Optional[str]:
 
 
 def _looks_like_nzb_url(raw_url: str) -> bool:
+    """Path/extension hint for NZB links that are not forwarder payloads."""
     lower = str(raw_url or "").lower()
     if lower.endswith(".nzb"):
         return True

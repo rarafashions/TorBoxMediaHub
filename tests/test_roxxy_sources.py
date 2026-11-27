@@ -424,7 +424,7 @@ class ForwardedPayloadTests(unittest.TestCase):
         return f"https://{host}{path}?d={token}"
 
     def test_nzb_payload_keys_are_all_accepted(self):
-        for key in ("n", "nzb", "u", "url", "link"):
+        for key in ("n", "nzb", "u", "url", "link", "download", "file"):
             url = self._forward({key: "https://hoster.example/release.nzb"})
             self.assertEqual(rm._decode_forwarded_nzb(url), "https://hoster.example/release.nzb")
 
@@ -432,7 +432,61 @@ class ForwardedPayloadTests(unittest.TestCase):
         url = self._forward({"u": "https%3A%2F%2Fhoster.example%2Ffile.nzb"})
         self.assertEqual(rm._decode_forwarded_nzb(url), "https://hoster.example/file.nzb")
 
-    def test_nzb_forwarder_rejects_unknown_host_and_path(self):
+    def test_nzb_explicit_field_works_on_a_new_forwarder_path(self):
+        # Generic decoder: the explicit `nzb` field is trusted on any path.
+        for path in ("/dl", "/v2/nzb/download", "/release.nzb"):
+            url = self._forward({"nzb": "https://hoster.example/file.nzb"}, path=path)
+            self.assertEqual(rm._decode_forwarded_nzb(url), "https://hoster.example/file.nzb")
+
+    def test_nzb_weak_alias_needs_an_nzb_path(self):
+        # A forwarded media payload on a non-NZB path must not become Usenet.
+        self.assertIsNone(rm._decode_forwarded_nzb(
+            self._forward({"u": "https://cdn.example/movie.m3u8"}, path="/hls/dl")))
+
+    def test_bare_url_payload_is_decoded_for_nzb_paths(self):
+        token = base64.urlsafe_b64encode(b"https://hoster.example/release.nzb").decode().rstrip("=")
+        self.assertEqual(
+            rm._decode_forwarded_nzb(f"https://rt-openclaw.roxxy-tech.com/nzb/dl?d={token}"),
+            "https://hoster.example/release.nzb",
+        )
+
+    def test_forwarder_host_allowlist_covers_the_domain_only(self):
+        payload = {"u": "https://hoster.example/release.nzb"}
+        allowed = [
+            "rt-openclaw.roxxy-tech.com",
+            "hub.roxxy-tech.com",
+            "roxxy-tech.com",
+        ]
+        rejected = [
+            "evil.example",
+            "roxxy-tech.com.evil.example",
+            "notroxxy-tech.com",
+        ]
+        for host in allowed:
+            self.assertEqual(
+                rm._decode_forwarded_nzb(self._forward(payload, host=host)),
+                "https://hoster.example/release.nzb",
+            )
+        for host in rejected:
+            self.assertIsNone(rm._decode_forwarded_nzb(self._forward(payload, host=host)))
+
+    def test_forwarder_allowlist_can_be_extended_by_env(self):
+        with patch.object(rm, "ROXXY_FORWARD_DOMAINS", ("example.net",)):
+            payload = {"u": "https://hoster.example/release.nzb"}
+            self.assertEqual(
+                rm._decode_forwarded_nzb(self._forward(payload, host="cdn.example.net")),
+                "https://hoster.example/release.nzb",
+            )
+            self.assertIsNone(rm._decode_forwarded_nzb(self._forward(payload)))
+
+    def test_oversized_or_broken_payloads_are_ignored(self):
+        long_token = base64.urlsafe_b64encode(b"x" * 9000).decode()
+        self.assertIsNone(rm._decode_forwarded_nzb(
+            f"https://rt-openclaw.roxxy-tech.com/nzb/dl?d={long_token}"))
+        self.assertIsNone(rm._decode_forwarded_nzb(
+            "https://rt-openclaw.roxxy-tech.com/nzb/dl?d=###"))
+
+    def test_nzb_forwarder_rejects_unknown_host_and_plain_links(self):
         payload = {"u": "https://hoster.example/release.nzb"}
         self.assertIsNone(rm._decode_forwarded_nzb(self._forward(payload, host="evil.example")))
         self.assertIsNone(rm._decode_forwarded_nzb(self._forward(payload, path="/other/dl")))
@@ -442,15 +496,100 @@ class ForwardedPayloadTests(unittest.TestCase):
         magnet = "magnet:?xt=urn:btih:" + "c" * 40
         url = self._forward({"m": magnet}, path="/torrent/dl")
         self.assertEqual(rm._decode_forwarded_magnet(url), magnet)
+        self.assertEqual(
+            rm._decode_forwarded_magnet(self._forward({"magnet": magnet}, path="/torrent/dl")),
+            magnet,
+        )
         self.assertIsNone(rm._decode_forwarded_magnet(
             self._forward({"m": "not-a-magnet"}, path="/torrent/dl")))
         self.assertIsNone(rm._decode_forwarded_magnet(
             self._forward({"m": magnet}, path="/nzb/dl")))
 
+    def test_forwarded_media_payload_is_not_routed_to_usenet(self):
+        token = base64.urlsafe_b64encode(
+            json.dumps({"u": "https://cdn.example/movie.m3u8"}).encode()
+        ).decode().rstrip("=")
+        analysis = rm._classify_stream(
+            {"url": f"https://rt-openclaw.roxxy-tech.com/hls/dl?d={token}", "name": "Movie"}
+        )
+        self.assertIsNone(analysis["nzb_url"])
+        self.assertNotEqual(analysis["engine"], "torbox")
+
     def test_nzb_url_detection_covers_paths_and_extensions(self):
         self.assertTrue(rm._looks_like_nzb_url("https://hoster.example/release.nzb"))
         self.assertTrue(rm._looks_like_nzb_url("https://hoster.example/nzb/dl?x=1"))
         self.assertFalse(rm._looks_like_nzb_url("https://hoster.example/release.mkv"))
+
+
+class UsenetLinkValidationTests(unittest.TestCase):
+    def test_valid_links_pass(self):
+        for url in (
+            "https://hoster.example/release.nzb",
+            "https://rt-openclaw.roxxy-tech.com/nzb/dl?d=x",
+            "http://93.184.216.34/file.nzb",
+        ):
+            safe, error = app_module._validate_usenet_link(url)
+            self.assertTrue(safe, msg=f"{url} -> {error}")
+
+    def test_unusable_links_are_rejected(self):
+        cases = {
+            "ftp://hoster.example/release.nzb": "http atau https",
+            "https://user:pass@hoster.example/release.nzb": "kredensial",
+            "https://localhost/release.nzb": "jaringan lokal",
+            "http://127.0.0.1/release.nzb": "IP privat",
+            "http://10.0.0.5/release.nzb": "IP privat",
+            "https://files.internal/release.nzb": "jaringan lokal",
+            "": "wajib diisi",
+        }
+        for url, expected in cases.items():
+            safe, error = app_module._validate_usenet_link(url)
+            self.assertFalse(safe, msg=url)
+            self.assertIn(expected, error, msg=url)
+
+    def test_overlong_links_are_rejected(self):
+        safe, error = app_module._validate_usenet_link(
+            "https://hoster.example/" + "a" * 2100
+        )
+        self.assertFalse(safe)
+        self.assertIn("terlalu panjang", error)
+
+
+class AddCachedUsenetTests(unittest.TestCase):
+    def setUp(self):
+        self.client = app_module.app.test_client()
+
+    def _post(self, payload):
+        with patch.object(app_module.db, "get_settings", return_value={"torbox_api_key": "k"}), \
+                patch.object(app_module.meta_eng.HTTP_SESSION, "post") as post, \
+                patch.object(app_module.TORBOX_MONITOR, "track") as track:
+            response = self.client.post("/api/torbox/add-cached", json=payload)
+        return response, post, track
+
+    def test_unsafe_nzb_link_is_rejected_before_torbox(self):
+        response, post, track = self._post(
+            {"kind": "usenet", "nzb_url": "ftp://hoster.example/release.nzb"}
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.get_json()["ok"])
+        post.assert_not_called()
+        track.assert_not_called()
+
+    def test_valid_nzb_link_is_sent_as_usenet_link(self):
+        response = None
+        with patch.object(app_module.db, "get_settings", return_value={"torbox_api_key": "k"}), \
+                patch.object(app_module.meta_eng.HTTP_SESSION, "post") as post, \
+                patch.object(app_module.TORBOX_MONITOR, "track") as track:
+            post.return_value.status_code = 200
+            post.return_value.content = b'{"success": true, "data": {"usenet_id": 7}}'
+            post.return_value.json.return_value = {"success": True, "data": {"usenet_id": 7}}
+            response = self.client.post(
+                "/api/torbox/add-cached",
+                json={"kind": "usenet", "nzb_url": "https://hoster.example/release.nzb", "title": "Release"},
+            )
+        self.assertEqual(response.status_code, 200)
+        files = post.call_args.kwargs["files"]
+        self.assertEqual(files["link"], (None, "https://hoster.example/release.nzb"))
+        track.assert_called_once()
 
 
 class ManifestCategoryLockTests(unittest.TestCase):
