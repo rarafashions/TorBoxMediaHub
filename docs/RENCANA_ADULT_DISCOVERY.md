@@ -3,7 +3,7 @@
 **Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
 **Tanggal:** 28 November 2026
 **Versi acuan:** `v1.3DJ`
-**Baseline tes:** `527 passed, 123 subtests passed`
+**Baseline tes:** `528 passed, 129 subtests passed`
 
 ---
 
@@ -560,6 +560,8 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 - Panel katalog dan panel **Status Sumber** dipisah dua kolom (`xl:grid-cols-[minmax(0,1fr)_320px]`): peringatan cooldown/terblokir dan tombol **Perbarui** tinggal di kolom kanan, tidak lagi menjadi strip panjang di bawah katalog.
 - **Cover, sinopsis, dan durasi diambil dari halaman provider itu sendiri** (OpenGraph + JSON-LD `VideoObject`) karena video kustom hampir tidak pernah ada di TPDB. Untuk XVideos/XNXX halaman `embedframe` hanya memberi kartu generik, jadi halaman asli ikut dibaca dan kartunya yang dipakai; kegagalan di sana hanya mengurangi isi kartu, tidak menggagalkan stream. Judul generik (age wall, "embed video", bot check) dibuang, thumbnail JSON-LD terbesar menang atas `og:image` kecil, dan hanya URL publik yang lolos guard. TPDB tetap dipakai sebagai pelengkap (studio, tahun, rating, bintang) bila ada kecocokan.
 - Metadata provider yang sama dikirim sebagai `metadata.description`/`poster`/`runtime` saat **WebDL** dan **unduhan lokal**, sehingga item hasil impor tidak lagi hanya bermodal judul.
+
+- **Header ringkas** (`v1.3DK`): satu baris untuk badge 18+, judul, dropdown sumber, dan tombol mode; satu baris pencarian dengan **Cari**, **Reset**, dan **Tempel URL**; baris tempel URL dilipat dan fokus otomatis ke input saat dibuka; status + jumlah item menyatu di kartu header, bukan baris terpisah di atas grid.
 
 **Verifikasi live (instance sementara port 5052, data dir terpisah):**
 

@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DJ`  
-**Tanggal status:** 28 November 2026  
-**Baseline tes:** `python -m pytest tests -q --no-header` → **527 passed, 123 subtests passed** (0 gagal)  
+**Versi saat ini:** `v1.3DK`
+**Tanggal status:** 28 November 2026
+**Baseline tes:** `python -m pytest tests -q --no-header` → **528 passed, 129 subtests passed** (0 gagal)
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -56,6 +56,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DH` | 28 Nov 2026 | Progres unduhan di panel Serial, endpoint peek `download-status`, auto-add + refresh status episode, series hint |
 | `v1.3DI` | 28 Nov 2026 | Modal kartu English Adult ala Roxxy: sumber stream langsung, analisis otomatis, unduhan lokal, monitoring unduhan + badge Library |
 | `v1.3DJ` | 28 Nov 2026 | Koreksi A6: monitor unduhan di atas katalog, tata letak dua kolom, cover/sinopsis/durasi dari halaman provider |
+| `v1.3DK` | 28 Nov 2026 | Header English Adult dipadatkan: sumber + mode satu baris, Tempel URL bisa dilipat, status menyatu dengan grid |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -152,6 +153,15 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 - **Cover, sinopsis, durasi diambil dari halaman provider** (OpenGraph + JSON-LD `VideoObject`); TPDB hanya mengisi kekosongan. XVideos/XNXX membaca halaman asli karena `embedframe` hanya memberi kartu generik; Eporner sebaliknya (embed memuat kartu, halaman asli berupa shell). Judul generik (age wall/embed/bot check) dibuang, thumbnail JSON-LD terbesar menang atas `og:image`, poster privat ditolak.
 - Metadata provider yang sama ikut dikirim saat **WebDL** dan **unduhan lokal** (`description`, `poster`, `runtime`).
 - Tes tambahan 11: page metadata (OG/JSON-LD, judul age-wall, guard poster privat, thumbnail terbesar), merge halaman asli XVideos + fallback saat gagal, kontrak UI statis. Suite **527 passed, 123 subtests**; verifikasi live ulang di port 5052 (Eporner kartu 360p + 770 s, XVideos kartu halaman asli 417 s).
+
+### 4.11 `v1.3DK` — header English Adult dipadatkan
+
+- Header panel adult sebelumnya memakai empat baris penuh (judul, sumber, mode, pencarian, tempel URL) sehingga katalog terdorong ke bawah.
+- Sekarang **dua baris**: (1) badge 18+, judul **Katalog Adult**, dropdown sumber, dan tombol mode Terbaru/Populer/Rating; (2) kolom pencarian dengan tombol **Cari**, **Reset**, dan **Tempel URL**.
+- Baris tempel URL **dilipat** di balik tombol `Tempel URL` (`toggleAdultPasteRow`, `aria-expanded`/`aria-controls`, fokus otomatis ke input); tombol kirimnya bernama **Buka**.
+- Status pemuatan dan jumlah item menyatu di satu baris kecil di dalam kartu header, menggantikan baris terpisah di atas grid.
+- Catatan 9 situs + SpankBang/SunPorno dipindah ke panel **Status Sumber** di kanan agar tidak menambah tinggi header.
+- Tes UI +1 (kontrak elemen header ringkas), suite **528 passed, 129 subtests**.
 
 ---
 

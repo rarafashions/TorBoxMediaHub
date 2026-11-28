@@ -116,6 +116,25 @@ class AdultDiscoveryUiTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.html)
 
+    def test_header_stays_compact_and_paste_row_is_collapsible(self):
+        # The discovery header was too tall: provider + mode + search + paste
+        # each took a full row. Now paste is behind a toggle and the status
+        # line shares its row with the visible count.
+        for marker in (
+            'id="adult-paste-toggle"',
+            'id="adult-paste-row"',
+            'aria-controls="adult-paste-row"',
+            'id="adult-search-input"',
+            'id="adult-visible-count"',
+            "toggleAdultPasteRow",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.html)
+        self.assertIn(
+            'type="button" onclick="toggleAdultPasteRow()" id="adult-paste-toggle"',
+            self.html,
+        )
+
     def test_blocked_providers_are_labelled_honestly(self):
         for label in ("terblokir", "hanya pencarian", "tempel URL"):
             with self.subTest(label=label):

@@ -764,52 +764,43 @@
           </div>
 
           <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4 items-start">
-            <div class="space-y-4 min-w-0">
-          <div class="bg-slate-950 border border-rose-500/40 rounded-xl p-4 space-y-3">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <div class="flex items-center gap-2">
-                <span class="px-2 py-0.5 rounded bg-rose-600/20 border border-rose-500/40 text-rose-300 text-[10px] font-bold uppercase tracking-wider">English Adult · 18+</span>
-                <h4 class="text-sm font-bold text-white">Katalog Situs Adult</h4>
-              </div>
-              <span class="text-[10px] text-slate-500">URL halaman asli dikirim ke TorBox WebDL</span>
-            </div>
-
+            <div class="space-y-3 min-w-0">
+          <!-- Header ringkas: judul, sumber, mode, pencarian, tempel URL dalam dua baris -->
+          <div class="bg-slate-950 border border-rose-500/40 rounded-xl p-3 space-y-2.5">
             <div class="flex flex-wrap items-center gap-2">
-              <label for="adult-provider" class="text-[11px] font-semibold text-slate-400">Sumber</label>
-              <select id="adult-provider" onchange="onAdultProviderChange()" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-rose-500 min-w-[190px]">
+              <span class="px-2 py-0.5 rounded bg-rose-600/20 border border-rose-500/40 text-rose-300 text-[10px] font-bold uppercase tracking-wider">18+</span>
+              <h4 class="text-sm font-bold text-white mr-auto">Katalog Adult</h4>
+              <label for="adult-provider" class="sr-only">Sumber</label>
+              <select id="adult-provider" onchange="onAdultProviderChange()" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-rose-500 min-w-[160px] max-w-[220px]">
                 <option value="all">Semua sumber otomatis</option>
               </select>
-
               <div class="inline-flex bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs" id="adult-mode-btns">
-                <button onclick="setAdultMode('new')" id="adult-mode-new" class="adult-mode-btn px-3 py-1 rounded-md font-semibold bg-rose-600 text-white">Terbaru</button>
-                <button onclick="setAdultMode('popular')" id="adult-mode-popular" class="adult-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white">Populer</button>
-                <button onclick="setAdultMode('top_rated')" id="adult-mode-top_rated" class="adult-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white">Rating</button>
+                <button onclick="setAdultMode('new')" id="adult-mode-new" class="adult-mode-btn px-2.5 py-1 rounded-md font-semibold bg-rose-600 text-white">Terbaru</button>
+                <button onclick="setAdultMode('popular')" id="adult-mode-popular" class="adult-mode-btn px-2.5 py-1 rounded-md font-semibold text-slate-400 hover:text-white">Populer</button>
+                <button onclick="setAdultMode('top_rated')" id="adult-mode-top_rated" class="adult-mode-btn px-2.5 py-1 rounded-md font-semibold text-slate-400 hover:text-white">Rating</button>
               </div>
             </div>
 
-            <div class="flex flex-wrap items-center gap-2">
-              <div class="relative flex-1 min-w-[220px]">
-                <input id="adult-search-input" type="text" onkeydown="if(event.key==='Enter') executeAdultSearch()" placeholder="Cari judul atau bintang di sumber terpilih..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-500" />
+            <div class="flex items-center gap-2">
+              <div class="relative flex-1 min-w-0">
+                <input id="adult-search-input" type="search" onkeydown="if(event.key==='Enter') executeAdultSearch()" placeholder="Cari judul atau bintang..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-rose-500" />
               </div>
-              <button onclick="executeAdultSearch()" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white">Cari</button>
-              <button onclick="resetAdultCatalog()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200">Reset</button>
+              <button onclick="executeAdultSearch()" class="shrink-0 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white">Cari</button>
+              <button onclick="resetAdultCatalog()" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200" title="Kembali ke mode Terbaru tanpa kata kunci">Reset</button>
+              <button type="button" onclick="toggleAdultPasteRow()" id="adult-paste-toggle" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-xs font-semibold text-amber-200" aria-expanded="false" aria-controls="adult-paste-row">Tempel URL</button>
             </div>
 
-            <div class="flex flex-wrap items-center gap-2">
-              <div class="relative flex-1 min-w-[220px]">
-                <input id="adult-paste-input" type="text" onkeydown="if(event.key==='Enter') pasteAdultLink()" placeholder="Tempel URL halaman (mis. SpankBang yang terblokir)..." class="w-full bg-slate-900 border border-amber-500/40 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400" />
+            <div id="adult-paste-row" class="hidden items-center gap-2">
+              <div class="relative flex-1 min-w-0">
+                <input id="adult-paste-input" type="text" onkeydown="if(event.key==='Enter') pasteAdultLink()" placeholder="Tempel URL halaman (mis. SpankBang yang terblokir)..." class="w-full bg-slate-900 border border-amber-500/40 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400" />
               </div>
-              <button onclick="pasteAdultLink()" id="adult-paste-btn" class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs font-semibold text-white">Tempel URL</button>
+              <button onclick="pasteAdultLink()" id="adult-paste-btn" class="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs font-semibold text-white">Buka</button>
             </div>
 
-            <p class="text-[10px] text-slate-500 leading-relaxed">
-              Katalog otomatis: 9 situs. <span class="text-amber-300">SpankBang terblokir Cloudflare</span>, jadi halaman hanya bisa ditempel manual. SunPorno hanya mendukung pencarian.
-            </p>
-          </div>
-
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <span id="adult-status" class="text-[10px] text-slate-400">Pilih sumber lalu muat katalog.</span>
-            <span id="adult-visible-count" class="text-[10px] text-slate-500"></span>
+            <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] text-slate-500">
+              <span id="adult-status" class="text-slate-400">Pilih sumber lalu muat katalog.</span>
+              <span id="adult-visible-count"></span>
+            </div>
           </div>
 
           <div id="adult-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5"></div>
@@ -829,7 +820,7 @@
                 <div id="adult-warnings" class="space-y-1"></div>
               </div>
               <p class="px-1 text-[10px] leading-relaxed text-slate-500">
-                Sumber yang sedang dibatasi tampil di sini, bukan di bawah katalog. Sumber lain tetap jalan; SpankBang hanya lewat tempel URL.
+                Katalog otomatis mencakup 9 situs. Sumber yang sedang dibatasi tampil di sini, bukan di bawah katalog. SpankBang hanya lewat <span class="text-amber-300">Tempel URL</span>; SunPorno cari saja.
               </p>
             </aside>
           </div><!-- /bagi dua katalog & status -->
@@ -1483,8 +1474,8 @@
       document.querySelectorAll(".adult-mode-btn").forEach(btn => {
         const isAct = btn.id === `adult-mode-${mode}`;
         btn.className = isAct
-          ? "adult-mode-btn px-3 py-1 rounded-md font-semibold bg-rose-600 text-white"
-          : "adult-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white";
+          ? "adult-mode-btn px-2.5 py-1 rounded-md font-semibold bg-rose-600 text-white"
+          : "adult-mode-btn px-2.5 py-1 rounded-md font-semibold text-slate-400 hover:text-white";
       });
     }
 
@@ -1515,6 +1506,20 @@
       } catch (e) {
         adultProvidersLoaded = false;
         showToast(`Gagal memuat daftar sumber: ${e.message || e}`, true);
+      }
+    }
+
+    function toggleAdultPasteRow(force) {
+      const row = document.getElementById("adult-paste-row");
+      const btn = document.getElementById("adult-paste-toggle");
+      if (!row) return;
+      const show = typeof force === "boolean" ? force : row.classList.contains("hidden");
+      row.classList.toggle("hidden", !show);
+      row.classList.toggle("flex", show);
+      if (btn) btn.setAttribute("aria-expanded", show ? "true" : "false");
+      if (show) {
+        const inp = document.getElementById("adult-paste-input");
+        if (inp) inp.focus();
       }
     }
 
@@ -2233,7 +2238,7 @@ function adultStreamEsc(value) {
       } catch (e) {
         showToast(`URL ditolak: ${e.message || e}`, true);
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = "Tempel URL"; }
+        if (btn) { btn.disabled = false; btn.textContent = "Buka"; }
       }
     }
 
