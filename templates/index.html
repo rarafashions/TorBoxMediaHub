@@ -805,32 +805,70 @@
             <button onclick="loadMoreAdultFeed()" class="px-6 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold">Muat 20 Lagi</button>
           </div>
 
-          <!-- ADULT DETAIL DRAWER -->
-          <div id="adult-detail" class="hidden bg-slate-950 border border-rose-500/50 rounded-xl p-4 space-y-3 shadow-lg">
-            <div class="flex items-start justify-between gap-3 border-b border-slate-800 pb-2.5">
-              <div class="min-w-0">
-                <div class="flex flex-wrap items-center gap-2">
-                  <span class="px-2 py-0.5 rounded bg-rose-600/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold uppercase tracking-wider">Detail Item</span>
-                  <h4 id="adult-detail-title" class="text-sm font-bold text-white"></h4>
+          <!-- ADULT DOWNLOAD CENTER (TorBox Cloud) -->
+          <div id="adult-downloads" class="hidden bg-slate-950 border border-emerald-500/30 rounded-xl p-3 space-y-2">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span class="text-[11px] font-bold text-white">Download Center &middot; TorBox Cloud</span>
+              <span id="adult-downloads-count" class="text-[10px] text-slate-500"></span>
+            </div>
+            <div id="adult-download-list" class="space-y-2"></div>
+          </div>
+
+          <!-- ADULT DETAIL MODAL -->
+          <div id="adult-detail" class="hidden fixed inset-0 z-[85] overflow-y-auto bg-slate-950/85 backdrop-blur-sm p-3 sm:p-6" onclick="if (event.target === this) closeAdultDetail()">
+            <div class="mx-auto w-full max-w-3xl bg-slate-950 border border-rose-500/40 rounded-2xl shadow-2xl">
+              <div class="flex items-start justify-between gap-3 border-b border-slate-800 p-4">
+                <div class="min-w-0 space-y-1">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <span id="adult-detail-library-badge" class="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[10px] font-bold tracking-wide text-slate-300">NOT IN LIBRARY</span>
+                    <span class="px-2 py-0.5 rounded bg-rose-600/20 border border-rose-500/40 text-rose-300 text-[10px] font-bold uppercase tracking-wider">English Adult &middot; 18+</span>
+                  </div>
+                  <h4 id="adult-detail-title" class="text-base font-bold text-white"></h4>
+                  <p id="adult-detail-sub" class="text-[11px] text-slate-400"></p>
                 </div>
-                <p id="adult-detail-sub" class="text-[11px] text-slate-400 mt-0.5"></p>
+                <button type="button" onclick="closeAdultDetail()" class="shrink-0 text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-900 border border-slate-700">Tutup</button>
               </div>
-              <button onclick="closeAdultDetail()" class="shrink-0 text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-900 border border-slate-700">Tutup</button>
-            </div>
-            <div class="flex flex-wrap gap-3">
-              <img id="adult-detail-poster" class="hidden w-40 aspect-video object-cover rounded-lg border border-slate-800 bg-slate-900" referrerpolicy="no-referrer" alt="" />
-              <div class="flex-1 min-w-[220px] space-y-1.5 text-[11px] text-slate-300">
-                <p id="adult-detail-tpdb"></p>
-                <p id="adult-detail-cast"></p>
-                <p id="adult-detail-tags"></p>
-                <p id="adult-detail-library"></p>
-                <p id="adult-detail-url" class="font-mono text-[10px] text-slate-500 break-all"></p>
+              <div class="p-4 space-y-4">
+                <div class="flex flex-wrap gap-3">
+                  <img id="adult-detail-poster" class="hidden w-44 aspect-video object-cover rounded-lg border border-slate-800 bg-slate-900" referrerpolicy="no-referrer" alt="" />
+                  <div class="flex-1 min-w-[220px] space-y-2 text-[11px] text-slate-300">
+                    <div id="adult-detail-meta" class="grid grid-cols-2 sm:grid-cols-4 gap-1.5"></div>
+                    <p id="adult-detail-tpdb"></p>
+                    <p id="adult-detail-cast"></p>
+                    <p id="adult-detail-tags"></p>
+                    <p id="adult-detail-library"></p>
+                  </div>
+                </div>
+                <div class="rounded-xl border border-emerald-500/30 bg-emerald-500/[0.06] p-3 space-y-2">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <button id="adult-detail-submit" onclick="submitAdultWebdl()" class="rounded-lg bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 transition hover:bg-emerald-400">&#9729; Simpan ke TorBox Cloud (WebDL)</button>
+                    <button type="button" onclick="openAdultPageLink()" class="rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200">Buka halaman asli</button>
+                  </div>
+                  <p id="adult-detail-webdl-hint" class="text-[11px] text-slate-400"></p>
+                  <p id="adult-detail-note" class="text-[10px] text-slate-400"></p>
+                </div>
+                <div class="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <div class="min-w-0">
+                      <div class="text-[11px] font-bold text-white">Status TorBox Cloud</div>
+                      <div id="adult-cloud-status" class="text-[11px] text-slate-400">Tidak ada download aktif.</div>
+                    </div>
+                    <span id="adult-cloud-state" class="shrink-0 rounded-md bg-slate-800 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-300">IDLE</span>
+                  </div>
+                  <div id="adult-cloud-queue" class="mt-2 space-y-2"></div>
+                </div>
+                <div>
+                  <div class="flex flex-wrap items-center justify-between gap-2">
+                    <h3 class="text-sm font-extrabold uppercase tracking-wider text-slate-200">Pilihan Sumber Stream</h3>
+                    <div class="flex items-center gap-2">
+                      <span id="adult-streams-count" class="text-[10px] text-slate-500"></span>
+                      <button type="button" onclick="analyzeAdultStreams()" class="rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 text-[11px] font-semibold text-slate-200">Analisis ulang</button>
+                    </div>
+                  </div>
+                  <p id="adult-streams-note" class="mt-1 text-[11px] text-slate-400">Mengambil sumber langsung dari halaman provider&hellip;</p>
+                  <div id="adult-stream-list" class="mt-2 space-y-2"></div>
+                </div>
               </div>
-            </div>
-            <div class="flex flex-wrap items-center gap-2">
-              <button id="adult-detail-submit" onclick="submitAdultWebdl()" class="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-xs font-semibold text-white">Kirim ke TorBox WebDL</button>
-              <button onclick="openAdultPageLink()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200">Buka Halaman Asli</button>
-              <span id="adult-detail-note" class="text-[10px] text-slate-500"></span>
             </div>
           </div>
         </div>
@@ -904,6 +942,13 @@
     let adultQuery = "";
     let adultSelected = null;
     let adultDetailMeta = null;
+    // Card modal: direct streams come from the provider page and are analysed
+    // with the stateless Roxxy endpoint before a local engine is offered.
+    let adultStreams = [];
+    let adultStreamAnalyses = {};
+    let adultStreamsGeneration = 0;
+    let adultMonitorTimer = null;
+    const adultImportNotified = new Set();
 
     const TASK_LABELS = {
       subtitle_quality_audit: "SUBTITLE QUALITY AUDIT",
@@ -921,6 +966,10 @@
       if (e.key === "Escape") {
         if (!document.getElementById("fs-browser-modal").classList.contains("hidden")) {
           closeFsBrowser();
+          return;
+        }
+        if (!document.getElementById("adult-detail").classList.contains("hidden")) {
+          closeAdultDetail();
           return;
         }
         if (!document.getElementById("discovery-modal").classList.contains("hidden")) {
@@ -1026,8 +1075,12 @@
         closeAdultDetail();
         if (!adultProvidersLoaded) loadAdultProviders();
         if (!adultItems.length) loadAdultFeed();
+        refreshAdultDownloads();
+        startAdultMonitor();
         return;
       }
+
+      stopAdultMonitor();
 
       // Bersihkan pencarian sebelumnya & reset mode ke Trending agar tidak terpengaruh kategori lama
       const inp = document.getElementById("disc-search-input");
@@ -1604,7 +1657,7 @@
         const views = formatAdultCount(item.views);
         const rating = Number(item.rating || 0);
         return `
-          <div class="group bg-slate-950 border border-slate-800 hover:border-rose-500/70 rounded-xl overflow-hidden flex flex-col transition shadow-md">
+          <div role="button" tabindex="0" onclick="openAdultDetail(${idx})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAdultDetail(${idx});}" class="group text-left bg-slate-950 border border-slate-800 hover:border-rose-500/70 rounded-xl overflow-hidden flex flex-col transition shadow-md cursor-pointer focus:outline-none focus:ring-2 focus:ring-rose-500/60">
             <div class="relative aspect-video bg-slate-900 overflow-hidden">
               ${preview}
               <div class="absolute top-2 left-2 flex flex-wrap gap-1">
@@ -1616,16 +1669,38 @@
             </div>
             <div class="p-2 flex-1 flex flex-col justify-between gap-1.5 min-h-[104px]">
               <h4 class="text-[11px] font-bold text-white line-clamp-2 leading-snug" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h4>
-              <button onclick="openAdultDetail(${idx})" class="w-full py-1.5 px-2 rounded-lg bg-rose-700 hover:bg-rose-600 text-[11px] font-semibold text-white transition">Detail &amp; Kirim WebDL</button>
+              <button onclick="event.stopPropagation(); openAdultDetail(${idx})" class="w-full py-1.5 px-2 rounded-lg bg-rose-700 group-hover:bg-rose-600 text-[11px] font-semibold text-white transition">Detail &amp; Sumber Stream</button>
             </div>
           </div>`;
       }).join("");
       if (countEl) countEl.textContent = `${adultItems.length} item dimuat`;
     }
 
+function adultStreamEsc(value) {
+      return escapeHtml(String(value == null ? "" : value));
+    }
+
+    function setAdultLibraryBadge(inLibrary, detail) {
+      const badge = document.getElementById("adult-detail-library-badge");
+      if (!badge) return;
+      badge.textContent = inLibrary ? "✓ IN LIBRARY" : "NOT IN LIBRARY";
+      badge.className = inLibrary
+        ? "inline-flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1 text-[10px] font-bold tracking-wide text-emerald-950 shadow-lg shadow-emerald-500/30"
+        : "inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[10px] font-bold tracking-wide text-slate-300";
+      badge.title = detail || "";
+    }
+
     function closeAdultDetail() {
       const box = document.getElementById("adult-detail");
       if (box) box.classList.add("hidden");
+      stopAdultMonitor();
+      adultStreams = [];
+      adultStreamAnalyses = {};
+      adultStreamsGeneration += 1;
+      const list = document.getElementById("adult-stream-list");
+      if (list) list.innerHTML = "";
+      const queue = document.getElementById("adult-cloud-queue");
+      if (queue) queue.innerHTML = "";
       const note = document.getElementById("adult-detail-note");
       if (note) note.textContent = "";
     }
@@ -1634,6 +1709,8 @@
       const box = document.getElementById("adult-detail");
       if (!box) return;
       box.classList.remove("hidden");
+      box.scrollTop = 0;
+      setAdultLibraryBadge(false, "");
       const titleEl = document.getElementById("adult-detail-title");
       if (titleEl) titleEl.textContent = item.title || "";
       const subEl = document.getElementById("adult-detail-sub");
@@ -1655,8 +1732,14 @@
           poster.classList.add("hidden");
         }
       }
+      const metaEl = document.getElementById("adult-detail-meta");
+      if (metaEl) metaEl.innerHTML = "";
       const tpdbEl = document.getElementById("adult-detail-tpdb");
-      if (tpdbEl) tpdbEl.textContent = "Mengambil metadata TPDB...";
+      if (tpdbEl) {
+        tpdbEl.textContent = item.title_is_placeholder
+          ? "Judul masih berupa id; metadata akan terisi setelah unduhan."
+          : "Mengambil metadata TPDB...";
+      }
       const castEl = document.getElementById("adult-detail-cast");
       if (castEl) castEl.textContent = "";
       const tagEl = document.getElementById("adult-detail-tags");
@@ -1664,25 +1747,54 @@
       const libEl = document.getElementById("adult-detail-library");
       if (libEl) {
         libEl.className = "text-[11px] text-slate-400";
-        libEl.textContent = "";
+        libEl.textContent = "Memeriksa Library...";
       }
-      const urlEl = document.getElementById("adult-detail-url");
-      if (urlEl) urlEl.textContent = item.page_url || "";
+      const hintEl = document.getElementById("adult-detail-webdl-hint");
+      if (hintEl) {
+        const provider = adultProviders.find(p => p.id === item.provider);
+        const label = (provider && provider.label) || item.site_label || item.provider;
+        hintEl.textContent = provider && provider.manual
+          ? `${label}: halaman hanya bisa ditempel manual; TorBox WebDL tetap menerima halaman yang didukung hoster.`
+          : `${label} didukung WebDL: TorBox mengunduh halaman provider dengan kualitas terbaik, tanpa file lokal.`;
+      }
       const noteEl = document.getElementById("adult-detail-note");
-      if (noteEl) {
-        noteEl.textContent = item.title_is_placeholder
-          ? "Judul masih berupa id; metadata akan terisi setelah unduhan."
-          : "";
+      if (noteEl) noteEl.textContent = "";
+      const streamsNote = document.getElementById("adult-streams-note");
+      if (streamsNote) streamsNote.textContent = "Mengambil sumber langsung dari halaman provider...";
+      const streamList = document.getElementById("adult-stream-list");
+      if (streamList) streamList.innerHTML = "";
+      const countEl = document.getElementById("adult-streams-count");
+      if (countEl) countEl.textContent = "";
+      const cloudState = document.getElementById("adult-cloud-state");
+      if (cloudState) {
+        cloudState.textContent = "IDLE";
+        cloudState.className = "shrink-0 rounded-md bg-slate-800 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-300";
       }
+      const cloudStatus = document.getElementById("adult-cloud-status");
+      if (cloudStatus) cloudStatus.textContent = "Tidak ada download aktif.";
+    }
+
+    function adultTagsFor(item, meta) {
+      const tags = [
+        ...((item && item.tags) || []),
+        ...(Array.isArray(meta && meta.tags) ? meta.tags : []),
+      ].map(t => String(t).trim()).filter(Boolean);
+      return [...new Set(tags)];
     }
 
     function renderAdultDetail(library) {
       if (!adultSelected) return;
-      showAdultDetailSkeleton(adultSelected);
+      const item = adultSelected;
       const meta = adultDetailMeta || {};
+      const found = meta.status === "found";
+      const inLibrary = Array.isArray(library) && library.length > 0;
+      setAdultLibraryBadge(
+        inLibrary,
+        inLibrary ? `Sudah ada di Library: ${library.map(it => it.title || it.file_name || it.id).join(" · ")}` : ""
+      );
       const tpdbEl = document.getElementById("adult-detail-tpdb");
       if (tpdbEl) {
-        if (meta.status === "found") {
+        if (found) {
           const bits = [
             meta.title,
             meta.year ? `(${meta.year})` : "",
@@ -1695,7 +1807,7 @@
         } else if (meta.status === "not_configured") {
           tpdbEl.textContent = "TPDB: API key belum diisi, metadata diambil TorBox setelah unduhan.";
         } else if (meta.status === "not_found") {
-          tpdbEl.textContent = "TPDB: tidak ada kecocokan untuk judul ini.";
+          tpdbEl.textContent = "TPDB: tidak ada kecocokan untuk judul ini; poster katalog akan dipakai sebagai petunjuk.";
         } else if (meta.status === "skipped") {
           tpdbEl.textContent = `TPDB: dilewati (${meta.reason || "judul belum jelas"}).`;
         } else {
@@ -1703,7 +1815,7 @@
         }
       }
       const poster = document.getElementById("adult-detail-poster");
-      const posterUrl = String(meta.poster_url || "").trim();
+      const posterUrl = String(meta.poster_url || adultThumbSrc(item) || "").trim();
       if (poster && /^https?:\/\//i.test(posterUrl)) {
         poster.src = posterUrl;
         poster.classList.remove("hidden");
@@ -1713,23 +1825,33 @@
         const cast = Array.isArray(meta.performers) ? meta.performers.slice(0, 8) : [];
         castEl.textContent = cast.length ? `Bintang: ${cast.join(", ")}` : "";
       }
+      const tags = adultTagsFor(item, meta);
       const tagEl = document.getElementById("adult-detail-tags");
-      if (tagEl) {
-        const tags = [...new Set([
-          ...(adultSelected.tags || []),
-          ...(Array.isArray(meta.tags) ? meta.tags : []),
-        ].map(t => String(t).trim()).filter(Boolean))];
-        tagEl.textContent = tags.length ? `Tag: ${tags.slice(0, 14).join(", ")}` : "";
-      }
+      if (tagEl) tagEl.textContent = tags.length ? `Tag: ${tags.slice(0, 14).join(", ")}` : "";
       const libEl = document.getElementById("adult-detail-library");
       if (libEl) {
-        if (library.length) {
+        if (inLibrary) {
           libEl.className = "text-[11px] text-emerald-300";
           libEl.textContent = `Sudah ada di Library (${library.length}): ${library.map(it => it.title || it.file_name || it.id).join(" · ")}`;
         } else {
           libEl.className = "text-[11px] text-slate-400";
           libEl.textContent = "Belum ada judul serupa di Library kategori English Adult.";
         }
+      }
+      const metaEl = document.getElementById("adult-detail-meta");
+      if (metaEl) {
+        const chips = [];
+        const duration = formatAdultDuration(item.duration_sec);
+        if (duration) chips.push(["Durasi", duration]);
+        if (found && meta.studio) chips.push(["Studio", meta.studio]);
+        if (found && meta.year) chips.push(["Tahun", meta.year]);
+        if (found && Number(meta.rating || 0) > 0) chips.push(["Rating", Number(meta.rating).toFixed(1)]);
+        if (tags.length) chips.push(["Genre", tags.slice(0, 6).join(", ")]);
+        metaEl.innerHTML = chips.map(([key, value]) => `
+          <div class="rounded-lg bg-white/[0.04] px-2.5 py-1.5 border border-white/5">
+            <span class="block text-[9px] uppercase tracking-wider text-slate-500">${adultStreamEsc(key)}</span>
+            <div class="font-semibold text-slate-100 truncate" title="${adultStreamEsc(value)}">${adultStreamEsc(value)}</div>
+          </div>`).join("");
       }
     }
 
@@ -1752,10 +1874,205 @@
       if (!item) return;
       adultSelected = item;
       adultDetailMeta = null;
+      adultStreams = [];
+      adultStreamAnalyses = {};
+      adultStreamsGeneration += 1;
       showAdultDetailSkeleton(item);
+      startAdultMonitor();
+      refreshAdultDownloads();
       await fetchAdultDetail(
         `provider=${encodeURIComponent(item.provider)}&id=${encodeURIComponent(item.provider_id)}`
       );
+      loadAdultStreams();
+    }
+
+    async function loadAdultStreams() {
+      if (!adultSelected) return;
+      const note = document.getElementById("adult-streams-note");
+      const list = document.getElementById("adult-stream-list");
+      if (note) note.textContent = "Mengambil sumber langsung dari halaman provider...";
+      if (list) {
+        list.innerHTML = `
+          <div class="rounded-xl border border-dashed border-white/10 p-4 text-center text-[11px] text-slate-500">
+            <span class="inline-block h-4 w-4 animate-spin rounded-full border-2 border-sky-300/40 border-t-sky-300 align-middle"></span>
+            <span class="align-middle ml-2">Membaca halaman provider...</span>
+          </div>`;
+      }
+      const generation = ++adultStreamsGeneration;
+      try {
+        const res = await fetch("/api/adult/streams", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: adultSelected.page_url,
+            provider: adultSelected.provider,
+            id: adultSelected.provider_id,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (generation !== adultStreamsGeneration) return;
+        adultStreams = Array.isArray(data.streams) ? data.streams : [];
+        const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+        renderAdultStreams();
+        if (note) {
+          if (warnings.length) {
+            note.innerHTML = warnings.map(w => `<span class="block text-amber-300">${adultStreamEsc(w.message || w.code || "")}</span>`).join("");
+          } else if (adultStreams.length) {
+            note.textContent = "Sumber diambil dari halaman provider. TorBox WebDL di atas tetap tersedia.";
+          } else {
+            note.textContent = "Tidak ada sumber stream langsung untuk item ini. TorBox WebDL tetap tersedia di atas.";
+          }
+        }
+        if (adultStreams.length) analyzeAdultStreams();
+      } catch (e) {
+        if (generation !== adultStreamsGeneration) return;
+        adultStreams = [];
+        renderAdultStreams();
+        if (note) note.textContent = `Sumber stream tidak tersedia: ${e.message || e}. TorBox WebDL tetap tersedia di atas.`;
+      }
+    }
+
+    function renderAdultStreams() {
+      const list = document.getElementById("adult-stream-list");
+      const count = document.getElementById("adult-streams-count");
+      if (count) count.textContent = adultStreams.length ? `${adultStreams.length} sumber` : "";
+      if (!list) return;
+      if (!adultStreams.length) {
+        list.innerHTML = `<div class="rounded-xl border border-dashed border-white/10 p-4 text-center text-[11px] text-slate-500">Tidak ada sumber stream langsung. Gunakan tombol WebDL di atas atau buka halaman asli.</div>`;
+        return;
+      }
+      list.innerHTML = adultStreams.map((s, i) => `
+        <div class="rounded-xl border border-white/10 bg-white/[0.02] p-3.5 transition hover:border-sky-500/40">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="text-xs font-bold text-white">${adultStreamEsc(s.name || `Stream ${i + 1}`)}</div>
+            <span class="inline-flex items-center gap-1.5">
+              ${s.quality ? `<span class="rounded-md bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-300">${adultStreamEsc(s.quality)}</span>` : ""}
+              <span id="adult-stream-route-${i}" class="rounded-md bg-sky-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase text-sky-300">${adultStreamEsc(s.route_hint === "yt_dlp_candidate" ? "yt-dlp" : "aria2c")}</span>
+            </span>
+          </div>
+          <div class="mt-1 text-[11px] text-slate-400 truncate">${adultStreamEsc((s.behaviorHints && s.behaviorHints.filename) || "Nama file mengikuti server")}</div>
+          <div class="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+            <span class="text-[11px] font-medium text-slate-400" data-adult-stream-status>Menunggu analisis...</span>
+          </div>
+          <div id="adult-stream-analysis-${i}" class="mt-2 text-[11px] text-slate-400"></div>
+        </div>`).join("");
+    }
+
+    function adultAnalysisActions(analysis, index) {
+      const options = Array.isArray(analysis.options) ? analysis.options : [];
+      if (!options.length) return "";
+      const buttons = options.map(option => {
+        const recommended = option.recommended ? " ring-1 ring-sky-400/60" : "";
+        if (option.disabled) {
+          return `<button type="button" disabled title="${adultStreamEsc(option.disabled_reason || "Perlu probe header server")}" class="cursor-not-allowed rounded-lg bg-slate-800 px-3 py-1.5 text-[11px] font-bold text-slate-500${recommended}">⬇ ${adultStreamEsc(option.label)} · perlu probe</button>`;
+        }
+        return `<button type="button" onclick="startAdultLocalDownload(${index}, '${adultStreamEsc(option.engine)}')" class="rounded-lg bg-sky-500 px-3 py-1.5 text-[11px] font-bold text-slate-950 transition hover:bg-sky-400${recommended}">⬇ ${adultStreamEsc(option.label)}</button>`;
+      }).join("");
+      return `<div class="mt-2 flex flex-wrap items-center gap-2">${buttons}</div>`;
+    }
+
+    async function analyzeAdultStream(index, generation) {
+      const stream = adultStreams[index];
+      const out = document.getElementById(`adult-stream-analysis-${index}`);
+      if (!stream || !out) return;
+      out.innerHTML = '<div class="animate-pulse text-sky-300">Menganalisis URL dan tipe stream...</div>';
+      try {
+        const res = await fetch("/api/roxxy/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ stream }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (generation !== adultStreamsGeneration) return;
+        const analysis = data.analysis || {};
+        adultStreamAnalyses[index] = analysis;
+        const size = formatSize(analysis.content_length);
+        const meta = [analysis.quality, size].filter(Boolean).join(" · ");
+        const engineLabel = analysis.resolved
+          ? `Engine: <span class="text-sky-400">${adultStreamEsc(analysis.engine)}</span>`
+          : (analysis.engine === "pending_http_inspection" ? "Header server belum terbaca" : `Engine: <span class="text-sky-400">${adultStreamEsc(analysis.engine)}</span>`);
+        out.innerHTML = `<div class="rounded-lg border border-white/10 bg-black/40 p-2.5"><div class="font-bold text-white">${engineLabel}${meta ? ` · ${adultStreamEsc(meta)}` : ""}</div><div class="mt-0.5 text-slate-300">${adultStreamEsc(analysis.reason || "")}</div>${analysis.inspect_error ? `<div class="mt-1 text-amber-300">${adultStreamEsc(analysis.inspect_error)}</div>` : ""}${adultAnalysisActions(analysis, index)}</div>`;
+        const route = document.getElementById(`adult-stream-route-${index}`);
+        if (route) route.textContent = String(analysis.engine || "manual").replace("pending_http_inspection", "HTTP");
+        const status = out.parentElement ? out.parentElement.querySelector("[data-adult-stream-status]") : null;
+        if (status) {
+          status.innerHTML = analysis.resolved
+            ? '<span class="inline-block h-2 w-2 rounded-full bg-emerald-400 mr-1"></span> Sumber siap diunduh'
+            : '<span class="inline-block h-2 w-2 rounded-full bg-amber-400 mr-1"></span> Pilih sumber secara manual';
+        }
+      } catch (e) {
+        if (generation !== adultStreamsGeneration) return;
+        out.textContent = `Analisis gagal: ${e.message || e}`;
+        const status = out.parentElement ? out.parentElement.querySelector("[data-adult-stream-status]") : null;
+        if (status) status.innerHTML = '<span class="inline-block h-2 w-2 rounded-full bg-rose-400 mr-1"></span> Gagal mencari sumber';
+      }
+    }
+
+    async function analyzeAdultStreams() {
+      const streams = adultStreams || [];
+      const generation = ++adultStreamsGeneration;
+      adultStreamAnalyses = {};
+      const queue = streams.map((_, i) => i);
+      const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+        while (queue.length) {
+          if (generation !== adultStreamsGeneration) return;
+          const index = queue.shift();
+          await analyzeAdultStream(index, generation);
+        }
+      });
+      return Promise.allSettled(workers);
+    }
+
+    async function startAdultLocalDownload(index, engine) {
+      const stream = adultStreams[index];
+      if (!stream) return;
+      const label = engine === "aria2c" ? "aria2c" : "yt-dlp";
+      const title = adultSelected && adultSelected.title ? adultSelected.title : "item ini";
+      if (!confirm(`${label} (lokal): unduh "${title}"?`)) return;
+      try {
+        showToast(`Memulai ${label}...`);
+        const res = await fetch("/api/roxxy/local/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            stream,
+            meta: adultDownloadMeta(adultSelected),
+            subtitles: [],
+            download_path: "",
+            engine: label,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        showToast(`Download lokal dimulai: ${(data.job && data.job.title) || title}.`);
+        refreshAdultDownloads();
+        startAdultMonitor();
+      } catch (e) {
+        showToast(`Gagal memulai download lokal: ${e.message || e}`, true);
+      }
+    }
+
+    function adultDownloadMeta(item) {
+      const meta = adultDetailMeta || {};
+      const found = meta.status === "found";
+      const tags = item ? adultTagsFor(item, meta) : [];
+      return {
+        id: item ? String(item.provider_id || "") : "",
+        name: (found && meta.title) || (item && item.title) || "English Adult",
+        description: (found && meta.plot) || tags.join(", "),
+        studio: (found && meta.studio) || "",
+        year: (found && meta.year) || 0,
+        runtime: item && item.duration_sec ? Math.round(Number(item.duration_sec) / 60) : 0,
+        imdbRating: (found && Number(meta.rating || 0) > 0) ? Number(meta.rating) : 0,
+        poster: (found && meta.poster_url) || adultThumbSrc(item || {}),
+        genres: tags,
+        cast: (found && Array.isArray(meta.performers)) ? meta.performers : [],
+        // Marks the job as an English Adult download so the monitor can pick it
+        // up; the category itself comes from Roxxy's own D2 classifier.
+        _roxxySource: "english_adult",
+      };
     }
 
     async function pasteAdultLink() {
@@ -1777,13 +2094,17 @@
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
         adultSelected = data.item;
         adultDetailMeta = null;
+        adultStreams = [];
+        adultStreamAnalyses = {};
+        adultStreamsGeneration += 1;
         showAdultDetailSkeleton(adultSelected);
-        const detailBox = document.getElementById("adult-detail");
-        if (detailBox) detailBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        startAdultMonitor();
+        refreshAdultDownloads();
         showToast(data.note || "URL halaman diterima.");
         if (!adultSelected.title_is_placeholder) {
           await fetchAdultDetail(`url=${encodeURIComponent(adultSelected.page_url)}`);
         }
+        loadAdultStreams();
       } catch (e) {
         showToast(`URL ditolak: ${e.message || e}`, true);
       } finally {
@@ -1795,25 +2116,28 @@
       if (!adultSelected) return;
       const btn = document.getElementById("adult-detail-submit");
       const note = document.getElementById("adult-detail-note");
-      const oldLabel = btn ? btn.textContent : "";
+      const oldLabel = btn ? btn.innerHTML : "";
       if (btn) { btn.disabled = true; btn.textContent = "Mengirim..."; }
       if (note) note.textContent = "";
       try {
         const meta = adultDetailMeta || {};
+        const found = meta.status === "found";
+        const tags = adultTagsFor(adultSelected, meta);
+        const posterUrl = String(meta.poster_url || adultThumbSrc(adultSelected) || "").trim();
         const payload = { url: adultSelected.page_url, title: adultSelected.title };
-        const posterUrl = String(meta.poster_url || "").trim();
         if (/^https?:\/\//i.test(posterUrl)) payload.poster_url = posterUrl;
-        if (meta.status === "found") {
-          payload.metadata = {
-            name: meta.title || adultSelected.title,
-            description: meta.plot || "",
-            studio: meta.studio || "",
-            year: meta.year || 0,
-            poster: posterUrl,
-            genres: meta.tags || [],
-            cast: meta.performers || [],
-          };
-        }
+        payload.metadata = {
+          name: (found && meta.title) || adultSelected.title,
+          description: (found && meta.plot) || tags.join(", "),
+          studio: (found && meta.studio) || "",
+          year: (found && meta.year) || 0,
+          runtime: adultSelected.duration_sec ? Math.round(Number(adultSelected.duration_sec) / 60) : 0,
+          poster: posterUrl,
+          genres: tags,
+          cast: (found && Array.isArray(meta.performers)) ? meta.performers : [],
+          imdbRating: (found && Number(meta.rating || 0) > 0) ? Number(meta.rating) : 0,
+          _roxxySource: "english_adult",
+        };
         const res = await fetch("/api/adult/webdl", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1823,11 +2147,180 @@
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (note) note.textContent = `${data.message || "Terkirim ke TorBox WebDL."} (monitor #${data.tracked_id})`;
         showToast(data.message || "Link dikirim ke TorBox WebDL.");
+        startAdultMonitor();
+        refreshAdultDownloads();
       } catch (e) {
         if (note) note.textContent = "";
         showToast(`Gagal mengirim: ${e.message || e}`, true);
       } finally {
-        if (btn) { btn.disabled = false; btn.textContent = oldLabel || "Kirim ke TorBox WebDL"; }
+        if (btn) { btn.disabled = false; btn.innerHTML = oldLabel || "&#9729; Simpan ke TorBox Cloud (WebDL)"; }
+      }
+    }
+
+    // -------------------- Adult download monitor --------------------
+    const ADULT_LIBRARY_PENDING = new Set(["queued", "validating", "identified", "registering"]);
+
+    function adultJobIsActive(job) {
+      if (!job) return false;
+      if (job.status === "queued" || job.status === "downloading") return true;
+      return job.status === "completed" && ADULT_LIBRARY_PENDING.has(String(job.library_status || ""));
+    }
+
+    function adultStageLabel(stage) {
+      const map = {
+        queued: "menunggu giliran impor",
+        validating: "memvalidasi file...",
+        identified: "kategori teridentifikasi...",
+        registering: "mendaftarkan ke Library...",
+        completed: "terdaftar di Library",
+        failed: "gagal masuk Library",
+      };
+      return map[stage] || "menunggu impor ke Library...";
+    }
+
+    function adultQueueRow(entry, kind) {
+      const pct = Math.max(0, Math.min(100, Number(entry.progress) || 0));
+      const libraryStatus = String(entry.library_status || "");
+      const importing = kind === "importing" || ADULT_LIBRARY_PENDING.has(libraryStatus);
+      const done = kind === "imported" || (entry.status === "completed" && !importing);
+      const failed = entry.status === "failed" || libraryStatus === "failed";
+      const color = done ? "text-emerald-400" : failed ? "text-rose-400" : "text-sky-400";
+      const barColor = done ? "bg-emerald-400" : failed ? "bg-rose-500" : importing ? "bg-emerald-400" : (kind === "torbox" ? "bg-amber-400" : "bg-sky-400");
+      const stateLabel = importing
+        ? (kind === "importing" ? "IMPORT LIBRARY" : "SELESAI · IMPOR")
+        : kind === "imported"
+          ? "LIBRARY"
+          : entry.status === "completed"
+            ? "SELESAI"
+            : String(entry.status || "downloading").toUpperCase();
+      const showPct = !importing && !done;
+      const libraryLine = libraryStatus
+        ? `<div class="mt-1 text-[10px] ${libraryStatus === "failed" ? "text-rose-300" : "text-emerald-300"}">Library: ${adultStreamEsc(entry.library_message || adultStageLabel(libraryStatus))}</div>`
+        : "";
+      return `
+        <article class="rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0 text-[11px] font-bold text-white line-clamp-2">${adultStreamEsc(entry.title || "Download")}</div>
+            <div class="shrink-0 text-[10px] font-bold ${color}">${adultStreamEsc(stateLabel)}${showPct ? ` · ${pct.toFixed(0)}%` : ""}</div>
+          </div>
+          <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10">
+            <div class="h-full rounded-full ${barColor} transition-all duration-300" style="width:${importing || done ? 100 : pct}%"></div>
+          </div>
+          <div class="mt-1 text-[10px] text-slate-400 truncate">${adultStreamEsc(entry.message || entry.download_state || (kind === "torbox" ? "TorBox WebDL" : ""))}</div>
+          ${libraryLine}
+        </article>`;
+    }
+
+    function adultTorboxRows(data) {
+      const active = (data.active || []).map(entry => ({ ...entry, _kind: "torbox" }));
+      const syncing = (data.syncing || []).map(entry => ({ ...entry, _kind: "importing" }));
+      return active.concat(syncing).sort((a, b) => Number(b.progress || 0) - Number(a.progress || 0));
+    }
+
+    function adultMatchesTitle(entry, title) {
+      const wanted = String(title || "").trim().toLowerCase();
+      const candidate = String(entry.title || "").trim().toLowerCase();
+      if (!wanted || wanted.length < 4) return false;
+      return candidate.includes(wanted) || wanted.includes(candidate);
+    }
+
+    function updateAdultCloudStatus(torbox, local) {
+      const stateEl = document.getElementById("adult-cloud-state");
+      const statusEl = document.getElementById("adult-cloud-status");
+      const queueEl = document.getElementById("adult-cloud-queue");
+      if (!stateEl || !statusEl || !queueEl) return;
+      const title = adultSelected ? adultSelected.title : "";
+      const active = adultTorboxRows(torbox).filter(row => adultMatchesTitle(row, title));
+      const imported = (torbox.imported || []).filter(row => adultMatchesTitle(row, title));
+      const localActive = (local.jobs || []).filter(job => adultJobIsActive(job) && adultMatchesTitle(job, title));
+      const setState = (label, cls) => {
+        stateEl.textContent = label;
+        stateEl.className = `shrink-0 rounded-md px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${cls}`;
+      };
+
+      if (active.length) {
+        const first = active[0];
+        const importing = first._kind === "importing";
+        setState(importing ? "IMPORTING" : "DOWNLOADING", importing ? "bg-emerald-500/20 text-emerald-300" : "bg-amber-500/20 text-amber-300");
+        statusEl.textContent = `${first.title || "Download"} · ${importing ? (first.library_message || "mengimpor ke Library...") : `${Number(first.progress || 0).toFixed(1)}%`}`;
+        queueEl.innerHTML = active.map(row => adultQueueRow(row, row._kind)).join("");
+      } else if (localActive.length) {
+        const first = localActive[0];
+        setState("LOCAL", "bg-sky-500/20 text-sky-300");
+        statusEl.textContent = `${first.title || "Download lokal"} · ${first.engine_active || first.engine || "downloader"} · ${Number(first.progress || 0).toFixed(0)}%`;
+        queueEl.innerHTML = localActive.map(job => adultQueueRow(job, "local")).join("");
+      } else if (imported.length) {
+        const first = imported[0];
+        setState("IMPORTED", "bg-emerald-500/20 text-emerald-300");
+        statusEl.textContent = `${first.title || "Item"} berhasil masuk Library.`;
+        queueEl.innerHTML = imported.map(row => adultQueueRow(row, "imported")).join("");
+      } else {
+        setState("IDLE", "bg-slate-800 text-slate-300");
+        statusEl.textContent = "Tidak ada download aktif.";
+        queueEl.innerHTML = "";
+      }
+    }
+
+    function renderAdultDownloads(torbox, local) {
+      const wrap = document.getElementById("adult-downloads");
+      const list = document.getElementById("adult-download-list");
+      const count = document.getElementById("adult-downloads-count");
+      if (!wrap || !list) return;
+      const torboxRows = adultTorboxRows(torbox);
+      const localRows = (local.jobs || []).filter(adultJobIsActive);
+      const rows = torboxRows.concat(localRows);
+      if (!rows.length) {
+        wrap.classList.add("hidden");
+        list.innerHTML = "";
+        if (count) count.textContent = "";
+        return;
+      }
+      wrap.classList.remove("hidden");
+      if (count) count.textContent = `${rows.length} aktif`;
+      list.innerHTML = rows.map(row => adultQueueRow(row, row._kind || (row.id ? "local" : "torbox"))).join("");
+    }
+
+    async function refreshAdultDownloads() {
+      const panel = document.getElementById("adult-panel");
+      if (!adultSelected && (!panel || panel.classList.contains("hidden"))) return;
+      let torbox = { active: [], syncing: [], imported: [] };
+      let local = { jobs: [] };
+      try {
+        const res = await fetch("/api/adult/download-status");
+        const data = await res.json();
+        if (data && data.ok) torbox = data;
+      } catch (e) {}
+      try {
+        const res = await fetch("/api/adult/local-status");
+        const data = await res.json();
+        if (data && data.ok) local = data;
+      } catch (e) {}
+      renderAdultDownloads(torbox, local);
+      updateAdultCloudStatus(torbox, local);
+      const imported = torbox.imported || [];
+      if (imported.length && adultSelected) {
+        const match = imported.find(row => adultMatchesTitle(row, adultSelected.title));
+        const key = match ? String(match.item_id || match.title || "") : "";
+        if (match && key && !adultImportNotified.has(key)) {
+          adultImportNotified.add(key);
+          setAdultLibraryBadge(true, `Sudah masuk Library: ${match.title || ""}`);
+          showToast(`Masuk Library: ${match.title || "item adult"}.`);
+          fetchAdultDetail(
+            `provider=${encodeURIComponent(adultSelected.provider)}&id=${encodeURIComponent(adultSelected.provider_id)}`
+          );
+        }
+      }
+    }
+
+    function startAdultMonitor() {
+      if (adultMonitorTimer) return;
+      adultMonitorTimer = setInterval(() => { refreshAdultDownloads(); }, 4000);
+    }
+
+    function stopAdultMonitor() {
+      if (adultMonitorTimer) {
+        clearInterval(adultMonitorTimer);
+        adultMonitorTimer = null;
       }
     }
 

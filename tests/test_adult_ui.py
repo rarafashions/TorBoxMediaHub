@@ -36,9 +36,44 @@ class AdultDiscoveryUiTests(unittest.TestCase):
             "/api/adult/link",
             "/api/adult/detail",
             "/api/adult/webdl",
+            "/api/adult/streams",
+            "/api/adult/download-status",
+            "/api/adult/local-status",
         ):
             with self.subTest(endpoint=endpoint):
                 self.assertIn(endpoint, self.html)
+
+    def test_detail_modal_has_rox_parity_sections(self):
+        for marker in (
+            'id="adult-detail-library-badge"',
+            'id="adult-detail-webdl-hint"',
+            'id="adult-cloud-status"',
+            'id="adult-cloud-state"',
+            'id="adult-cloud-queue"',
+            'id="adult-stream-list"',
+            'id="adult-streams-note"',
+            'id="adult-download-list"',
+            "Pilihan Sumber Stream",
+            "Status TorBox Cloud",
+            "Analisis ulang",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.html)
+
+    def test_local_engines_reuse_the_roxxy_pipeline(self):
+        self.assertIn("/api/roxxy/analyze", self.html)
+        self.assertIn("/api/roxxy/local/start", self.html)
+        self.assertIn('_roxxySource: "english_adult"', self.html)
+
+    def test_stream_markup_never_echoes_media_urls(self):
+        # Only the display name and the suggested filename may reach the DOM;
+        # signed provider URLs stay inside the analyse/local-start calls.
+        for forbidden in ("${s.url", "${stream.url", "${analysis.url"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, self.html)
+
+    def test_escape_closes_the_adult_modal(self):
+        self.assertIn('document.getElementById("adult-detail").classList.contains("hidden")', self.html)
 
     def test_mainstream_discovery_route_is_unchanged(self):
         self.assertIn("/api/discover?", self.html)

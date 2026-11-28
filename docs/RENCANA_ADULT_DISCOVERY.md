@@ -1,13 +1,13 @@
 # Rencana Fase A — English Adult Discovery di Discovery Hub
 
-**Status:** Fase **A1-A5 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
+**Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
 **Tanggal:** 28 November 2026
 **Versi acuan:** `v1.3DH`
-**Baseline tes:** `493 passed, 91 subtests passed`
+**Baseline tes:** `516 passed, 114 subtests passed`
 
 ---
 
-## 0a. Status implementasi (diperbarui setelah A1-A5)
+## 0a. Status implementasi (diperbarui setelah A1-A6)
 
 | Fase | Isi | Status |
 |---|---|---|
@@ -16,6 +16,7 @@
 | A3 | SpankBang: validasi tempel URL (`POST /api/adult/link`) + penanda `manual` di `/providers` | **selesai** (backend), 8 tes |
 | A4 | `/api/adult/detail` (TPDB + in-library) + `/api/adult/webdl` + deteksi login wall | **selesai** (backend), 14 tes |
 | A5 | Tab English Adult di `/` lalu `/v2` | **selesai** untuk `/` (legacy), 5 tes statis; port `/v2` menyusul bersama Tahap 1 |
+| A6 | Modal kartu ala Roxxy: sumber stream langsung + analisis + unduhan lokal + monitoring unduhan | **selesai** untuk `/` (legacy), 23 tes baru |
 
 Hasil uji live (instance sementara port 5052, data dir terpisah, tidak mengganggu app di port 5000):
 
@@ -523,6 +524,53 @@ Status: **selesai untuk `/`**. Pill **English Adult 18+** di deretan kategori Di
 - Kotak **Tempel URL** memanggil `/api/adult/link`; detail memakai `/api/adult/detail` (TPDB + petunjuk `in_library`); tombol **Kirim ke TorBox WebDL** memakai `/api/adult/webdl` dengan URL halaman asli.
 - Semua teks dari provider di-escape sebelum masuk `innerHTML`; thumbnail hanya diterima bila `http(s)`.
 - Panel mainstream (cache drawer, filter, grid) disembunyikan saat tab adult aktif, sehingga `/api/discover` tidak pernah diminta dengan `english_adult`. Port `/v2` tetap menunggu Tahap 1.
+
+### A6 — Modal kartu (paritas Roxxy) + monitoring unduhan
+
+Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**, **Status TorBox Cloud**, dan **Pilihan Sumber Stream** dengan analisis otomatis + tombol unduhan lokal, tanpa menyentuh `roxxy_module.py` atau perilaku `/roxxy`.
+
+**Kontrak API baru (permukaan `/api/adult/*`, tidak ada perubahan rute lama):**
+
+| Rute | Masukan | Hasil |
+|---|---|---|
+| `POST /api/adult/streams` | `{url}` **atau** `{provider, id}` (+`force`) | `streams[]` siap pakai Roxxy (`name`, `url`, `quality`, `behaviorHints.filename`, `route_hint`), `warnings[]`, `cached` |
+| `GET /api/adult/download-status` | `?title=` (opsional) | baris monitor TorBox (`active`, `syncing`, `imported`) yang ber-kategori `english_adult` atau cocok judul; dibaca dengan `consume_imported=False` supaya tampilan Downloads tidak kehilangan event |
+| `GET /api/adult/local-status` | — | hanya job engine lokal dengan `meta._roxxySource == "english_adult"`; field tampilan saja (URL, path, PID tidak pernah keluar) |
+
+**Ekstraktor `adult_streams.py`** (fungsi murni atas markup, tanpa jaringan saat tes):
+
+- **Eporner** — `https://www.eporner.com/embed/{id}/` lalu `gvideo.eporner.com/{id}/{id}.mp4`. Untuk URL tempel, `{id}` diambil dari path halaman (`/video-{id}`) karena `link()` memberi id hash.
+- **XVideos/XNXX** — `embedframe/{id}` lalu `setVideoUrlHigh()` (SD MP4) dan `setVideoHLS()` (manifest).
+- **YouJizz** — `var dataEncodings = [...]` (mp4 360p/720p + `master.m3u8`).
+- **XXXYMovies/SunPorno** — `flashvars.video_url`; `video_alt_url` yang menuju `signup/login` dibuang.
+- **Pornhub** — `mediaDefinitions` (JSON) bila halaman masih memuatnya.
+- **XHamster, YouPorn, SpankBang** — `streams_unsupported` dengan pesan jujur; modal tetap menawarkan WebDL dan halaman asli, tanpa request tambahan ke situs yang memblokir.
+
+**Keamanan & batas:**
+
+- Hanya `https://` yang diterima; kredensial, host privat/localhost, dan skema non-media ditolak. URL media tidak pernah dirender ke DOM — hanya nama dan nama file saran.
+- Cache hasil 10 menit per `provider:id`; kegagalan transport dicoba ulang sekali lalu dicatat ke breaker `adult_discovery`.
+- Analisis memakai `POST /api/roxxy/analyze` yang **stateless** (3 worker paralel); unduhan lokal memakai `POST /api/roxxy/local/start` dengan `meta._roxxySource = "english_adult"` sehingga D2/D3 Roxxy mendaftarkannya ke Library. `_roxxyType` sengaja tidak diisi agar `_refresh_stream_url` tidak memanggil manifest Roxxy.
+
+**UI `/`:**
+
+- Kartu katalog dapat diklik / Enter / Space untuk membuka modal overlay (Esc dan klik latar menutup).
+- Modal: badge **NOT IN LIBRARY / ✓ IN LIBRARY**, chip metadata, tombol **Simpan ke TorBox Cloud (WebDL)** + catatan dukungan per sumber, kotak **Status TorBox Cloud** (IDLE/DOWNLOADING/IMPORTING/LOCAL/IMPORTED dengan bar progres), dan daftar **Pilihan Sumber Stream** dengan tombol `⬇ yt-dlp (lokal)` / `⬇ aria2c (lokal)` serta **Analisis ulang**.
+- Panel **Download Center · TorBox Cloud** di tab adult memantau `GET /api/adult/download-status` + `/api/adult/local-status` setiap 4 detik; saat monitor melaporkan impor baru, badge berubah **IN LIBRARY** dan muncul toast sekali per item.
+- Poster dikirim saat submit memakai thumbnail katalog bila TPDB tidak punya poster, sehingga item hasil impor tidak lagi tanpa poster.
+
+**Verifikasi live (instance sementara port 5052, data dir terpisah):**
+
+| Uji | Hasil |
+|---|---|
+| `POST /api/adult/streams` URL Eporner asli | 1 stream `gvideo...mp4`, nama file bersih |
+| `POST /api/adult/streams` XVideos/Xnxx | 2 stream (SD MP4 + HLS) |
+| `POST /api/adult/streams` XHamster | `streams_unsupported`, 0 request |
+| `GET /api/adult/local-status` | `ok`, 0 job (tidak ada unduhan aktif) |
+| `GET /api/adult/download-status` | `ok`, 0 aktif, 0 impor |
+| `POST /api/roxxy/analyze` pada stream XVideos | `engine: yt-dlp`, `resolved: true`, 2 opsi unduhan |
+
+Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 
 ---
 

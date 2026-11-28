@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DH`  
+**Versi saat ini:** `v1.3DI`  
 **Tanggal status:** 28 November 2026  
-**Baseline tes:** `python -m pytest tests -q --no-header` → **425 passed, 63 subtests passed** (0 gagal)  
+**Baseline tes:** `python -m pytest tests -q --no-header` → **516 passed, 114 subtests passed** (0 gagal)  
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -54,6 +54,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DF` | 28 Nov 2026 | View Pengaturan v2, filter Needs Review, sorotan tanpa "Putar Episode", 6 panel settings |
 | `v1.3DG` | 28 Nov 2026 | Pencarian episode berlapis (TVMaze, TPB/EZTV/Torrentio/Nyaa/NZBIndex/NZBGeek/Roxxy), seed/leech, cache batch |
 | `v1.3DH` | 28 Nov 2026 | Progres unduhan di panel Serial, endpoint peek `download-status`, auto-add + refresh status episode, series hint |
+| `v1.3DI` | 28 Nov 2026 | Modal kartu English Adult ala Roxxy: sumber stream langsung, analisis otomatis, unduhan lokal, monitoring unduhan + badge Library |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -131,6 +132,18 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 - Poll 5 detik mulai saat add, berhenti saat panel ditutup/tab hidden.
 - Tes baru 8: peek vs consume + TTL, filter serial/season case-insensitive, field aman, episode diteruskan, fallback input invalid, `_apply_series_hint`.
 
+### 4.9 `v1.3DI` — modal English Adult + monitoring unduhan
+
+- `adult_streams.py` mengekstrak URL media yang **sudah dipublikasikan halaman provider** (bukan menebak): Eporner embed `gvideo`, XVideos/XNXX `embedframe` (SD MP4 + HLS), YouJizz `dataEncodings`, XXXYMovies/SunPorno `flashvars.video_url`, Pornhub `mediaDefinitions`.
+- XHamster/YouPorn/SpankBang tidak diambil: `streams_unsupported` dengan pesan jujur, tanpa request tambahan.
+- `POST /api/adult/streams` menerima `{url}` atau `{provider,id}`; cache 10 menit; hanya `https://`, tanpa kredensial, host privat/localhost ditolak.
+- Id URL tempel diambil dari path halaman karena `adult_discovery.link()` memakai id hash.
+- Analisis memakai `/api/roxxy/analyze` (stateless, 3 worker); unduhan lokal memakai `/api/roxxy/local/start` dengan `meta._roxxySource = "english_adult"`; `_roxxyType` sengaja kosong.
+- `GET /api/adult/download-status` (peek, `consume_imported=False`) dan `GET /api/adult/local-status` (hanya job adult, field tampilan) memberi modal + panel Download Center progres 4 detik.
+- Modal menampilkan badge **IN LIBRARY**, chip metadata, WebDL + catatan dukungan, Status TorBox Cloud, dan Pilihan Sumber Stream; kartu bisa diklik/Enter, Esc menutup.
+- Poster katalog ikut dikirim saat submit agar impor tidak tanpa poster.
+- Tes baru 23: 5 parser + normalisasi URL/file + cache/breaker + rute streams + filter monitor + kontrak UI statis.
+
 ---
 
 ## 5. Keputusan yang mengikat
@@ -153,6 +166,8 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 14. **Restart hanya saat antrean 0 dan task idle.** Jangan mengganggu unduhan/antrean aktif.
 15. **Commit lokal tanpa push** sampai pengguna meminta.
 16. **Tes konservatif.** Jangan mengubah ekspektasi tes lama hanya agar suite hijau; baseline wajib tetap hijau.
+17. **Stream lokal English Adult diambil dari halaman provider**, bukan ekstraksi generik yt-dlp (diuji gagal untuk Eporner/XVideos), dan tidak mengubah `roxxy_module.py` maupun perilaku `/roxxy`.
+18. **Sumber adult memakai `_roxxySource = "english_adult"` dan tidak mengisi `_roxxyType`**, agar `_refresh_stream_url` tidak memanggil manifest Roxxy dengan id provider kita.
 
 ---
 
@@ -172,6 +187,9 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 | `roxxy_module.py` | Lima manifest, katalog, meta, stream, analisis, cache check |
 | `roxxy_download_engine.py` | Unduhan lokal, queue, D1–D3, registrasi Library |
 | `webdl_resolver.py` | Pemetaan URL halaman WebDL dan validasi host |
+| `adult_providers.py` | Registry 10 sumber English Adult, allowlist host, mode katalog/manual |
+| `adult_discovery.py` | Katalog/pencarian adult, cache + breaker, tempel URL, detail TPDB |
+| `adult_streams.py` | Ekstraksi URL stream langsung dari halaman provider |
 | `platform_support.py` | Deteksi OS, executable, direktori data |
 | `static/ui/*` | UI v2 tanpa framework |
 | `templates/index.html` | UI lama |
@@ -189,7 +207,7 @@ python -m py_compile app.py roxxy_module.py database_manager.py
 python -m pytest tests -q --no-header
 ```
 
-Hasil acuan: **425 passed, 63 subtests passed**.
+Hasil acuan: **516 passed, 114 subtests passed**.
 
 ### Cakupan tes (folder `tests/`)
 
@@ -199,6 +217,7 @@ Hasil acuan: **425 passed, 63 subtests passed**.
 - TorBox: WebDL, add-cached, series download status.
 - Keamanan: request guard, poster proxy SSRF, poster reliability.
 - Serial: urutan episode, pencarian rilis, download status.
+- English Adult: discovery provider/katalog, tempel URL, detail+WebDL, ekstraksi stream modal, monitor unduhan.
 - Platform: `platform_support`.
 
 ### Aturan tes
