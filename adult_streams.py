@@ -25,6 +25,8 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from bs4 import BeautifulSoup
+
 import adult_discovery as adult_disc
 import adult_providers as adult_providers
 
@@ -202,6 +204,181 @@ def _text(markup: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Page metadata (cover, synopsis, duration published by the provider)
+# --------------------------------------------------------------------------- #
+
+_META_MAX_DESCRIPTION = 600
+
+
+def _clean_text(value: Any, limit: int = _META_MAX_DESCRIPTION) -> str:
+    text = " ".join(html_lib.unescape(str(value or "")).split())
+    return text[:limit]
+
+
+_GENERIC_PAGE_TITLE = re.compile(
+    r"age[- ]restricted|embed video|just a moment|attention required|access denied|"
+    r"enter your birth|robots? check|verify you are human",
+    re.I,
+)
+
+
+def _page_title(raw: Any) -> str:
+    """Drop boilerplate page titles (age walls, embed shells, bot checks)."""
+    text = _clean_text(raw, 300)
+    if not text or _GENERIC_PAGE_TITLE.search(text):
+        return ""
+    return text
+
+
+def _poster_url(raw: Any) -> str:
+    """Accept a public http(s) cover URL; mirrors the media URL guard."""
+    text = html_lib.unescape(str(raw or "").strip())
+    if text.startswith("//"):
+        text = "https:" + text
+    if not text.lower().startswith(("http://", "https://")):
+        return ""
+    try:
+        parsed = urlparse(text)
+    except ValueError:
+        return ""
+    if not parsed.hostname or parsed.username or parsed.password:
+        return ""
+    host = parsed.hostname.lower()
+    if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
+        return ""
+    if adult_disc._host_is_private(parsed.hostname):
+        return ""
+    return text
+
+
+_THUMB_SIZE = re.compile(r"_(\d{2,4})\.(?:jpe?g|webp|png)", re.I)
+
+
+def _thumb_rank(url: str) -> int:
+    match = _THUMB_SIZE.search(str(url or ""))
+    return int(match.group(1)) if match else 0
+
+
+def _iso_duration(value: Any) -> int:
+    """``PT12M34S`` (JSON-LD) to seconds; plain numbers are accepted as-is."""
+    text = str(value or "").strip()
+    if text.isdigit():
+        return int(text)
+    match = re.fullmatch(r"PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?", text, re.I)
+    if not match:
+        return 0
+    hours, minutes, seconds = (int(part or 0) for part in match.groups())
+    total = hours * 3600 + minutes * 60 + seconds
+    return total if total > 0 else 0
+
+
+def _jsonld_videos(payload: Any, depth: int = 0) -> List[Dict[str, Any]]:
+    """Every ``VideoObject``-ish node in a JSON-LD payload."""
+    found: List[Dict[str, Any]] = []
+    if depth > 6:
+        return found
+    if isinstance(payload, list):
+        for entry in payload:
+            found.extend(_jsonld_videos(entry, depth + 1))
+        return found
+    if not isinstance(payload, dict):
+        return found
+    node_type = payload.get("@type")
+    types = node_type if isinstance(node_type, list) else [node_type]
+    if any(str(item or "").lower() in {"videoobject", "videoplayer"} for item in types):
+        found.append(payload)
+    for key in ("@graph", "itemListElement", "video"):
+        if key in payload:
+            found.extend(_jsonld_videos(payload[key], depth + 1))
+    return found
+
+
+def page_metadata(markup: Any) -> Dict[str, Any]:
+    """Cover, synopsis and duration the provider page publishes about itself.
+
+    Custom videos usually have no TPDB entry, but every provider still ships an
+    OpenGraph card (and often a JSON-LD ``VideoObject``). Reading those fields
+    directly keeps the cover and synopsis honest without guessing.
+    """
+    text = str(markup or "")
+    if not text:
+        return {}
+    try:
+        soup = BeautifulSoup(text, "html.parser")
+    except Exception:
+        return {}
+
+    def meta_content(*names: str) -> str:
+        for name in names:
+            tag = soup.find("meta", attrs={"property": name}) or soup.find(
+                "meta", attrs={"name": name}
+            )
+            if tag:
+                value = str(tag.get("content") or "").strip()
+                if value:
+                    return value
+        return ""
+
+    title = _clean_text(_page_title(meta_content("og:title", "twitter:title")), 300)
+    described = _clean_text(
+        meta_content("og:description", "twitter:description", "description")
+    )
+    poster = _poster_url(
+        meta_content("og:image:secure_url", "og:image", "twitter:image")
+    )
+    duration = _iso_duration(meta_content("og:video:duration"))
+    thumbnails: List[str] = []
+
+    if not title:
+        tag = soup.find("title")
+        if tag:
+            title = _clean_text(_page_title(tag.get_text()), 300)
+
+    for script in soup.find_all("script", attrs={"type": re.compile(r"ld\+json", re.I)}):
+        raw = script.string or script.get_text() or ""
+        if not raw.strip():
+            continue
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        for video in _jsonld_videos(payload):
+            json_title = _page_title(video.get("name"))
+            json_description = _clean_text(video.get("description"))
+            thumbnail = video.get("thumbnailUrl")
+            if isinstance(thumbnail, str):
+                thumbnails.append(thumbnail)
+            elif isinstance(thumbnail, list):
+                thumbnails.extend(str(entry) for entry in thumbnail if entry)
+            # A provider's JSON-LD description is usually the full synopsis,
+            # while OpenGraph carries the short social blurb.
+            if len(json_description) > len(described):
+                described = json_description
+            if not title and json_title:
+                title = json_title
+            if not duration:
+                duration = _iso_duration(video.get("duration"))
+
+    # JSON-LD often lists the same cover at several sizes; keep the largest
+    # one that passes the public-URL guard.
+    candidates = [poster] + [_poster_url(entry) for entry in thumbnails]
+    candidates = [entry for entry in candidates if entry]
+    if candidates:
+        poster = max(candidates, key=_thumb_rank)
+
+    result: Dict[str, Any] = {}
+    if title:
+        result["title"] = title
+    if described:
+        result["description"] = described
+    if poster:
+        result["poster"] = poster
+    if duration:
+        result["duration_sec"] = duration
+    return result
+
+
+# --------------------------------------------------------------------------- #
 # Provider adapters (pure functions over page markup)
 # --------------------------------------------------------------------------- #
 
@@ -363,6 +540,11 @@ _PAGE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], str]] = {
     "xnxx": _xnxx_page,
 }
 
+# Providers whose stream page is an embed shell, so the real page is also read
+# for its OpenGraph card. Eporner is the opposite: the embed page carries the
+# card and the real page is a JavaScript shell.
+_META_FROM_REAL_PAGE = {"xvideos", "xnxx"}
+
 
 def _fetch_html(url: str, provider: str) -> Dict[str, Any]:
     """Indirection point so tests never touch the network."""
@@ -385,6 +567,33 @@ def _fetch_provider_page(url: str, provider: str) -> Dict[str, Any]:
         code = str(page.get("code") or code)
     adult_disc._record_failure(provider, code)
     return page
+
+
+def _provider_metadata(
+    provider: str, page_url: str, fetch_url: str, markup: str
+) -> Dict[str, Any]:
+    """Cover and synopsis from the page a visitor sees, not the embed shell.
+
+    XVideos/XNXX serve streams from ``embedframe`` pages whose OpenGraph card is
+    generic ("Xvideos.com embed video"), so their real page is read as well.
+    Any failure there is silent: streams still work, the card just shows less.
+    """
+    meta = page_metadata(markup)
+    if provider not in _META_FROM_REAL_PAGE:
+        return meta
+    if not page_url or page_url.rstrip("/") == str(fetch_url or "").rstrip("/"):
+        return meta
+    try:
+        page = _fetch_html(page_url, provider)
+    except Exception:
+        return meta
+    if not page.get("ok"):
+        return meta
+    merged = page_metadata(page.get("html"))
+    for key, value in meta.items():
+        if not merged.get(key):
+            merged[key] = value
+    return merged
 
 
 def _cache_get(key: str) -> Optional[Dict[str, Any]]:
@@ -433,6 +642,7 @@ def streams_for(item: Dict[str, Any], force: bool = False) -> Dict[str, Any]:
     if provider in _UNSUPPORTED:
         result: Dict[str, Any] = {
             "streams": [],
+            "page_meta": {},
             "warnings": [
                 {
                     "provider": provider,
@@ -448,6 +658,7 @@ def streams_for(item: Dict[str, Any], force: bool = False) -> Dict[str, Any]:
     if not adapter:
         result = {
             "streams": [],
+            "page_meta": {},
             "warnings": [
                 {
                     "provider": provider,
@@ -473,7 +684,8 @@ def streams_for(item: Dict[str, Any], force: bool = False) -> Dict[str, Any]:
         raise _fetch_error(provider, page.get("code"))
 
     title = str(item.get("title") or "")
-    rows = adapter(str(page.get("html") or ""), title)
+    html = str(page.get("html") or "")
+    rows = adapter(html, title)
     streams = _finalise(provider, title, rows)
     warnings: List[Dict[str, Any]] = []
     if not streams:
@@ -487,6 +699,12 @@ def streams_for(item: Dict[str, Any], force: bool = False) -> Dict[str, Any]:
                 ),
             }
         )
-    result = {"streams": streams, "warnings": warnings}
+    # The provider's own card beats a TPDB guess for titles the database does
+    # not know, so it becomes part of the cached payload.
+    result = {
+        "streams": streams,
+        "warnings": warnings,
+        "page_meta": _provider_metadata(provider, page_url, fetch_url, html),
+    }
     _cache_set(key, result)
     return {**result, "cached": False}

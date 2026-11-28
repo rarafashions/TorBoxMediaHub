@@ -132,6 +132,60 @@ class MediaUrlTests(unittest.TestCase):
             self.assertNotIn(char, name)
 
 
+class PageMetadataTests(unittest.TestCase):
+    def test_open_graph_cover_and_synopsis_come_from_the_page(self):
+        markup = (
+            '<html><head>'
+            '<meta property="og:title" content="Sample &amp; Title">'
+            '<meta property="og:description" content="Short social blurb.">'
+            '<meta property="og:image" content="https://cdn.example.com/cover.jpg">'
+            '<script type="application/ld+json">'
+            '{"@type":"VideoObject","name":"Sample &amp; Title",'
+            '"description":"A much longer synopsis shipped in JSON-LD.",'
+            '"duration":"PT12M34S",'
+            '"thumbnailUrl":["https://cdn.example.com/alt.jpg"]}'
+            "</script></head></html>"
+        )
+        meta = streams.page_metadata(markup)
+        self.assertEqual(meta["title"], "Sample & Title")
+        self.assertEqual(meta["description"], "A much longer synopsis shipped in JSON-LD.")
+        self.assertEqual(meta["poster"], "https://cdn.example.com/cover.jpg")
+        self.assertEqual(meta["duration_sec"], 12 * 60 + 34)
+
+    def test_private_or_malformed_cover_is_dropped(self):
+        markup = (
+            '<meta property="og:image" content="http://127.0.0.1/cover.jpg">'
+            '<meta property="og:description" content="Synopsis stays.">'
+        )
+        meta = streams.page_metadata(markup)
+        self.assertNotIn("poster", meta)
+        self.assertEqual(meta["description"], "Synopsis stays.")
+
+    def test_largest_jsonld_cover_wins_over_the_small_og_one(self):
+        markup = (
+            '<meta property="og:image" content="https://cdn.example.com/8_240.jpg">'
+            '<script type="application/ld+json">'
+            '{"@type":"VideoObject","thumbnailUrl":['
+            '"https://cdn.example.com/8_360.jpg","https://cdn.example.com/8_720.jpg"]}'
+            "</script>"
+        )
+        meta = streams.page_metadata(markup)
+        self.assertEqual(meta["poster"], "https://cdn.example.com/8_720.jpg")
+
+    def test_generic_age_wall_title_is_not_used(self):
+        markup = (
+            '<meta property="og:title" content="Age-restricted content">'
+            '<meta property="og:description" content="Real synopsis survives.">'
+        )
+        meta = streams.page_metadata(markup)
+        self.assertNotIn("title", meta)
+        self.assertEqual(meta["description"], "Real synopsis survives.")
+
+    def test_markup_without_metadata_returns_nothing(self):
+        self.assertEqual(streams.page_metadata(""), {})
+        self.assertEqual(streams.page_metadata("<html><body>plain</body></html>"), {})
+
+
 class StreamListTests(unittest.TestCase):
     def test_deduplicate_sort_and_normalise(self):
         rows = [
@@ -181,6 +235,55 @@ class StreamsForTests(unittest.TestCase):
             streams.streams_for(item("eporner"), force=True)
             self.assertEqual(fetch.call_count, 2)
 
+    def test_provider_metadata_accompanies_streams_and_survives_the_cache(self):
+        markup = (
+            '<meta property="og:image" content="https://cdn.example.com/cover.jpg">'
+            '<meta property="og:description" content="Provider synopsis.">'
+            '<script>EP.video.player.url="https://gvideo.eporner.com/Sample0001/Sample0001.mp4";</script>'
+        )
+        with patch.object(streams, "_fetch_html", return_value={"ok": True, "html": markup}):
+            first = streams.streams_for(item("eporner"))
+            second = streams.streams_for(item("eporner"))
+        self.assertEqual(first["page_meta"]["description"], "Provider synopsis.")
+        self.assertEqual(second["page_meta"]["poster"], "https://cdn.example.com/cover.jpg")
+        self.assertTrue(second["cached"])
+
+    def test_xvideos_embed_shell_card_yields_to_the_real_page(self):
+        embed = (
+            '<meta property="og:title" content="Xvideos.com embed video">'
+            "<script>setVideoUrlHigh('https://cdn.example.com/sd.mp4');</script>"
+        )
+        real = (
+            '<meta property="og:title" content="Sample Real Title">'
+            '<meta property="og:description" content="Real synopsis.">'
+            '<meta property="og:image" content="https://cdn.example.com/real.jpg">'
+        )
+        real_url = "https://www.xvideos.com/video.Sample0001/sample"
+
+        def fake(url, provider):
+            return {"ok": True, "html": real if url == real_url else embed}
+
+        with patch.object(streams, "_fetch_html", side_effect=fake) as fetch:
+            result = streams.streams_for(item("xvideos"))
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(result["page_meta"]["title"], "Sample Real Title")
+        self.assertEqual(result["page_meta"]["description"], "Real synopsis.")
+        self.assertEqual(result["page_meta"]["poster"], "https://cdn.example.com/real.jpg")
+        self.assertEqual(len(result["streams"]), 1)
+
+    def test_real_page_failure_keeps_the_stream_and_skips_the_card(self):
+        embed = "<script>setVideoUrlHigh('https://cdn.example.com/sd.mp4');</script>"
+
+        def fake(url, provider):
+            if url == "https://www.xvideos.com/video.Sample0001/sample":
+                return {"ok": False, "code": "blocked"}
+            return {"ok": True, "html": embed}
+
+        with patch.object(streams, "_fetch_html", side_effect=fake):
+            result = streams.streams_for(item("xvideos"))
+        self.assertEqual(len(result["streams"]), 1)
+        self.assertEqual(result["page_meta"], {})
+
     def test_page_url_must_belong_to_the_provider(self):
         wrong = dict(item("eporner"), page_url="https://other.example.com/video-Sample0001/")
         with self.assertRaises(adult_disc.AdultDiscoveryError):
@@ -212,7 +315,7 @@ class AdultStreamsRouteTests(unittest.TestCase):
         with patch.object(app_module.adult_disc, "cached_item", return_value=cached), patch.object(
             app_module.adult_streams,
             "streams_for",
-            return_value={"streams": [{"name": "Eporner · MP4"}], "warnings": [], "cached": False},
+            return_value={"streams": [{"name": "Eporner · MP4"}], "warnings": [], "page_meta": {"description": "Provider synopsis."}, "cached": False},
         ):
             response = self.client.post(
                 "/api/adult/streams", json={"provider": "eporner", "id": "Sample0001"}
@@ -221,6 +324,7 @@ class AdultStreamsRouteTests(unittest.TestCase):
         body = response.get_json()
         self.assertTrue(body["ok"])
         self.assertEqual(body["streams"][0]["name"], "Eporner · MP4")
+        self.assertEqual(body["page_meta"]["description"], "Provider synopsis.")
 
     def test_streams_route_reports_an_empty_cache(self):
         with patch.object(app_module.adult_disc, "cached_item", return_value=None):
