@@ -587,6 +587,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | Live port 5050 (`v1.3DQ`, Tahap 2) | Chip scope 611/539/72; filter 1080p 53 judul dengan label kualitas di subjudul; detail: meta kualitas, `M3U LAN` 200 `audio/x-mpegurl`, audit `Embedded · 2 track`; tanpa error konsol |
 | Live port 5050 (`v1.3DR`, Tahap 3) | `/` 200 UI v2 (8 tab), `/v2` alias 60 kartu, `/legacy` 200 dengan `#view-library`, `/?discover=1` 302 ke `/legacy?discover=1` dan modal Discovery terbuka; `/roxxy` + `/api/bootstrap` 200; tanpa error konsol |
 | Live port 5050 (`v1.3DS`, permukaan secret) | `/api/bootstrap` 539 item + 5 playlist tanpa `stream_url`; `/api/media`, `/api/settings`, `/api/roxxy/config` 0 token manifest dan 0 signed URL; Library 60 kartu, Playlist 5 kartu, detail 31 aksi; tanpa `pageerror` |
+| Live port 5050 (`v1.3DS`, kuota) | WebDL Eporner -> #360 diperbarui + badge IN LIBRARY; IndonesiaMovies LK21 #614 `indo_movie` 340 MB; Donghua lokal #615 S1E16; auto-add Indo #613 `indo_keyword_classifier`; cache/NZB/settings/watcher/riwayat job diverifikasi; antrean akhir 0 |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 

@@ -75,6 +75,7 @@ Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-h
 | 51 | Tahap 2 v2: filter kualitas, scope playlist, audit subtitle, M3U per item | `static/ui/home.js`, `static/ui/app.css`, `app.py` (versi), `tests/test_v2_ui.py` | Library punya select **Kualitas** (4K/1440/1080/720/SD/tanpa info) dan chip **Scope playlist** (Semua/Belum/Sudah; hitungan mengikuti filter lain). Detail item punya **Audit subtitle** (`POST /api/subtitle-quality/audit`, hasil per track) dan tautan **M3U LAN** ke `/api/media/<id>/remote-m3u`. Verifikasi live: 611 item (539 belum / 72 sudah), filter 1080p = 53 judul, M3U 200 `audio/x-mpegurl`, audit embedded 2 track; suite **537 passed, 219 subtests**. |
 | 52 | Tahap 3 v2: `/` menjadi UI v2, UI lama di `/legacy` | `app.py`, `templates/home_v2.html`, `templates/index.html`, `static/ui/home.js`, `tests/test_ui_routes.py` | `/` merender `home_v2.html`; `/v2` tetap alias; `/legacy` merender `index.html`; `/?discover=1` → `302 /legacy?discover=1` dengan query utuh. Tautan silang: footer/Pengaturan v2 ke `/legacy`, header UI lama ke `/`. `/roxxy` dan `/api/*` tidak berubah. Verifikasi live 200/200/200, modal Discovery tetap terbuka; suite **543 passed, 219 subtests**. |
 | 53 | Permukaan secret browser: mask manifest URL + buang signed `stream_url` | `database_manager.py`, `app.py`, `tests/test_secret_surface.py` | `get_masked_settings()` memask tujuh slot manifest (`skema://host/…/manifest.json`). `_public_item`/`_public_items` dan `_public_playlist(s)` membuang `stream_url` dari `/api/bootstrap`, `/api/media`, `/api/playlists*`, dan respons mutasi media; server tetap memakai nilai asli untuk Play/M3U. 7 tes baru; suite **550 passed, 219 subtests**; live `v1.3DS` 0 token/0 signed URL di keempat permukaan. |
+| 54 | Verifikasi pending task berkuota (WebDL, IndonesiaMovies, Donghua, auto-add Indo) | `docs/PENDING_TASKS.md` | WebDL Eporner memperbarui item #360 + badge IN LIBRARY; IndonesiaMovies LK21 #614 `indo_movie`; Donghua lokal #615 S1E16; auto-add Indo #613 `indo_keyword_classifier` (dihapus setelah uji); watcher/cache/NZB/settings/riwayat job diverifikasi; suite tetap **550 passed, 219 subtests**; tidak ada perubahan kode produksi. |
 
 ---
 
@@ -92,7 +93,7 @@ Audit DB live 28 November 2026 (585 baris) menemukan empat sumber masalah; keemp
 Sisa perbaikan data yang belum dikerjakan (bukan blocker):
 
 - Duplikat episode masih ikut terhitung di total Library/statistik dan di "Putar season"/"Putar full season"; yang berubah baru urutannya. Setelah perbaikan nomor episode (baris 38) ada **21 grup** episode ganda, maksimal 3 salinan per episode.
-- **29** baris masih Needs Review (termasuk 15 adult dan 5 JAV berkode hasil parse nama file). Klasifikasi ulang `v1.3DS` memproses seluruh baris `pending`: 7 kandidat -> 5 classified + 2 needs review, sehingga `classification_pending_count` kini **0** dan run berikutnya tidak menemukan kandidat.
+- **30** baris masih Needs Review (termasuk 15 adult dan 5 JAV berkode hasil parse nama file). Klasifikasi ulang `v1.3DS` memproses seluruh baris `pending`: 7 kandidat -> 5 classified + 2 needs review. Watcher TorBox kemudian menyinkronkan ulang item cloud dan menambah satu baris Needs Review, sehingga `classification_pending_count` tetap **0** dan run berikutnya tidak menemukan kandidat.
 
 ### V1 - verifikasi manual (butuh app berjalan)
 
@@ -133,7 +134,36 @@ Sisa perbaikan data yang belum dikerjakan (bukan blocker):
 | Masking token | `/api/settings`, `/api/bootstrap`, `/api/media`, `/api/roxxy/config` -> 0 token manifest, 0 signed URL |
 | Koneksi | PID 96676 hanya `Listen`, `CloseWait` 0 setelah idle |
 
-Sisa item checklist yang **belum** dijalankan karena memerlukan aksi tulis/kuota: ganti folder/manifest di Pengaturan, probe stream gagal, cache magnet batch, impor manifest/judul, NZB forwarder, job gagal, auto-add Indo, riwayat lebih dari 50 job, konfirmasi unduhan IN LIBRARY, badge setelah impor, watcher TorBox, impor Donghua, unduhan IndonesiaMovies, dan pengiriman `+ TorBox` dari panel Serial.
+**Dijalankan 28 November 2026, lanjutan (`v1.3DS`, port 5050, kuota/bandwidth disetujui pengguna):**
+
+| Item | Hasil |
+|---|---|
+| Probe stream gagal | `POST /api/roxxy/analyze` untuk `https://example.invalid/noext` -> 200, engine `pending_http_inspection`, `resolved=false`; tombol **yt-dlp**/**aria2c** disabled dengan alasan "Perlu probe header server: tipe konten belum teridentifikasi" |
+| NZB forwarder | URL `hub.roxxy-tech.com/nzb/dl?d=...` -> `route=torbox_usenet`, `nzb_url` berisi hoster asli (`hoster.example.test`), URL forwarder tidak muncul di respons |
+| NZB tidak valid | `ftp://`, `localhost`, dan `10.0.0.5` -> 400 dengan pesan spesifik; `watch_active` tetap 0 (tidak ada request keluar) |
+| Cache magnet batch | 3 magnet -> satu permintaan `checkcached`, `results=3`, `hashes=3` |
+| Pesan Settings | tanpa perubahan -> "tidak berubah"; folder saja -> pesan folder; JAV ditukar sementara lalu dipulihkan -> "1 manifest diperbarui: JAV" dua arah; 0 token di pesan |
+| `+ TorBox` episode | magnet cached Swallowed Star 040v2 -> 200, watcher aktif 1 lalu 0, impor item #612 (`donghua`, S1E40), `pending` 0 |
+| Watcher TorBox | 44 sampel selama WebDL: `active_count=1` -> `newly_imported` -> 0, tanpa error rate limit |
+| WebDL satu judul | Eporner "Ourdream | Busty Asian ..." -> terkirim, aktif ±3 menit, impor `webdl:2436023` memperbarui item #360 (`english_adult`); total tidak bertambah karena judul sudah ada (dedupe) |
+| Badge setelah impor | `/roxxy` English Adult cari "Ourdream" -> 32 kartu; kartu pertama dan detail **IN LIBRARY**, tombol **Simpan ke TorBox Cloud (WebDL)** ada, 0 signed URL di DOM |
+| Auto-add Indo | unduhan lokal 1 MB berjudul "Istri Orang Lagi Selingkuh di Kos" -> item #613 kategori `indo`, `classification_method=indo_keyword_classifier`, `classified` (artefak uji dihapus setelah verifikasi) |
+| Unduhan IndonesiaMovies | LK21 "Long Day (2021)" lewat yt-dlp -> item #614 `indo_movie`, `roxxy_source_indo_movie`, poster dari Roxxy, `subtitle_source=none`, 340 MB |
+| Unduhan Donghua lokal | Donghuastream "Spare Me Great Lord S3 E16" -> item #615 `donghua`, `season_num=1`, `episode_num=16`, `series_title` terisi, hanya 1 baris untuk seri itu |
+| Riwayat job lokal | `POST /api/roxxy/local/clear` -> `removed=3`, `jobs=0`; batas 50 dan pengecualian job aktif/pending Library dijaga `test_roxxy_queue_retention.py` |
+| Job gagal | Format `engine: exit N` dan tautan disamarkan dijaga `test_roxxy_download_guardrails.py`; live: URL rusak ditolak saat inspect sebelum job dibuat |
+| Konfirmasi IN LIBRARY | WebDL "Massage Gone Squirt" memunculkan dialog konfirmasi; dibatalkan, antrean tetap 0 |
+| Log file | `logs/app.log` 3,65 MB dan memuat baris akses Werkzeug; launcher `.bat` sudah menangani exit `-1073741510` |
+| Token di DOM | Detail `/roxxy` -> 0 query token/signed URL |
+
+Temuan dan batasan dari run ini:
+
+- Stream **Official Donghua** yang hanya membawa `ytId` (YouTube) tidak bisa diunduh lokal: `POST /api/roxxy/local/inspect` mengembalikan `engine=manual`. Unduhan Donghua memakai addon yang memberi forwarder media (Donghuastream/DonghuaWorld/Chiki/Animexin).
+- Judul lokal "Spare Me Great Lord Season 3 Episode 16 ..." tersimpan dengan `series_title=Spare Me Great Lord` (akhiran season dipangkas parser); episode tetap S1E16 dan hanya satu baris untuk seri itu.
+- Impor WebDL dengan judul yang sudah ada memperbarui baris lama (#360, `unique_key` baru dan ukuran 155 MB) sehingga total Library tidak bertambah.
+- `needs_review` menjadi **30** setelah watcher menyinkronkan ulang item cloud pada 21:58; `classification_pending_count` tetap 0.
+- Belum diulang: Ctrl+C interaktif pada `.bat`, tray progres di UI saat job TorBox aktif (backend/API sudah diverifikasi), dan submit NZB valid ke TorBox (hanya analyze forwarder + penolakan link invalid).
+
 - Buka `/` (UI v2) dan periksa delapan tab: **Beranda** (hero + 4 stat + 6 pintasan + rail), **Library** (chip kategori + chip scope playlist, 7 filter termasuk **Kualitas** dan **Status klasifikasi / Needs Review**, sort, mode pilih), **Serial** (kartu progres + panel season), **Playlist** (kartu, kelola, picker, M3U), **Unduhan** (4 panel, tombol task, retry, poll 5 s), **Statistik** (bar kategori, kelengkapan, lingkungan, backup), **Pengaturan** (API key tersamarkan, media player + Auto-Detect/Browse, folder lokal, subtitle, runtime, database/backup). Pastikan tidak ada scrollbar horizontal di 1024 px dan di jendela sempit navbar menjadi dua baris tanpa menutupi judul. Detail: buka satu film dan satu serial, coba rating, subtitle ID/EN, tambah/hapus playlist, Escape, tombol Back browser, dan deep link `#media-<id>`. Unduhan: pastikan antrean lokal kosong saat uji, lalu mulai satu task dari panel dan hentikan bila perlu.
 - Buka `/legacy` dan pastikan UI lama tampil penuh (Library, Discovery, Settings & DB); tombol **UI v2** kembali ke `/`.
 - Buka Discovery Hub (dari UI lama) dan pastikan hanya ada empat tab (Movies, TV Shows, Anime, Donghua); feed Trending/Popular/Top Rated dan Search harus memuat untuk keempatnya.

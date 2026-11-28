@@ -266,6 +266,27 @@ Restart app live port 5050 dilakukan setelah antrean TorBox/lokal 0 dan task idl
 - **Verifikasi live** (`v1.3DS`, antrean 0): `/api/bootstrap` 539 item + 5 playlist dengan 0 `stream_url`, 0 query token, 0 token manifest; `/api/media` 0; `/api/settings` menampilkan 7 manifest sebagai `https://hub.roxxy-tech.com/…/manifest.json`; `/api/roxxy/config` 0. UI: Library 60 kartu, 3 chip scope, Playlist 5 kartu, detail terbuka 31 aksi, tanpa `pageerror`.
 - **Pending task yang dijalankan** (tanpa kuota): simpan Pengaturan tanpa perubahan → 200 dan digest setting identik; klasifikasi ulang → 7 kandidat (5 classified, 2 needs review), `pending` 0, run kedua 0 kandidat; statistik Indonesia Movies 1 = 1 item; PID baru hanya `Listen`, `CloseWait` 0.
 
+
+### 4.21 Verifikasi pending task berkuota (`v1.3DS`, tanpa perubahan kode)
+
+Pengguna menyetujui pemakaian kuota TorBox dan bandwidth untuk menyelesaikan checklist V1. Semua uji dijalankan di app live port 5050 saat task idle dan antrean lokal 0.
+
+| Area | Hasil |
+|---|---|
+| Probe gagal | `example.invalid/noext` -> `pending_http_inspection`, `resolved=false`, tombol lokal disabled dengan alasan probe header |
+| NZB | Forwarder `nzb/dl?d=...` -> `route=torbox_usenet` + `nzb_url` hoster asli; `ftp://`/`localhost`/IP privat -> 400 tanpa request keluar |
+| Cache magnet | 3 hash -> satu `checkcached` (`results=3`) |
+| Settings | "tidak berubah", "folder download diperbarui", dan "1 manifest diperbarui: JAV" (swap lalu restore) tanpa token di pesan |
+| `+ TorBox` | Swallowed Star 040v2 cached -> watcher 1 lalu 0, impor #612 (`donghua` S1E40), `pending` 0 |
+| WebDL | Eporner "Ourdream" -> impor `webdl:2436023` memperbarui #360; `/roxxy` kartu + detail **IN LIBRARY**, tombol WebDL ada, 0 signed URL di DOM |
+| Auto-add Indo | Unduhan lokal "Istri Orang Lagi Selingkuh di Kos" -> #613 `indo` + `indo_keyword_classifier` (artefak dihapus) |
+| IndonesiaMovies | LK21 "Long Day (2021)" -> #614 `indo_movie`, poster Roxxy, `subtitle_source=none`, 340 MB |
+| Donghua lokal | Donghuastream "Spare Me Great Lord S3 E16" -> #615 `donghua` S1E16 dengan `series_title`, satu baris untuk seri |
+| Riwayat job | `clear` -> `removed=3`, `jobs=0`; batas 50 dan pengecualian job aktif/pending dijaga tes |
+| Log | `logs/app.log` 3,65 MB dengan baris akses Werkzeug; `.bat` menangani exit `-1073741510` |
+
+**Batasan yang dicatat:** stream Official Donghua dengan hanya `ytId` YouTube tidak bisa diunduh lokal (`local/inspect` -> `engine=manual`); `series_title` memangkas akhiran season; WebDL judul duplikat memakai baris lama sehingga total tidak bertambah; `needs_review` menjadi **30** setelah sinkronisasi watcher, `pending` tetap 0. Tidak ada kode produksi yang berubah, suite tetap **550 passed, 219 subtests**.
+
 ---
 
 ## 5. Keputusan yang mengikat
