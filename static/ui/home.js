@@ -4203,8 +4203,18 @@
     const statusLine = el("p", { class: "series__status" });
     const listHost = el("div", { class: "series__list" });
     const searchHost = el("div", { class: "series__search" });
+    const downloadHost = el("div", { class: "series__downloads", "aria-live": "polite" });
     const seasonActions = el("div", { class: "detail__actions", style: "margin-top:12px" });
     const searchState = { loading: false, scope: "", data: null, error: "" };
+    const downloadState = {
+      active: [],
+      syncing: [],
+      imported: [],
+      handled: new Set(),
+      loading: false,
+      error: "",
+      timer: null,
+    };
     let searchToken = 0;
 
     const allSeasons = () => {
@@ -4580,6 +4590,177 @@
       searchHost.replaceChildren(...children);
     }
 
+    function downloadTitle(entry) {
+      return [entry.episode ? episodeLabel(entry.episode) : "", entry.title || "TorBox item"]
+        .filter(Boolean)
+        .join(" · ");
+    }
+
+    function paintDownloads() {
+      const { active, syncing, imported, error } = downloadState;
+      const total = active.length + syncing.length + imported.length;
+      if (!total && !error) {
+        downloadHost.replaceChildren();
+        return;
+      }
+      const rows = [];
+      for (const entry of active) {
+        const progress = normalizeProgress(entry.progress);
+        rows.push(
+          el(
+            "div",
+            { class: "row series-dl" },
+            el(
+              "span",
+              { class: "row__main" },
+              el("span", {
+                class: "row__title row__title--wrap",
+                text: downloadTitle(entry),
+                title: entry.title || "",
+              }),
+              el("span", {
+                class: "row__sub",
+                text: [entry.kind === "usenet" ? "NZB" : "Torrent", entry.download_state || "queued"]
+                  .filter(Boolean)
+                  .join(" · "),
+              }),
+              el(
+                "div",
+                { class: "meterline" },
+                progressBar(progress),
+                el("span", { class: "meterline__val", text: `${Math.round(progress)}%` })
+              )
+            ),
+            pill("downloading")
+          )
+        );
+      }
+      for (const entry of syncing) {
+        rows.push(
+          el(
+            "div",
+            { class: "row series-dl" },
+            el(
+              "span",
+              { class: "row__main" },
+              el("span", { class: "row__title row__title--wrap", text: downloadTitle(entry) }),
+              el("span", {
+                class: "row__sub",
+                text: [entry.library_stage || "import", entry.library_message || "Menyiapkan Library..."]
+                  .filter(Boolean)
+                  .join(" · "),
+              })
+            ),
+            el("span", { class: "pill pill--queued", text: "IMPORT" })
+          )
+        );
+      }
+      for (const entry of imported) {
+        rows.push(
+          el(
+            "div",
+            { class: "row series-dl" },
+            el(
+              "span",
+              { class: "row__main" },
+              el("span", { class: "row__title row__title--wrap", text: downloadTitle(entry) }),
+              el("span", { class: "row__sub", text: "Selesai · sudah masuk Library" })
+            ),
+            pill("completed")
+          )
+        );
+      }
+      downloadHost.replaceChildren(
+        el(
+          "div",
+          { class: "search-panel series__downloads-panel" },
+          el(
+            "div",
+            { class: "search-panel__head" },
+            el("span", { class: "search-panel__title", text: "Unduhan episode" }),
+            el("span", { class: "search-panel__meta", text: `${numberLabel(total)} dipantau` })
+          ),
+          error ? el("p", { class: "search-panel__note", text: error }) : null,
+          el("div", { class: "rowlist" }, ...rows)
+        )
+      );
+    }
+
+    async function refreshImportedEpisodes(entries) {
+      const fresh = [];
+      for (const entry of entries || []) {
+        const key = String(entry.key || "");
+        if (!key || downloadState.handled.has(key)) continue;
+        downloadState.handled.add(key);
+        fresh.push(entry);
+      }
+      if (!fresh.length) return;
+      const episodes = fresh
+        .map((entry) => Number(entry.episode))
+        .filter((num) => num > 0);
+      toast(
+        episodes.length
+          ? `${episodes.map(episodeLabel).join(", ")} selesai diimpor ke Library`
+          : "Unduhan selesai diimpor ke Library",
+        "ok"
+      );
+      if (searchState.data && Array.isArray(searchState.data.episodes)) {
+        searchState.data.episodes = searchState.data.episodes.filter(
+          (entry) => !episodes.includes(Number(entry.episode))
+        );
+      }
+      await loadAll({ silent: true });
+      const freshGroup = groupSeries(state.items).find((g) => g.key === group.key);
+      if (freshGroup) group = freshGroup;
+      paintDownloads();
+      await loadStatus(activeSeason);
+    }
+
+    async function pollSeriesDownloads() {
+      if (downloadState.loading) return;
+      downloadState.loading = true;
+      const seasonAtStart = Number(activeSeason);
+      try {
+        const params = new URLSearchParams({
+          series_title: group.title,
+          season: String(seasonAtStart),
+        });
+        const data = await api(`/api/series/download-status?${params.toString()}`);
+        if (!document.body.contains(panel) || seasonAtStart !== Number(activeSeason)) return;
+        downloadState.active = Array.isArray(data.active) ? data.active : [];
+        downloadState.syncing = Array.isArray(data.syncing) ? data.syncing : [];
+        downloadState.imported = Array.isArray(data.newly_imported) ? data.newly_imported : [];
+        downloadState.error = "";
+        paintDownloads();
+        await refreshImportedEpisodes(downloadState.imported);
+      } catch (err) {
+        if (seasonAtStart !== Number(activeSeason)) return;
+        downloadState.error = err.message;
+        paintDownloads();
+      } finally {
+        downloadState.loading = false;
+      }
+    }
+
+    function stopDownloadPoll() {
+      if (downloadState.timer) {
+        clearInterval(downloadState.timer);
+        downloadState.timer = null;
+      }
+    }
+
+    function startDownloadPoll() {
+      stopDownloadPoll();
+      downloadState.timer = setInterval(() => {
+        if (!document.body.contains(panel)) {
+          stopDownloadPoll();
+          return;
+        }
+        if (document.hidden) return;
+        pollSeriesDownloads();
+      }, 5000);
+    }
+
     async function runEpisodeSearch(episodes) {
       const wanted = (episodes || []).map(Number).filter((n) => n > 0);
       if (!wanted.length || searchState.loading) return;
@@ -4633,9 +4814,11 @@
             series_title: group.title,
             category: group.category || "tv_show",
             season: Number(activeSeason),
+            episode: Number(release.episode) || null,
           })
         );
         toast(data.message || "Rilis ditambahkan ke TorBox", "ok");
+        pollSeriesDownloads();
       } catch (err) {
         toast(err.message, "error");
       } finally {
@@ -4690,6 +4873,7 @@
       paintTabs();
       paintStatus();
       paintEpisodes();
+      paintDownloads();
       paintSearch();
     }
 
@@ -4702,8 +4886,13 @@
       searchState.loading = false;
       searchState.data = null;
       searchState.error = "";
+      downloadState.active = [];
+      downloadState.syncing = [];
+      downloadState.imported = [];
+      downloadState.error = "";
       paintAll();
       loadStatus(next);
+      pollSeriesDownloads();
     }
 
     async function loadStatus(season) {
@@ -4842,7 +5031,7 @@
               )
             )
           ),
-          el("div", { class: "series" }, seasonBar, statusLine, seasonActions, searchHost, listHost)
+          el("div", { class: "series" }, seasonBar, statusLine, seasonActions, downloadHost, searchHost, listHost)
         )
       )
     );
@@ -4851,6 +5040,8 @@
     document.body.style.overflow = "hidden";
     paintAll();
     loadStatus(activeSeason);
+    startDownloadPoll();
+    pollSeriesDownloads();
     $(".detail__close", panel)?.focus();
   }
 

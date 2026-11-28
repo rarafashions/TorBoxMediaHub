@@ -1324,6 +1324,33 @@ a.stat-tile:hover {
   display: none;
 }
 
+/* Progress tray for downloads started from the series panel. */
+.series__downloads {
+  margin: 0 0 14px;
+}
+
+.series__downloads:empty {
+  display: none;
+}
+
+.series__downloads-panel {
+  margin: 0;
+}
+
+.series-dl {
+  align-items: flex-start;
+  padding: 10px 12px;
+}
+
+.series-dl .meterline {
+  margin-top: 6px;
+}
+
+.series-dl .row__title {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .series__searchbar {
   display: flex;
   flex-wrap: wrap;

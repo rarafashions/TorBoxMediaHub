@@ -39,7 +39,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DG"  # single source of truth; templates render this
+APP_VERSION = "v1.3DH"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -183,6 +183,9 @@ TORBOX_API_BASE = "https://api.torbox.app/v1/api"
 # TorBox disurvei hanya selama ada item yang dipantau. Sepuluh detik cukup untuk
 # menampilkan progres tanpa membanjiri API dengan permintaan tiap 5 detik.
 TORBOX_WATCH_POLL_SECONDS = 10
+# Recently imported entries stay readable for the series panel (which dedupes by
+# key) without growing the in-memory monitor forever.
+TORBOX_RECENT_IMPORT_TTL_SECONDS = 900
 M3U_FRESH_TTL_SECONDS = 1800  # 30 minutes cache for freshly generated playlist M3U
 
 DISCOVER_CACHE_TTL = 600  # 10 minutes cache for Discovery feeds
@@ -409,6 +412,7 @@ class TorboxDownloadMonitor:
         metadata: Optional[Dict[str, Any]] = None,
         subtitles: Optional[List[Dict[str, Any]]] = None,
         expected_filename: str = "",
+        episode: Optional[int] = None,
     ) -> None:
         if not item_id:
             return
@@ -420,6 +424,19 @@ class TorboxDownloadMonitor:
             hint_payload["subtitles"] = subtitles
         if expected_filename:
             hint_payload["expected_filename"] = expected_filename
+        # Episode search knows exactly which episode the user asked for. Carry
+        # that through the import hint so a single-file download lands on the
+        # right episode even when the release name is ambiguous.
+        if series_title:
+            series_hint: Dict[str, Any] = {"title": series_title}
+            try:
+                if season:
+                    series_hint["season"] = int(season)
+                if episode:
+                    series_hint["episode"] = int(episode)
+            except (TypeError, ValueError):
+                pass
+            hint_payload["series"] = series_hint
         with self._lock:
             self.watched_items[key] = {
                 "key": key,
@@ -430,6 +447,7 @@ class TorboxDownloadMonitor:
                 "category": category,
                 "poster_url": poster_url or "",
                 "season": season,
+                "episode": int(episode) if episode else None,
                 "replace_media_id": int(replace_media_id) if replace_media_id else None,
                 "delete_remote_on_replace": bool(delete_remote_on_replace),
                 "progress": 0.0,
@@ -464,12 +482,26 @@ class TorboxDownloadMonitor:
                     entry["library_stage"] = stage
                     entry["library_message"] = message
 
-    def status(self) -> Dict[str, Any]:
+    def status(self, consume_imported: bool = True) -> Dict[str, Any]:
+        """Snapshot the monitor.
+
+        ``consume_imported=False`` lets a second surface (the series panel) read
+        the same completion event without stealing it from the Downloads view.
+        Entries are pruned by age so a peek cannot keep them forever.
+        """
+        now = time.time()
         with self._lock:
             active = list(self.watched_items.values())
             syncing = list(self.syncing_items)
-            imported = list(self.recently_imported)
-            self.recently_imported.clear()
+            fresh = [
+                entry
+                for entry in self.recently_imported
+                if now - float(entry.get("imported_at") or 0.0) <= TORBOX_RECENT_IMPORT_TTL_SECONDS
+            ]
+            self.recently_imported = fresh
+            imported = list(fresh)
+            if consume_imported:
+                self.recently_imported = []
         return {
             "active_count": len(active) + len(syncing),
             "active": active,
@@ -593,6 +625,9 @@ class TorboxDownloadMonitor:
                             self.syncing_items = [
                                 s for s in self.syncing_items if s["key"] not in done_keys
                             ]
+                            imported_at = time.time()
+                            for imported_entry in completed_entries:
+                                imported_entry["imported_at"] = imported_at
                             self.recently_imported.extend(completed_entries)
                         # Hint sudah dipakai impor ini; salinan persisten di DB
                         # (get_torbox_import_hint) tetap tersedia untuk impor ulang.
@@ -739,6 +774,29 @@ def _import_hint_media_payload(metadata: Dict[str, Any]) -> Dict[str, Any]:
     if payload:
         payload["has_metadata"] = 1
         payload["metadata_source"] = "roxxy"
+    return payload
+
+
+def _apply_series_hint(payload: Dict[str, Any], series_hint: Any) -> Dict[str, Any]:
+    """Pin an import to the season/episode the user explicitly requested.
+
+    Only a complete (title, season, episode) triple is applied; season packs
+    keep their per-file parsing. The hint is server-side state, never provider
+    text, so it cannot be spoofed through a release title.
+    """
+    if not isinstance(series_hint, dict):
+        return payload
+    title = str(series_hint.get("title") or "").strip()
+    try:
+        season = int(series_hint.get("season") or 0)
+        episode = int(series_hint.get("episode") or 0)
+    except (TypeError, ValueError):
+        return payload
+    if not title or not (1 <= season <= 200) or not (1 <= episode <= 10000):
+        return payload
+    payload["series_title"] = title[:300]
+    payload["season_num"] = season
+    payload["episode_num"] = episode
     return payload
 
 
@@ -1297,6 +1355,19 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
                     if not files_list and (parent.get("short_name") or parent.get("name")):
                         files_list = [parent]
 
+                    # The explicit season/episode from the series panel only
+                    # applies when the download is one video. A season pack must
+                    # keep per-file parsing instead of inheriting one episode.
+                    video_files = [
+                        f for f in files_list
+                        if isinstance(f, dict)
+                        and _is_video_file(
+                            f.get("short_name")
+                            or os.path.basename(f.get("name") or f.get("filename") or "")
+                        )
+                    ]
+                    single_video = len(video_files) == 1
+
                     for fobj in files_list:
                         if not isinstance(fobj, dict):
                             continue
@@ -1323,6 +1394,21 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
                         hint_meta = import_hint.get("metadata") or {}
                         if not isinstance(hint_meta, dict):
                             hint_meta = {}
+                        series_hint: Dict[str, Any] = {}
+                        series_meta = hint_meta.get("series") or {}
+                        if single_video and isinstance(series_meta, dict):
+                            hint_title = str(series_meta.get("title") or "").strip()
+                            try:
+                                hint_season = int(series_meta.get("season") or 0)
+                                hint_episode = int(series_meta.get("episode") or 0)
+                            except (TypeError, ValueError):
+                                hint_season = hint_episode = 0
+                            if hint_title and hint_season > 0 and hint_episode > 0:
+                                series_hint = {
+                                    "title": hint_title[:300],
+                                    "season": hint_season,
+                                    "episode": hint_episode,
+                                }
                         discovered.append({
                             "kind": kind,
                             "item_id": pid,
@@ -1331,6 +1417,7 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
                             "poster_url": import_hint.get("poster_url", ""),
                             "hint_metadata": hint_meta.get("meta") or {},
                             "hint_subtitles": hint_meta.get("subtitles") or [],
+                            "series_hint": series_hint,
                             "parent_name": parent_title,
                             "file_name": raw_name,
                             "file_size": fsize,
@@ -1353,7 +1440,7 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
     tracked_keys = {
         f"{entry['kind']}:{entry['item_id']}"
         for entry in discovered
-        if entry.get("hint_metadata") or entry.get("hint_subtitles")
+        if entry.get("hint_metadata") or entry.get("hint_subtitles") or entry.get("series_hint")
     }
     if tracked_keys:
         TORBOX_MONITOR.set_library_progress(
@@ -1379,6 +1466,7 @@ def _sync_torbox_cloud_worker(auto_enrich: bool = False) -> None:
             hint_fields = _import_hint_media_payload(entry.get("hint_metadata") or {})
             if hint_fields:
                 media_payload.update(hint_fields)
+            _apply_series_hint(media_payload, entry.get("series_hint"))
             mid = db.upsert_media_item(media_payload, conn=conn)
             new_or_updated_ids.append(mid)
             if idx % 25 == 0 or idx == len(discovered):
@@ -4004,7 +4092,18 @@ def api_torbox_add_cached():
     name = (payload.get("title") or "").strip()
     series_title = (payload.get("series_title") or "").strip()
     category = (payload.get("category") or "").strip().lower()
-    season = int(payload.get("season") or 1)
+    try:
+        season = int(payload.get("season") or 1)
+    except (TypeError, ValueError):
+        season = 1
+    if season < 1 or season > 200:
+        season = 1
+    try:
+        episode = int(payload.get("episode") or 0)
+    except (TypeError, ValueError):
+        episode = 0
+    if episode <= 0 or episode > 10000:
+        episode = None
     replace_media_id = payload.get("replace_media_id")
     delete_remote_on_replace = bool(payload.get("delete_remote_on_replace", True))
     hint_metadata = _sanitize_import_metadata(payload.get("metadata"))
@@ -4096,6 +4195,7 @@ def api_torbox_add_cached():
                     metadata=hint_metadata or None,
                     subtitles=hint_subtitles or None,
                     expected_filename=expected_filename,
+                    episode=episode,
                 )
 
             detail_msg = body.get("detail") or f"Added '{name or kind}' to TorBox Cloud!"
@@ -4372,6 +4472,67 @@ def api_torbox_webdl_add():
 def api_torbox_watch_status():
     """Returns progress of monitored TorBox downloads and any newly auto-imported items."""
     return jsonify({"ok": True, **TORBOX_MONITOR.status()})
+
+
+_SERIES_DOWNLOAD_FIELDS = (
+    "key",
+    "kind",
+    "title",
+    "season",
+    "episode",
+    "progress",
+    "download_state",
+    "finished",
+    "library_stage",
+    "library_message",
+    "imported_at",
+)
+
+
+def _filter_series_downloads(entries: List[Dict[str, Any]], title: str, season: Optional[int]) -> List[Dict[str, Any]]:
+    wanted = title.strip().casefold()
+    filtered: List[Dict[str, Any]] = []
+    for entry in entries:
+        if str(entry.get("series_title") or "").strip().casefold() != wanted:
+            continue
+        try:
+            entry_season = int(entry.get("season"))
+        except (TypeError, ValueError):
+            entry_season = None
+        if season is not None and entry_season is not None and entry_season != season:
+            continue
+        filtered.append({field: entry.get(field) for field in _SERIES_DOWNLOAD_FIELDS})
+    return filtered
+
+
+@app.route("/api/series/download-status", methods=["GET"])
+def api_series_download_status():
+    """Progress of downloads started from one series panel.
+
+    Reads the monitor without consuming completion events so the Downloads view
+    and the series panel can both observe the same import.
+    """
+    series_title = (request.args.get("series_title") or "").strip()
+    if not series_title:
+        return jsonify({"ok": False, "error": "series_title wajib diisi."}), 400
+    season_raw = (request.args.get("season") or "").strip()
+    season = int(season_raw) if season_raw.isdigit() else None
+
+    snapshot = TORBOX_MONITOR.status(consume_imported=False)
+    active = _filter_series_downloads(snapshot.get("active") or [], series_title, season)
+    syncing = _filter_series_downloads(snapshot.get("syncing") or [], series_title, season)
+    imported = _filter_series_downloads(snapshot.get("newly_imported") or [], series_title, season)
+    return jsonify(
+        {
+            "ok": True,
+            "series_title": series_title,
+            "season": season,
+            "active": active,
+            "syncing": syncing,
+            "newly_imported": imported,
+            "active_count": len(active) + len(syncing),
+        }
+    )
 
 
 @app.route("/api/players/detect", methods=["GET"])
