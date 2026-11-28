@@ -32,6 +32,7 @@
       watched: "all",
       sub: "all",
       meta: "all",
+      review: "all",
       sort: "newest",
       grouped: true,
     },
@@ -48,6 +49,19 @@
       error: "",
       loading: false,
       lastLoaded: 0,
+    },
+    settings: {
+      data: null,
+      loading: false,
+      error: "",
+      saving: false,
+      busy: "",
+      player: "vlc",
+      playerPaths: { vlc: "", mpv: "", custom: "" },
+      customArgs: "",
+      localPaths: "",
+      indonesian: true,
+      keyDrafts: { torbox: "", tmdb: "", tpdb: "" },
     },
   };
 
@@ -95,6 +109,7 @@
     playlists: "Playlist",
     downloads: "Unduhan",
     stats: "Statistik",
+    settings: "Pengaturan",
   };
 
   /* --------------------------- DOM helpers ------------------------------ */
@@ -555,6 +570,11 @@
     if (f.sub === "none" && truthyFlag(item.has_subtitle)) return false;
     if (f.meta === "has" && !truthyFlag(item.has_metadata)) return false;
     if (f.meta === "none" && truthyFlag(item.has_metadata)) return false;
+    const classification = String(item.classification_status || "");
+    if (f.review === "needs_review" && classification !== "needs_review") return false;
+    if (f.review === "classified" && classification !== "classified") return false;
+    if (f.review === "manual" && classification !== "manually_classified") return false;
+    if (f.review === "pending" && classification && classification !== "pending") return false;
     return true;
   }
 
@@ -624,6 +644,7 @@
       f.watched === "all" &&
       f.sub === "all" &&
       f.meta === "all" &&
+      f.review === "all" &&
       f.sort === "newest" &&
       f.grouped === true
     );
@@ -636,6 +657,7 @@
       watched: "all",
       sub: "all",
       meta: "all",
+      review: "all",
       sort: "newest",
       grouped: true,
     };
@@ -651,6 +673,7 @@
       watched: "all",
       sub: "all",
       meta: "all",
+      review: "all",
       sort: "newest",
       grouped: true,
     };
@@ -1194,11 +1217,14 @@
       metaRow.append(el("span", { class: "billboard__score", text: `★ ${entryStar(entry)}/5` }));
     }
 
+    // A series hero does not get a "Putar Episode" action: autoplaying an
+    // arbitrary episode adds no value. One compact action opens the episode
+    // list, which keeps the page view wider and the next step explicit.
     const primary = isSeries
       ? el("button", {
           class: "btn btn--light",
-          html: `${ICON.play}<span>Putar Episode</span>`,
-          onclick: () => playSeries(entry),
+          html: `${ICON.list}<span>Lihat Episode</span>`,
+          onclick: () => openSeries(entry),
         })
       : el("button", {
           class: "btn btn--light",
@@ -1207,11 +1233,7 @@
         });
 
     const secondary = isSeries
-      ? el("button", {
-          class: "btn btn--ghost",
-          html: `${ICON.list}<span>Episode</span>`,
-          onclick: () => openSeries(entry),
-        })
+      ? null
       : el("button", {
           class: "btn btn--ghost",
           html: `${ICON.plus}<span>Detail</span>`,
@@ -1235,7 +1257,7 @@
         (isSeries ? entry.plot : item.plot)
           ? el("p", { class: "billboard__plot clamp-3", text: isSeries ? entry.plot : item.plot })
           : null,
-        el("div", { class: "billboard__actions" }, primary, secondary)
+        el("div", { class: "billboard__actions" }, ...[primary, secondary].filter(Boolean))
       )
     );
   }
@@ -1448,6 +1470,19 @@
           ],
           state.filters.meta,
           (v) => updateFilters({ meta: v })
+        )
+      ),
+      filterField(
+        "Status klasifikasi",
+        selectNode(
+          [
+            { value: "all", label: "Semua status" },
+            { value: "needs_review", label: "Needs Review" },
+            { value: "classified", label: "Terklasifikasi" },
+            { value: "manual", label: "Manual" },
+          ],
+          state.filters.review,
+          (v) => updateFilters({ review: v })
         )
       ),
       filterField(
@@ -2820,6 +2855,644 @@
     );
   }
 
+  /* ------------------------------ Settings ------------------------------ */
+
+  const PLAYER_LABEL = { vlc: "VLC", mpv: "MPV", custom: "Custom Player" };
+
+  const SECRET_FIELDS = [
+    {
+      draft: "torbox",
+      setting: "torbox_api_key",
+      flag: "has_torbox_api_key",
+      label: "TorBox API Key",
+      hint: "Dipakai untuk sinkronisasi TorBox Cloud dan unduhan.",
+    },
+    {
+      draft: "tmdb",
+      setting: "tmdb_api_key",
+      flag: "has_tmdb_api_key",
+      label: "TMDb API Key (v3 Auth)",
+      hint: "Sumber metadata film dan serial TV.",
+    },
+    {
+      draft: "tpdb",
+      setting: "tpdb_api_key",
+      flag: "has_tpdb_api_key",
+      label: "ThePornDB API Key",
+      hint: "Fallback metadata English Adult dan JAV.",
+    },
+  ];
+
+  function applySettingsData(data) {
+    const s = state.settings;
+    const cfg = data.settings || {};
+    const defaults = data.default_paths || {};
+    s.data = data;
+    s.player = ["vlc", "mpv", "custom"].includes(cfg.media_player) ? cfg.media_player : "vlc";
+    s.playerPaths = {
+      vlc: cfg.vlc_path || defaults.vlc || "",
+      mpv: cfg.mpv_path || defaults.mpv || "",
+      custom: cfg.custom_player_path || "",
+    };
+    s.customArgs = cfg.custom_player_args || "";
+    let paths = [];
+    try {
+      paths = JSON.parse(cfg.local_scan_paths || "[]");
+    } catch (_) {
+      paths = [];
+    }
+    s.localPaths = Array.isArray(paths) ? paths.join("\n") : "";
+    s.indonesian = Boolean((data.subtitle_preferences || {}).indonesian_enabled);
+    s.keyDrafts = { torbox: "", tmdb: "", tpdb: "" };
+    s.error = "";
+  }
+
+  async function refreshSettings() {
+    const s = state.settings;
+    if (s.loading) return;
+    s.loading = true;
+    s.error = "";
+    try {
+      const data = await api("/api/settings");
+      applySettingsData(data);
+    } catch (err) {
+      logError(err);
+      s.error = err.message;
+    } finally {
+      s.loading = false;
+      if (state.view === "settings") render();
+    }
+  }
+
+  function ensureSettings() {
+    const s = state.settings;
+    if (s.data || s.loading) return;
+    refreshSettings();
+  }
+
+  function settingsPanel(title, note, children, side) {
+    return el(
+      "div",
+      { class: "panel settings-panel" },
+      el(
+        "div",
+        { class: "panel__head" },
+        el("h2", { class: "panel__title", text: title }),
+        side || null
+      ),
+      el(
+        "div",
+        { class: "panel__body" },
+        note ? el("p", { class: "panel__note", text: note }) : null,
+        ...children.filter(Boolean)
+      )
+    );
+  }
+
+  function settingsBadge(on, text) {
+    return el("span", { class: "settings-badge" + (on ? " is-on" : ""), text });
+  }
+
+  function settingsRow(label, control, hint, side) {
+    return el(
+      "div",
+      { class: "settings-row" },
+      el(
+        "div",
+        { class: "settings-row__top" },
+        el("span", { class: "settings-row__label", text: label }),
+        side || null
+      ),
+      control,
+      hint ? el("p", { class: "settings-row__hint", text: hint }) : null
+    );
+  }
+
+  function settingsKv(rows) {
+    const grid = el("div", { class: "settings-kv" });
+    for (const [label, value] of rows) {
+      grid.append(
+        el(
+          "div",
+          { class: "settings-kv__row" },
+          el("span", { class: "settings-kv__label", text: label }),
+          el("span", { class: "settings-kv__value mono", text: value })
+        )
+      );
+    }
+    return grid;
+  }
+
+  function secretRow(field) {
+    const s = state.settings;
+    const cfg = (s.data && s.data.settings) || {};
+    const has = Boolean(cfg[field.flag]);
+    const mask = String(cfg[field.setting] || "");
+    const shown = has ? (mask.includes("•") ? `Tersimpan (${mask})` : "Tersimpan") : "Belum diatur";
+    const input = el("input", {
+      class: "input",
+      type: "password",
+      autocomplete: "new-password",
+      spellcheck: "false",
+      value: s.keyDrafts[field.draft] || "",
+      placeholder: has ? "Kosongkan untuk mempertahankan key tersimpan" : "Tempel key baru",
+      "aria-label": field.label,
+    });
+    input.addEventListener("input", () => {
+      s.keyDrafts[field.draft] = input.value;
+    });
+    return settingsRow(field.label, input, field.hint, settingsBadge(has, shown));
+  }
+
+  function settingsPlayerSection() {
+    const s = state.settings;
+    const data = s.data || {};
+    const defaults = data.default_paths || {};
+    const detected = Array.isArray(data.detected_players) ? data.detected_players : [];
+
+    const playerChips = chipRow({
+      label: "Pilihan media player",
+      items: ["vlc", "mpv", "custom"].map((type) => ({
+        label: PLAYER_LABEL[type],
+        active: s.player === type,
+        onclick: () => {
+          s.player = type;
+          render();
+        },
+      })),
+    });
+
+    const pathInput = el("input", {
+      class: "input",
+      type: "text",
+      value: s.playerPaths[s.player] || "",
+      placeholder: "Path executable atau klik Browse",
+      "aria-label": `${PLAYER_LABEL[s.player]} executable path`,
+    });
+    pathInput.addEventListener("input", () => {
+      s.playerPaths[s.player] = pathInput.value;
+    });
+
+    const browseBtn = el("button", {
+      class: "btn btn--ghost btn--sm",
+      type: "button",
+      html: `${ICON.folder}<span>Browse</span>`,
+      onclick: browsePlayerPath,
+    });
+
+    const pathRow = el(
+      "div",
+      { class: "settings-inline" },
+      pathInput,
+      browseBtn
+    );
+
+    const defaultBtn = el("button", {
+      class: "btn btn--ghost btn--sm",
+      type: "button",
+      text: "Reset OS default",
+      onclick: () => {
+        s.playerPaths[s.player] = defaults[s.player] || "";
+        render();
+        toast("Path default OS dipakai", "ok");
+      },
+    });
+
+    const detectedChips = detected.length
+      ? chipRow({
+          label: "Player terdeteksi",
+          items: detected.map((p) => ({
+            label: p.label,
+            active: s.playerPaths[s.player] === p.path,
+            onclick: () => {
+              const type = ["vlc", "mpv", "custom"].includes(p.type) ? p.type : "custom";
+              s.player = type;
+              s.playerPaths[type] = p.path;
+              render();
+              toast(`Player dipakai: ${p.label}`, "ok");
+            },
+            title: p.path,
+          })),
+        })
+      : el("p", { class: "panel__note", text: "Tidak ada media player standar yang terdeteksi. Tempel path manual atau gunakan Browse." });
+
+    const customArgs = el("input", {
+      class: "input",
+      type: "text",
+      value: s.customArgs,
+      placeholder: "--fullscreen (opsional)",
+      "aria-label": "Argumen tambahan custom player",
+    });
+    customArgs.addEventListener("input", () => {
+      s.customArgs = customArgs.value;
+    });
+
+    return settingsPanel(
+      "Media player",
+      "Pilih player dan path executable yang dipakai saat memutar media.",
+      [
+        playerChips,
+        el(
+          "div",
+          { class: "settings-inline" },
+          el("span", { class: "settings-row__label", text: "Deteksi otomatis" }),
+          el("button", {
+            class: "btn btn--ghost btn--sm",
+            type: "button",
+            html: `${ICON.search}<span>Auto-Detect</span>`,
+            onclick: detectPlayersInSettings,
+          })
+        ),
+        detectedChips,
+        settingsRow(`${PLAYER_LABEL[s.player]} executable path`, pathRow, null, defaultBtn),
+        s.player === "custom"
+          ? settingsRow("Argumen tambahan", customArgs, "Diteruskan ke custom player, contoh --fullscreen.")
+          : null,
+      ]
+    );
+  }
+
+  function settingsKeysPanel() {
+    return settingsPanel(
+      "API keys",
+      "Nilai tersimpan hanya ditampilkan dalam bentuk tersamarkan. Kolom kosong berarti key lama dipertahankan.",
+      SECRET_FIELDS.map(secretRow)
+    );
+  }
+
+  function settingsScanPanel() {
+    const s = state.settings;
+    const area = el("textarea", {
+      class: "input settings-textarea",
+      rows: 4,
+      spellcheck: "false",
+      placeholder: "E:\\Media\\Movies\nD:\\Series",
+      "aria-label": "Folder pemindaian lokal",
+    });
+    area.value = s.localPaths;
+    area.addEventListener("input", () => {
+      s.localPaths = area.value;
+    });
+
+    return settingsPanel(
+      "Folder pemindaian lokal",
+      "Satu path per baris. Folder ini dipakai tombol Scan folder lokal di pusat unduhan.",
+      [
+        settingsRow(
+          "Path folder",
+          area,
+          null,
+          el("button", {
+            class: "btn btn--ghost btn--sm",
+            type: "button",
+            html: `${ICON.folder}<span>+ Browse Folder</span>`,
+            onclick: browseLocalFolderPath,
+          })
+        ),
+      ]
+    );
+  }
+
+  function settingsSubtitlePanel() {
+    const s = state.settings;
+    const stats = (s.data && s.data.subtitle_language_stats) || {};
+    const idToggle = el(
+      "button",
+      {
+        class: "toggle" + (s.indonesian ? " is-on" : ""),
+        type: "button",
+        "aria-pressed": s.indonesian ? "true" : "false",
+        onclick: () => {
+          s.indonesian = !s.indonesian;
+          render();
+        },
+      },
+      el("span", { class: "toggle__dot" }),
+      el("span", { text: s.indonesian ? "Aktif" : "Nonaktif" })
+    );
+
+    return settingsPanel(
+      "Subtitle dua bahasa",
+      "Batch subtitle memeriksa track lokal/embedded lebih dulu, lalu hanya meminta bahasa yang aktif dan belum ada.",
+      [
+        settingsRow(
+          "English (utama)",
+          el("p", { class: "settings-static", text: "Selalu aktif dan wajib untuk semua item non-adult." }),
+          null,
+          settingsBadge(true, "Always ON")
+        ),
+        settingsRow("Indonesian (opsional)", idToggle),
+        el(
+          "div",
+          { class: "settings-stats" },
+          el("span", { class: "tag", text: `Complete ${numberLabel(stats.complete || 0)}` }),
+          el("span", { class: "tag", text: `Ready ${numberLabel(stats.ready || 0)}` }),
+          el("span", { class: "tag", text: `Partial ${numberLabel(stats.partial || 0)}` }),
+          el("span", { class: "tag", text: `Not Ready ${numberLabel(stats.not_ready || 0)}` })
+        ),
+      ]
+    );
+  }
+
+  function settingsEnvPanel() {
+    const env = (state.settings.data && state.settings.data.env) || {};
+    const mode = `${truthyFlag(env.is_headless) ? "Headless" : "Desktop"}${truthyFlag(env.is_docker) ? " · Docker" : ""}`;
+    return settingsPanel(
+      "Lingkungan runtime",
+      "Set TBH_HOST=0.0.0.0 agar bisa diakses dari perangkat lain di LAN, atau TBH_DATA_DIR untuk volume Docker.",
+      [
+        settingsKv([
+          ["Platform", `${env.os_platform || "-"} (${env.arch || "-"})`],
+          ["Python", env.python_version || "-"],
+          ["Mode", mode],
+          ["FFprobe", truthyFlag(env.ffprobe_available) ? "Terpasang" : "Tidak ada"],
+          ["FFmpeg", truthyFlag(env.ffmpeg_available) ? "Terpasang" : "Tidak ada"],
+          ["LAN URL", env.lan_url || "-"],
+          ["Data dir", env.data_dir || "-"],
+        ]),
+      ]
+    );
+  }
+
+  function settingsDbPanel() {
+    const s = state.settings;
+    const data = s.data || {};
+    const backups = Array.isArray(data.backups) ? data.backups : [];
+    const busy = Boolean(s.busy);
+
+    const backupList = el("div", { class: "settings-list settings-list--scroll" });
+    if (!backups.length) {
+      backupList.append(el("p", { class: "panel__empty", text: "Belum ada backup database." }));
+    } else {
+      for (const b of backups) {
+        backupList.append(
+          el(
+            "div",
+            { class: "settings-list__item" },
+            el(
+              "div",
+              { class: "settings-list__body" },
+              el("span", { class: "settings-list__title mono", text: b.file_name || "-" }),
+              el("span", {
+                class: "settings-list__meta",
+                text: `${b.created_at || "-"} · ${numberLabel(Math.round(Number(b.size_kb) || 0))} KB`,
+              })
+            ),
+            el("button", {
+              class: "btn btn--ghost btn--sm",
+              type: "button",
+              text: "Restore",
+              disabled: busy,
+              onclick: () => restoreBackupFile(b.file_name),
+            })
+          )
+        );
+      }
+    }
+
+    return settingsPanel(
+      "Database & cache",
+      s.busy ? `Operasi berjalan: ${s.busy}` : "Backup membuat salinan aman; restore mengganti database aktif setelah membuat backup otomatis.",
+      [
+        el(
+          "div",
+          { class: "settings-actions" },
+          el("button", {
+            class: "btn btn--primary btn--sm",
+            type: "button",
+            html: `${ICON.download}<span>Backup database</span>`,
+            disabled: busy,
+            onclick: () => runSettingsDbAction("/api/db/backup", "Backup database"),
+          }),
+          el("button", {
+            class: "btn btn--ghost btn--sm",
+            type: "button",
+            html: `${ICON.refresh}<span>Maintenance & cleanup</span>`,
+            disabled: busy,
+            onclick: () => runSettingsDbAction("/api/db/maintenance", "Maintenance"),
+          }),
+          el("button", {
+            class: "btn btn--ghost btn--sm",
+            type: "button",
+            text: "Reset metadata & poster",
+            disabled: busy,
+            onclick: () =>
+              runSettingsDbAction("/api/db/reset-metadata", "Reset metadata", {
+                confirm: {
+                  title: "Reset metadata & poster?",
+                  message: "Metadata hasil enrich dan cache poster akan dihapus. File media dan playlist tetap aman.",
+                  confirmLabel: "Reset metadata",
+                },
+              }),
+          }),
+          el("button", {
+            class: "btn btn--danger btn--sm",
+            type: "button",
+            text: "Hapus semua data media",
+            disabled: busy,
+            onclick: () =>
+              runSettingsDbAction("/api/db/erase-all", "Hapus data media", {
+                confirm: {
+                  title: "Hapus semua data media?",
+                  message: "Semua item, playlist, dan cache di database ini dihapus. API key tetap disimpan. Tindakan ini tidak bisa dibatalkan.",
+                  confirmLabel: "Hapus semua",
+                },
+              }),
+          })
+        ),
+        el("h3", { class: "settings-subtitle", text: "Backup files" }),
+        backupList,
+      ]
+    );
+  }
+
+  async function detectPlayersInSettings() {
+    try {
+      const data = await api("/api/players/detect");
+      const s = state.settings;
+      if (s.data) {
+        s.data.detected_players = Array.isArray(data.players) ? data.players : [];
+        s.data.default_paths = data.default_paths || s.data.default_paths;
+        s.data.os_platform = data.os_platform || s.data.os_platform;
+      }
+      const count = (s.data && s.data.detected_players.length) || 0;
+      toast(count ? `${count} media player terdeteksi` : "Tidak ada player standar; tempel path manual", count ? "ok" : "error");
+      render();
+    } catch (err) {
+      toast(err.message, "error");
+    }
+  }
+
+  async function browsePlayerPath() {
+    const s = state.settings;
+    try {
+      const data = await api("/api/system/browse-file", jsonBody({ title: `Pilih executable ${PLAYER_LABEL[s.player]}` }));
+      if (data && data.path) {
+        s.playerPaths[s.player] = data.path;
+        render();
+        toast("Path player dipilih", "ok");
+      }
+    } catch (err) {
+      toast(`${err.message} Tempel path secara manual.`, "error");
+    }
+  }
+
+  async function browseLocalFolderPath() {
+    const s = state.settings;
+    try {
+      const data = await api("/api/system/browse-folder", jsonBody({}));
+      if (data && data.path) {
+        const lines = s.localPaths.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+        if (!lines.includes(data.path)) lines.push(data.path);
+        s.localPaths = lines.join("\n");
+        render();
+        toast("Folder ditambahkan", "ok");
+      }
+    } catch (err) {
+      toast(`${err.message} Tempel path secara manual.`, "error");
+    }
+  }
+
+  async function saveSettingsView() {
+    const s = state.settings;
+    if (s.saving || s.busy || !s.data) return;
+    const defaults = s.data.default_paths || {};
+    const payload = {
+      local_scan_paths: s.localPaths.split(/\r?\n/).map((x) => x.trim()).filter(Boolean),
+      media_player: s.player,
+      vlc_path: s.playerPaths.vlc || defaults.vlc || "",
+      mpv_path: s.playerPaths.mpv || defaults.mpv || "",
+      custom_player_path: s.playerPaths.custom || "",
+      custom_player_args: (s.customArgs || "").trim(),
+      indonesian_enabled: s.indonesian,
+    };
+    for (const field of SECRET_FIELDS) {
+      const value = (s.keyDrafts[field.draft] || "").trim();
+      if (value) payload[field.setting] = value;
+    }
+
+    s.saving = true;
+    render();
+    try {
+      await api("/api/settings", jsonBody(payload));
+      const fresh = await api("/api/settings");
+      applySettingsData(fresh);
+      toast("Pengaturan disimpan", "ok");
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      s.saving = false;
+      if (state.view === "settings") render();
+    }
+  }
+
+  async function runSettingsDbAction(path, label, options) {
+    const s = state.settings;
+    const opts = options || {};
+    if (s.busy || s.saving) return;
+    if (opts.confirm) {
+      const ok = await confirmDialog(opts.confirm);
+      if (!ok) return;
+    }
+    s.busy = label;
+    render();
+    try {
+      const data = await api(path, jsonBody(opts.payload || {}));
+      if (data && data.backups) s.data.backups = data.backups;
+      toast(`${label} selesai`, "ok");
+      await loadAll({ silent: true });
+    } catch (err) {
+      toast(err.message, "error");
+    } finally {
+      s.busy = "";
+      s.data.backups = s.data.backups || [];
+      if (state.view === "settings") render();
+    }
+  }
+
+  function restoreBackupFile(fileName) {
+    if (!fileName) return;
+    runSettingsDbAction("/api/db/restore", "Restore database", {
+      payload: { file_name: fileName },
+      confirm: {
+        title: "Restore database?",
+        message: `Database aktif akan diganti dengan ${fileName}. Backup otomatis dibuat lebih dulu.`,
+        confirmLabel: "Restore",
+      },
+    });
+  }
+
+  function renderSettings() {
+    const s = state.settings;
+    ensureSettings();
+
+    const actions = [
+      el("button", {
+        class: "btn btn--ghost btn--sm",
+        type: "button",
+        html: `${ICON.refresh}<span>Segarkan</span>`,
+        disabled: s.loading,
+        onclick: refreshSettings,
+      }),
+      el("a", {
+        class: "btn btn--ghost btn--sm",
+        href: "/",
+        html: `${ICON.external}<span>UI lama</span>`,
+      }),
+    ];
+
+    if (!s.data) {
+      const body = s.error
+        ? [
+            el("p", { class: "panel__note", text: s.error }),
+            el("button", { class: "btn btn--primary btn--sm", type: "button", text: "Coba lagi", onclick: refreshSettings }),
+          ]
+        : [el("p", { class: "panel__note", text: "Memuat konfigurasi..." })];
+      return el(
+        "section",
+        { class: "view" },
+        viewHead("Pengaturan", "API keys, media player, folder lokal, subtitle, dan database.", actions),
+        el("div", { class: "settings-grid" }, settingsPanel("Konfigurasi", null, body))
+      );
+    }
+
+    const wrap = el(
+      "section",
+      { class: "view" },
+      viewHead(
+        "Pengaturan",
+        `${PLAYER_LABEL[state.settings.player]} aktif · ${(state.settings.data.backups || []).length} backup tersimpan`,
+        actions
+      ),
+      el(
+        "div",
+        { class: "settings-grid" },
+        settingsKeysPanel(),
+        settingsPlayerSection(),
+        settingsScanPanel(),
+        settingsSubtitlePanel(),
+        settingsEnvPanel(),
+        settingsDbPanel()
+      ),
+      el(
+        "div",
+        { class: "settings-foot" },
+        el("p", {
+          class: "settings-foot__status",
+          text: s.busy ? `Operasi berjalan: ${s.busy}` : "Perubahan berlaku setelah disimpan.",
+        }),
+        el("button", {
+          class: "btn btn--primary",
+          type: "button",
+          text: s.saving ? "Menyimpan..." : "Simpan pengaturan",
+          disabled: s.saving || Boolean(s.busy),
+          onclick: saveSettingsView,
+        })
+      )
+    );
+    return wrap;
+  }
+
   function renderStats() {
     const counts = computedCounts();
     const items = state.items;
@@ -3016,11 +3689,11 @@
       renderSkeleton();
       return;
     }
-    if (state.error && !state.items.length) {
+    if (state.error && !state.items.length && state.view !== "settings") {
       renderError(state.error);
       return;
     }
-    if (!state.items.length) {
+    if (!state.items.length && state.view !== "settings") {
       root.replaceChildren(renderEmptyCatalog());
       syncNav();
       return;
@@ -3121,6 +3794,7 @@
     playlists: renderPlaylistsView,
     downloads: renderDownloads,
     stats: renderStats,
+    settings: renderSettings,
   };
 
   /* ------------------------------- Detail -------------------------------- */
