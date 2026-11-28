@@ -92,6 +92,24 @@ Sisa perbaikan data yang belum dikerjakan (bukan blocker):
 - 15 baris adult (12 `adult_scene_parser`, 2 `theporndb`, 1 `roxxy`) dan 5 JAV berkode hasil parse nama file masih Needs Review sampai ada verdict baru. Satu baris impor baru (#586) masih `pending` dan akan diproses batch berikutnya.
 
 ### V1 - verifikasi manual (butuh app berjalan)
+
+**Hasil verifikasi live `v1.3DP` (28 November 2026, port 5050, antrean 0):**
+
+| Area | Hasil |
+|---|---|
+| Delapan view v2 | Beranda (4 stat + 6 pintasan), Library (60 kartu, 9 chip, 6 filter), Serial (17 kartu), Playlist (5), Unduhan, Statistik (6 tile, 8 bar), Pengaturan (API key tersamarkan), Discovery |
+| Discovery v2 | 2 tab, toolbar 44,75 px satu baris, 4 chip kategori + 3 urutan, 50 kartu/feed; badge IN LIBRARY Film 7 / Serial 2 / Anime 2 / Donghua 0 / Adult 5; poster proxy 0 panggilan; overflow 390 px = 0 |
+| API Discovery | `jav`/`english_adult`/`indo` -> 400; 4 kategori x 3 feed -> 200 dengan hasil |
+| Adult providers | 10 sumber: 8 `ok`, SunPorno `search_only`, SpankBang `blocked` |
+| Legacy `/` | 5 tombol kategori; dua kolom (katalog 1064 px + Status Sumber 320 px); 4 baris health + 4 peringatan; modal `NOT IN LIBRARY` |
+| `/roxxy` | Pencarian Massage Gone Squirt -> 34 judul + badge IN LIBRARY; Cari semua katalog JAV -> 341 hasil tanpa 502; MissAV Uncensored genre wajib -> 100 judul; FC2 -> 100 judul |
+| Panel Serial v2 | 3 tab season (2/26, 0/26, 2), 243 baris episode, 425 rilis (122 CACHED) dengan badge/sumber/seed/peer/ukuran dan tombol + TorBox; catatan NZBGeek premium tampil |
+| Token | 5 manifest terkonfigurasi, display `hub.roxxy-tech.com/…/manifest.json` tanpa query/token; API key v2 tersamarkan |
+| Statistik Home | Kartu Indonesia Movies (`#stat-indo`) = 1 |
+| Log + koneksi | `logs/app.log` 3,36 MB; CloseWait stabil di 10 setelah 45 detik |
+| Konsol | Tanpa `pageerror` di semua halaman yang diuji |
+
+Sisa item checklist yang **belum** dijalankan karena memerlukan aksi tulis/kuota: simpan Pengaturan, probe stream gagal, cache magnet batch, impor manifest, NZB forwarder, job gagal, reklasifikasi, auto-add Indo, riwayat lebih dari 50 job, konfirmasi unduhan IN LIBRARY, badge setelah impor, watcher TorBox, impor Donghua, unduhan IndonesiaMovies, dan pengiriman `+ TorBox` dari panel Serial.
 - Buka `/v2` dan periksa tujuh tab: **Beranda** (hero + 4 stat + 6 pintasan + rail), **Library** (chip kategori, 6 filter termasuk **Status klasifikasi / Needs Review**, sort, mode pilih), **Serial** (kartu progres + panel season), **Playlist** (kartu, kelola, picker, M3U), **Unduhan** (4 panel, tombol task, retry, poll 5 s), **Statistik** (bar kategori, kelengkapan, lingkungan, backup), **Pengaturan** (API key tersamarkan, media player + Auto-Detect/Browse, folder lokal, subtitle, runtime, database/backup). Pastikan tidak ada scrollbar horizontal di 1024 px dan di jendela sempit navbar menjadi dua baris tanpa menutupi judul. Detail: buka satu film dan satu serial, coba rating, subtitle ID/EN, tambah/hapus playlist, Escape, tombol Back browser, dan deep link `#media-<id>`. Unduhan: pastikan antrean lokal kosong saat uji, lalu mulai satu task dari panel dan hentikan bila perlu.
 - Buka Discovery Hub dan pastikan hanya ada empat tab (Movies, TV Shows, Anime, Donghua); feed Trending/Popular/Top Rated dan Search harus memuat untuk keempatnya.
 - Pastikan `GET /api/discover?category=jav` (juga `english_adult`, `indo`) mengembalikan 400 dan tidak ada request keluar.

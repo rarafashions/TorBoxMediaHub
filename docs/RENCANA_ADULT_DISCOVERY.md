@@ -583,6 +583,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | Playwright port 5056 (`/v2#/discover`, `v1.3DN`) | Toolbar satu baris pada 1440/1024 (tab + chip kategori + chip urutan + status kanan), grid mulai `y=288` (dari `y=565`), kontras `.card__sub` 5,85:1 dan `.chip`/`.discover-status` 8,28:1, tanpa overflow di 390/1024/1440 |
 | Playwright port 5056 (`/v2#/discover`, `v1.3DO`) | Detail adult dengan respons stream tiruan: 4 kartu sumber, 4 analisis, tombol Cached TorBox / Torrent ke TorBox / NZB ke TorBox / yt-dlp / aria2c; pengiriman TorBox dan job lokal terverifikasi; tanpa overflow di 390 px |
 | Playwright port 5056 (`/v2#/discover`, `v1.3DP`) | Badge `IN LIBRARY`: Film 8, Serial TV 2 (`(29)`, `(8)`), Anime 1, Donghua 1 pada pencarian "Swallowed Star" (2 item), English Adult 5; tag badge tampil di sheet detail; tanpa overflow di 390 px |
+| Live port 5050 (`v1.3DP`, salinan DB asli) | Delapan view v2 tanpa galat; Discovery 50 kartu/feed, badge Film 7/Serial 2/Anime 2/Adult 5, poster proxy 0 panggilan; legacy dua kolom + 4 baris health; `/roxxy` 341 hasil search-all dan MissAV Uncensored 100 judul; panel Serial 425 rilis (122 CACHED); token manifest tersamarkan; CloseWait stabil 10 |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 

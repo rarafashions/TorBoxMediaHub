@@ -223,6 +223,19 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 - **Tes**: `test_discovery_cards_mark_items_already_in_library` (6 marker JS + 2 marker CSS); suite **536 passed, 204 subtests**.
 - **Verifikasi browser** (port 5056, salinan DB): Film 50 kartu → **8 badge**, Serial TV 50 → **2 badge** (`IN LIBRARY (29)` dan `(8)`), Anime 50 → **1 badge**, Donghua pencarian "Swallowed Star" → **1 badge (2 item)**, English Adult 60 → **5 badge**; sheet detail menampilkan tag `IN LIBRARY`; tanpa overflow pada 390 px.
 
+### 4.17 Verifikasi live `v1.3DP` (28 November 2026)
+
+Restart app live port 5050 dilakukan setelah antrean TorBox/lokal 0 dan task idle; versi terpasang **`v1.3DP`**. Backup DB dibuat sebelum restart.
+
+- **GUI v2**: delapan view (Beranda, Discovery, Library, Serial, Playlist, Unduhan, Statistik, Pengaturan) terbuka tanpa galat konsol. Beranda memuat **4 stat tile** + **6 pintasan**; Library **60 kartu** dengan **9 chip kategori** dan **6 filter**; Serial **17 kartu**; Playlist **5 kartu**; Statistik **6 tile** + **8 bar**; Pengaturan menampilkan empat API key tersamarkan (`Tersimpan (••••••••0891af)`).
+- **Discovery**: dua tab (`Film & Serial`, `English Adult 18+`), toolbar satu baris (tinggi **44,75 px** pada 1440), empat chip kategori + tiga chip urutan, **50 kartu** per feed (Trending/Populer/Rating) untuk Film, Serial TV, Anime, dan Donghua. Badge `IN LIBRARY`: Film **7**, Serial TV **2**, Anime **2**, Donghua **0** (feed berisi judul baru), English Adult **5**. Detail mainstream menampilkan tag `IN LIBRARY`; detail adult menampilkan tag, section **Simpan ke Library** (tombol WebDL) dan **Sumber unduhan** (1 kartu stream, 2 tombol lokal). Tidak ada panggilan poster proxy dan tidak ada overflow pada 390 px.
+- **API Discovery**: `category=jav`, `english_adult`, dan `indo` mengembalikan **HTTP 400**; empat kategori mainstream × tiga feed mengembalikan 5 hasil. `/api/adult/providers` memuat **10 sumber** (8 `ok`, SunPorno `search_only`, SpankBang `blocked`). Semua manifest tampil tersamarkan (`hub.roxxy-tech.com/…/manifest.json`) tanpa query/token.
+- **Legacy `/`**: lima tombol kategori; panel adult dua kolom (katalog 1064 px di kiri, **Status Sumber** 320 px di kanan) dengan **4 baris health** (Pornhub/YouPorn cooldown, SunPorno hanya pencarian, SpankBang terblokir) dan 4 peringatan; modal kartu menampilkan **NOT IN LIBRARY** dan 2 tombol sumber.
+- **Video Feeds `/roxxy`**: pencarian **Massage Gone Squirt** memuat 34 judul dan badge **IN LIBRARY** muncul pada item yang sudah ada. Mode **Cari semua katalog** pada sumber JAV mengembalikan **341 hasil** dari banyak katalog; dropdown ringkasan hanya berisi katalog yang memberi hasil, tanpa error 502. Katalog **MissAV · Uncensored** dengan genre wajib **Uncensored leak** memuat **100 judul**, dan genre **FC2** juga 100 judul (opsi "Semua Genre" tidak tersedia karena genre wajib).
+- **Panel Serial v2**: Swallowed Star menampilkan tiga tab season (`Season 01 · 2/26`, `Season 02 · 0/26`, `Season 04 · 2`), 243 baris episode, status episode hilang, dan panel **Cari semua episode hilang** yang mengembalikan **425 rilis** (122 CACHED) dengan badge CACHED/UNCACHED, sumber, `Seed`/`Leech`/`Peer`, ukuran, dan tombol **+ TorBox**; catatan NZBGeek premium tampil.
+- **Stabilitas**: `logs/app.log` aktif (3,36 MB); koneksi `CloseWait` outbound tetap **10** setelah 45 detik idle.
+- **Belum diverifikasi (butuh aksi tulis/kuota)**: simpan Pengaturan, probe stream gagal, cache magnet batch, impor Donghua/Indo, NZB forwarder, job gagal, reklasifikasi, riwayat >50 job, konfirmasi unduhan IN LIBRARY, badge setelah impor, watcher TorBox, dan pengiriman `+ TorBox` dari panel Serial.
+
 ---
 
 ## 5. Keputusan yang mengikat
