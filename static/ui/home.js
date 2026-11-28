@@ -3828,6 +3828,92 @@
     }
   }
 
+  function discoverChips(label, items) {
+    const row = chipRow({ label, items });
+    row.classList.add("chips--inline");
+    return row;
+  }
+
+  function discoverCategoryChips() {
+    const d = state.discover;
+    return discoverChips(
+      "Kategori Discovery",
+      DISCOVER_CATEGORIES.map((c) => ({
+        label: c.label,
+        active: d.category === c.id,
+        onclick: () => {
+          d.category = c.id;
+          d.loadedKey = "";
+          ensureDiscoverFeed(true);
+        },
+      }))
+    );
+  }
+
+  function discoverFeedChips() {
+    const d = state.discover;
+    return discoverChips(
+      "Urutan feed",
+      DISCOVER_FEEDS.map((f) => ({
+        label: f.label,
+        active: !d.q && d.feed === f.id,
+        onclick: () => {
+          d.feed = f.id;
+          d.q = "";
+          d.loadedKey = "";
+          ensureDiscoverFeed(true);
+        },
+      }))
+    );
+  }
+
+  function adultModeChips() {
+    const d = state.discover;
+    const modes = d.adultModes.length ? d.adultModes : [{ id: "popular", label: "Populer" }];
+    return discoverChips(
+      "Urutan katalog adult",
+      modes.map((m) => ({
+        label: m.label,
+        active: !d.adultQ && d.adultMode === m.id,
+        onclick: () => {
+          d.adultMode = m.id;
+          d.adultQ = "";
+          d.adultLoadedKey = "";
+          loadAdultFeed(true);
+        },
+      }))
+    );
+  }
+
+  function discoverStatusNode() {
+    const d = state.discover;
+    let text = "";
+    let cls = "discover-status";
+    if (d.tab === "adult") {
+      if (!d.adultApproved) return null;
+      if (d.adultLoading) text = "Memuat katalog adult...";
+      else if (d.adultError) {
+        text = `Gagal memuat: ${d.adultError}`;
+        cls += " is-error";
+      } else {
+        text = `${numberLabel(d.adultItems.length)} item · ${
+          d.adultQ ? `pencarian "${d.adultQ}"` : "feed katalog"
+        }`;
+      }
+    } else if (d.loading) {
+      text = "Memuat katalog Discovery...";
+    } else if (d.error) {
+      text = `Gagal memuat: ${d.error}`;
+      cls += " is-error";
+    } else {
+      const categoryLabel =
+        (DISCOVER_CATEGORIES.find((c) => c.id === d.category) || {}).label || d.category;
+      text = `${numberLabel(d.items.length)} judul · ${categoryLabel}${d.q ? ` · "${d.q}"` : ""}`;
+    }
+    if (!text) return null;
+    return el("span", { class: cls, text, title: text });
+  }
+
   function renderDiscover() {
     const d = state.discover;
     const refresh = el("button", {
@@ -3847,6 +3933,18 @@
       discoverTabButton("adult", "English Adult 18+")
     );
 
+    const toolbar = el(
+      "div",
+      { class: "discover-toolbar" },
+      tabs,
+      d.tab === "adult"
+        ? d.adultApproved
+          ? adultModeChips()
+          : null
+        : [discoverCategoryChips(), discoverFeedChips()],
+      discoverStatusNode()
+    );
+
     return el(
       "section",
       { class: "view" },
@@ -3855,7 +3953,7 @@
         "Cari judul baru dari sumber publik, lalu kirim ke TorBox Cloud. Item yang selesai diimpor otomatis masuk Library.",
         [refresh]
       ),
-      tabs,
+      toolbar,
       d.tab === "adult" ? renderAdultDiscover() : renderMainstreamDiscover()
     );
   }
@@ -3964,33 +4062,6 @@
   function renderMainstreamDiscover() {
     const d = state.discover;
 
-    const categories = chipRow({
-      label: "Kategori Discovery",
-      items: DISCOVER_CATEGORIES.map((c) => ({
-        label: c.label,
-        active: d.category === c.id,
-        onclick: () => {
-          d.category = c.id;
-          d.loadedKey = "";
-          ensureDiscoverFeed(true);
-        },
-      })),
-    });
-
-    const feeds = chipRow({
-      label: "Urutan feed",
-      items: DISCOVER_FEEDS.map((f) => ({
-        label: f.label,
-        active: !d.q && d.feed === f.id,
-        onclick: () => {
-          d.feed = f.id;
-          d.q = "";
-          d.loadedKey = "";
-          ensureDiscoverFeed(true);
-        },
-      })),
-    });
-
     const input = el("input", {
       class: "input",
       type: "search",
@@ -4037,21 +4108,6 @@
       clearBtn
     );
 
-    const categoryLabel = (DISCOVER_CATEGORIES.find((c) => c.id === d.category) || {}).label || d.category;
-    const statusText = d.loading
-      ? "Memuat katalog Discovery..."
-      : d.error
-      ? `Gagal memuat: ${d.error}`
-      : `${numberLabel(d.items.length)} judul · ${categoryLabel}${d.q ? ` · "${d.q}"` : ""}`;
-
-    const resultbar = el(
-      "div",
-      { class: "resultbar" },
-      el("span", { class: "resultbar__count", text: statusText }),
-      el("span", { class: "resultbar__spacer" }),
-      el("span", { class: "disc-hint", text: "Auto-import Library aktif" })
-    );
-
     const grid = el("div", { class: "lib-grid" });
     if (d.loading && !d.items.length) {
       grid.append(
@@ -4091,7 +4147,7 @@
       for (const item of d.items) grid.append(discoverCard(item));
     }
 
-    return el("div", { class: "discovery" }, categories, feeds, searchRow, resultbar, grid);
+    return el("div", { class: "discovery" }, searchRow, grid);
   }
 
   function openDiscoverItem(item) {
@@ -4400,17 +4456,6 @@
       loadAdultFeed(true);
     });
 
-    const modeItems = (d.adultModes.length ? d.adultModes : [{ id: "popular", label: "Populer" }]).map((m) => ({
-      label: m.label,
-      active: !d.adultQ && d.adultMode === m.id,
-      onclick: () => {
-        d.adultMode = m.id;
-        d.adultQ = "";
-        d.adultLoadedKey = "";
-        loadAdultFeed(true);
-      },
-    }));
-
     const input = el("input", {
       class: "input",
       type: "search",
@@ -4451,20 +4496,6 @@
         : null
     );
 
-    const statusText = d.adultLoading
-      ? "Memuat katalog adult..."
-      : d.adultError
-      ? `Gagal memuat: ${d.adultError}`
-      : `${numberLabel(d.adultItems.length)} item · ${d.adultQ ? `pencarian "${d.adultQ}"` : "feed katalog"}`;
-
-    const resultbar = el(
-      "div",
-      { class: "resultbar" },
-      el("span", { class: "resultbar__count", text: statusText }),
-      el("span", { class: "resultbar__spacer" }),
-      el("span", { class: "disc-hint", text: "WebDL → auto-add Library" })
-    );
-
     const warnings = el("div", { class: "disc-warnings" });
     if (d.adultWarnings.length) {
       for (const warn of d.adultWarnings.slice(0, 3)) {
@@ -4474,9 +4505,9 @@
 
     const controls = el(
       "div",
-      { class: "discover-controls" },
-      chipRow({ label: "Urutan katalog adult", items: modeItems }),
-      el("div", { class: "discover-controls__row" }, field("Sumber", providerSelect), searchRow)
+      { class: "discover-controls__row" },
+      field("Sumber", providerSelect),
+      searchRow
     );
 
     const grid = el("div", { class: "lib-grid disc-adult-grid" });
@@ -4511,7 +4542,7 @@
         )
       : null;
 
-    return el("div", { class: "discovery discovery--adult" }, controls, resultbar, warnings, grid, loadMore);
+    return el("div", { class: "discovery discovery--adult" }, controls, warnings, grid, loadMore);
   }
 
   function runAdultSearch() {

@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DM`
+**Versi saat ini:** `v1.3DN`
 **Tanggal status:** 28 November 2026
-**Baseline tes:** `python -m pytest tests -q --no-header` → **534 passed, 185 subtests passed** (0 gagal)
+**Baseline tes:** `python -m pytest tests -q --no-header` → **535 passed, 190 subtests passed** (0 gagal)
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -59,6 +59,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DK` | 28 Nov 2026 | Header English Adult dipadatkan: sumber + mode satu baris, Tempel URL bisa dilipat, status menyatu dengan grid |
 | `v1.3DL` | 28 Nov 2026 | Discovery Hub memakai bahasa visual Roxxy: kanvas #05070B, kartu poster, dan slide-over Download Center untuk monitor + auto-add |
 | `v1.3DM` | 28 Nov 2026 | Discovery pindah ke `/v2` (Film/Serial/Anime/Donghua + English Adult 18+) dan panel detail v2 mendapat kurasi: edit metadata, klasifikasi, poster, hapus fisik |
+| `v1.3DN` | 28 Nov 2026 | Toolbar Discovery satu baris (tab + chip kategori + chip urutan + status di kanan), kartu naik ~275 px, dan kontras teks sekunder/tersier pada kanvas gelap dinaikkan |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -191,6 +192,14 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 - **Tes**: `tests/test_v2_ui.py` baru berisi 5 tes statis (registrasi view, endpoint mainstream, gate + endpoint adult, aksi kurasi, kelas CSS). Suite **534 passed, 185 subtests**.
 - **Verifikasi browser** (instance sementara port 5056, salinan DB read-only, app live 5050 tidak disentuh): feed Film memuat **50 kartu**, tab adult memuat **60 item**, detail adult menampilkan sinopsis/tag/durasi + tombol WebDL, panel detail menampilkan 4 tombol kurasi, pratinjau klasifikasi berjalan, dan `Hapus fisik` membuka dialog konfirmasi. Hasil rilis diuji dengan respons indexer tiruan: 2 baris, 1 CACHED + 1 UNCACHED, dua tombol Tambahkan.
 
+### 4.14 `v1.3DN` — Toolbar Discovery satu baris + kontras teks
+
+- **Toolbar Discovery** menggantikan tiga baris terpisah: `.discover-toolbar` menampung **tab** (Film & Serial / English Adult 18+), **chip kategori** (Film, Serial TV, Anime, Donghua), **chip urutan** (Trending, Populer, Rating), dan **status** (jumlah judul, memuat, atau galat) dalam satu baris; status menempel ke kanan memakai `margin-left: auto`. Di bawah 900 px status turun ke barisnya sendiri, dan chip membungkus (`chips--inline`).
+- **Bug tinggi baris pencarian**: `.discover-search` memakai `flex: 1 1 320px` dan, sebagai anak langsung dari `.discovery` (flex kolom), basis itu menjadi **tinggi 320 px** — sumber ruang kosong besar di atas kartu. Diperbaiki dengan `.discovery > .discover-search { flex: 0 0 auto; }`; kartu naik dari `y=565` ke **`y=288`** pada viewport 1440 (hemat **277 px**).
+- **Kontras kanvas gelap**: `--text-3` naik dari `#6d6d78` (≈3,9:1) menjadi **`#8a8a94`** (≈5,8:1) terhadap `--surface-0`, dan `.view__sub` memakai `--text-2` (≈8,3:1). Pengukuran browser: `.card__sub` 5,85:1, `.chip`/`.discover-status`/`.card__title` 8,28:1.
+- **Tes**: tambah satu tes statis kontras (menghitung rasio luminansi `--text-2`/`--text-3` terhadap `--surface-0`, ambang 4,5:1) dan marker CSS toolbar. Suite **535 passed, 190 subtests**.
+- **Verifikasi browser** (port 5056, salinan DB): toolbar 1 baris pada 1440/1024 (`h=45`), status `50 judul · Film` di kanan; chip Anime/Rating dan mode adult berpindah tanpa galat; `#/discover` tanpa overflow di 390, 1024, dan 1440 px.
+
 ---
 
 ## 5. Keputusan yang mengikat
@@ -218,6 +227,7 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 19. **Metadata kartu adult berasal dari halaman provider** (judul, cover, sinopsis, durasi). TPDB hanya mengisi kekosongan; jangan menimpa cover/sinopsis provider dengan tebakan TPDB.
 20. **Discovery Hub memakai bahasa visual Roxxy** (kanvas #05070B, aksen sky, kartu poster, slide-over Download Center). Perubahan hanya visual/aditif: ID, handler, endpoint, dan rute lama wajib tetap berfungsi; `roxxy.html` tidak diubah.
 21. **Discovery di `/v2` memakai endpoint lama, bukan implementasi kedua.** Mainstream memakai `/api/discover*` + `/api/torbox/add-cached`; adult memakai `/api/adult/*`. Gate 18+ disimpan per browser (`tbh_adult_v2_gate`). Pencarian rilis tidak dijalankan otomatis saat sheet dibuka. Aksi kurasi v2 (`manual`, `classification`, `poster`, `delete-physical`) tetap memakai route media yang sudah ada.
+22. **Teks di kanvas gelap wajib terbaca.** Rasio kontras minimum 4,5:1 terhadap `--surface-0` untuk `--text-2`/`--text-3` dijaga tes; toolbar Discovery harus satu baris pada lebar desktop dan tidak boleh memakai basis flex yang berubah menjadi tinggi di dalam kolom flex.
 
 ---
 

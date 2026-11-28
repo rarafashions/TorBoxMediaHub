@@ -89,6 +89,9 @@ class V2DiscoveryUiTests(unittest.TestCase):
         for marker in (
             ".discover-tabs",
             ".discover-tab.is-active",
+            ".discover-toolbar",
+            ".chips--inline",
+            ".discover-status",
             ".disc-detail__head",
             ".disc-video-card .card__frame",
             ".curate-grid",
@@ -96,6 +99,27 @@ class V2DiscoveryUiTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.css)
+
+    def test_secondary_and_tertiary_text_stay_readable_on_dark_surface(self):
+        import re
+
+        tokens = (ROOT / "static" / "ui" / "tokens.css").read_text(encoding="utf-8")
+
+        def hex_value(name):
+            match = re.search(rf"{re.escape(name)}:\s*(#[0-9a-fA-F]{{6}})", tokens)
+            self.assertIsNotNone(match, name)
+            return match.group(1)
+
+        def luminance(value):
+            channels = [int(value[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+            linear = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+            return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+        background = luminance(hex_value("--surface-0"))
+        for name in ("--text-2", "--text-3"):
+            with self.subTest(token=name):
+                ratio = (luminance(hex_value(name)) + 0.05) / (background + 0.05)
+                self.assertGreaterEqual(ratio, 4.5, f"{name} contrast {ratio:.2f}:1")
 
 
 if __name__ == "__main__":
