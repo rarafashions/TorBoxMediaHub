@@ -1,6 +1,6 @@
 # Pending Tasks
 
-Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **550 passed, 219 subtests passed** (0 gagal).
+Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **568 passed, 238 subtests passed** (0 gagal).
 
 ---
 
@@ -76,6 +76,7 @@ Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-h
 | 52 | Tahap 3 v2: `/` menjadi UI v2, UI lama di `/legacy` | `app.py`, `templates/home_v2.html`, `templates/index.html`, `static/ui/home.js`, `tests/test_ui_routes.py` | `/` merender `home_v2.html`; `/v2` tetap alias; `/legacy` merender `index.html`; `/?discover=1` → `302 /legacy?discover=1` dengan query utuh. Tautan silang: footer/Pengaturan v2 ke `/legacy`, header UI lama ke `/`. `/roxxy` dan `/api/*` tidak berubah. Verifikasi live 200/200/200, modal Discovery tetap terbuka; suite **543 passed, 219 subtests**. |
 | 53 | Permukaan secret browser: mask manifest URL + buang signed `stream_url` | `database_manager.py`, `app.py`, `tests/test_secret_surface.py` | `get_masked_settings()` memask tujuh slot manifest (`skema://host/…/manifest.json`). `_public_item`/`_public_items` dan `_public_playlist(s)` membuang `stream_url` dari `/api/bootstrap`, `/api/media`, `/api/playlists*`, dan respons mutasi media; server tetap memakai nilai asli untuk Play/M3U. 7 tes baru; suite **550 passed, 219 subtests**; live `v1.3DS` 0 token/0 signed URL di keempat permukaan. |
 | 54 | Verifikasi pending task berkuota (WebDL, IndonesiaMovies, Donghua, auto-add Indo) | `docs/PENDING_TASKS.md` | WebDL Eporner memperbarui item #360 + badge IN LIBRARY; IndonesiaMovies LK21 #614 `indo_movie`; Donghua lokal #615 S1E16; auto-add Indo #613 `indo_keyword_classifier` (dihapus setelah uji); watcher/cache/NZB/settings/riwayat job diverifikasi; suite tetap **550 passed, 219 subtests**; tidak ada perubahan kode produksi. |
+| 55 | Badge **WAS IN LIBRARY** untuk judul yang pernah ada lalu dihapus | `database_manager.py`, `app.py`, `roxxy_module.py`, `static/ui/home.js`, `static/ui/app.css`, `templates/roxxy.html`, `templates/index.html`, `tests/test_media_tombstones.py`, `tests/test_was_in_library_ui.py` | Tabel `media_tombstones` mencatat penghapusan fisik, file lokal yang hilang saat maintenance, dan penghapusan record; identitas `code:<CODE>` -> `episode:<base>\|sX\|eY` -> `title:<key>` dengan upsert `ON CONFLICT(identity_key)` agar satu judul = satu baris. Retensi 365 hari dan maks 5000 baris; `erase_all_media_data` mengosongkan tabel (reset total). `/api/bootstrap` dan `/api/media` mengirim `marks`, `/api/adult/detail` menambah `was_in_library`, Roxxy mengembalikan `was_in_library`/`library_state`/`was_library_match` untuk katalog, meta, dan episode. Urutan badge **IN LIBRARY** (hijau) -> **WAS IN LIBRARY** (amber) -> NOT IN LIBRARY di grid/detail/episode Roxxy, Discovery v2, Discovery legacy, dan modal adult v2/legacy. Hapus fisik langsung membatalkan cache indeks Library. Tes: 18 baru; suite **568 passed, 238 subtests**. |
 
 ---
 

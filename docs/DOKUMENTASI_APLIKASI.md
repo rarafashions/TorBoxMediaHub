@@ -1,6 +1,6 @@
 # Dokumentasi Lengkap — TorBox Media Hub
 
-**Versi aplikasi:** `v1.3DS`  
+**Versi aplikasi:** `v1.3DT`  
 **Status dokumen:** 28 November 2026  
 **Baseline tes:** `python -m pytest tests -q --no-header` → **550 passed, 219 subtests passed**
 
@@ -443,8 +443,9 @@ Manifest URL harus HTTPS dari host Roxxy dan berakhiran `/manifest.json`. Token 
 
 ### 7.3 Metadata dan episode
 
-- Judul, poster/background, deskripsi, runtime, genre, studio, kode JAV, dan `in_library`/`library_match`.
+- Judul, poster/background, deskripsi, runtime, genre, studio, kode JAV, dan `in_library`/`library_match`/`was_in_library`/`was_library_match`.
 - Badge **IN LIBRARY** mencocokkan kode JAV lebih dulu, lalu judul/nama file ternormalisasi. Baris episodic tidak dicocokkan hanya lewat judul serial.
+- Badge **WAS IN LIBRARY** (amber) muncul bila judul pernah ada lalu dihapus. Sumbernya tabel `media_tombstones` (identitas `code:`/`episode:`/`title:`, retensi 365 hari dan maks 5000 baris); menghapus fisik, file lokal yang hilang saat maintenance, dan penghapusan record ikut mencatat tombstone, sedangkan "Hapus semua data media" mengosongkannya. Aturan pencocokan sama dengan IN LIBRARY, dan badge IN LIBRARY selalu menang atas WAS IN LIBRARY.
 - Panel **Episode** untuk serial: dropdown season (bila >1), chip episode dengan tanda ✓, episode terbaru dipilih otomatis.
 - Metadata diklasifikasikan lokal (tanpa network) sebelum registrasi D3.
 

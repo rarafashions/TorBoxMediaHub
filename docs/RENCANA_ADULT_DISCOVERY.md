@@ -2,7 +2,7 @@
 
 **Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy; Tahap 1, Tahap 2, dan Tahap 3 selesai (`/` sekarang UI v2, UI lama di `/legacy`)
 **Tanggal:** 28 November 2026
-**Versi acuan:** `v1.3DS`
+**Versi acuan:** `v1.3DT`
 **Baseline tes:** `550 passed, 219 subtests passed`
 
 ---
@@ -588,6 +588,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | Live port 5050 (`v1.3DR`, Tahap 3) | `/` 200 UI v2 (8 tab), `/v2` alias 60 kartu, `/legacy` 200 dengan `#view-library`, `/?discover=1` 302 ke `/legacy?discover=1` dan modal Discovery terbuka; `/roxxy` + `/api/bootstrap` 200; tanpa error konsol |
 | Live port 5050 (`v1.3DS`, permukaan secret) | `/api/bootstrap` 539 item + 5 playlist tanpa `stream_url`; `/api/media`, `/api/settings`, `/api/roxxy/config` 0 token manifest dan 0 signed URL; Library 60 kartu, Playlist 5 kartu, detail 31 aksi; tanpa `pageerror` |
 | Live port 5050 (`v1.3DS`, kuota) | WebDL Eporner -> #360 diperbarui + badge IN LIBRARY; IndonesiaMovies LK21 #614 `indo_movie` 340 MB; Donghua lokal #615 S1E16; auto-add Indo #613 `indo_keyword_classifier`; cache/NZB/settings/watcher/riwayat job diverifikasi; antrean akhir 0 |
+| Live port 5050 (`v1.3DT`, tombstone) | `/api/bootstrap` 612 item + `marks` 0 setelah artefak uji dibersihkan; tabel `media_tombstones` dibuat saat startup. Playwright dengan tombstone sementara: Roxxy grid/detail/episode `WAS IN LIBRARY` amber + `↺` pada episode, Discovery v2 kartu + sheet amber, Discovery legacy `↺ WAS IN LIBRARY (1)`, modal adult v2 `tag--was` + catatan amber, modal adult legacy badge + catatan amber; tombstone buatan uji dihapus, antrean 0 dan task idle |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 

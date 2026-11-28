@@ -1,6 +1,6 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DS`
+**Versi saat ini:** `v1.3DT`
 **Tanggal status:** 28 November 2026
 **Baseline tes:** `python -m pytest tests -q --no-header` → **550 passed, 219 subtests passed** (0 gagal)
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
@@ -65,6 +65,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DQ` | 28 Nov 2026 | Tahap 2: filter kualitas + scope playlist di Library, audit subtitle per item, dan tautan M3U LAN di detail |
 | `v1.3DR` | 28 Nov 2026 | Tahap 3: `/` menampilkan UI v2, UI lama dipindah ke `/legacy`, deep link `/?discover=1` dialihkan ke `/legacy?discover=1` |
 | `v1.3DS` | 28 Nov 2026 | `/api/settings` memask URL manifest; signed `stream_url` dibuang dari bootstrap/media/playlist; pending task tanpa kuota diverifikasi |
+| `v1.3DT` | 28 Nov 2026 | Tombstone penghapusan + badge **WAS IN LIBRARY** (amber) di Roxxy, Discovery v2, Discovery legacy, dan modal adult |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -285,7 +286,17 @@ Pengguna menyetujui pemakaian kuota TorBox dan bandwidth untuk menyelesaikan che
 | Riwayat job | `clear` -> `removed=3`, `jobs=0`; batas 50 dan pengecualian job aktif/pending dijaga tes |
 | Log | `logs/app.log` 3,65 MB dengan baris akses Werkzeug; `.bat` menangani exit `-1073741510` |
 
-**Batasan yang dicatat:** stream Official Donghua dengan hanya `ytId` YouTube tidak bisa diunduh lokal (`local/inspect` -> `engine=manual`); `series_title` memangkas akhiran season; WebDL judul duplikat memakai baris lama sehingga total tidak bertambah; `needs_review` menjadi **30** setelah sinkronisasi watcher, `pending` tetap 0. Tidak ada kode produksi yang berubah, suite tetap **550 passed, 219 subtests**.
+**Batasan yang dicatat:** stream Official Donghua dengan hanya `ytId` YouTube tidak bisa diunduh lokal (`local/inspect` -> `engine=manual`); `series_title` memangkas akhiran season; WebDL judul duplikat - memakai baris lama sehingga total tidak bertambah; `needs_review` menjadi **30** setelah sinkronisasi watcher, `pending` tetap 0. Tidak ada kode produksi yang berubah, suite tetap **550 passed, 219 subtests**.
+
+### 4.22 `v1.3DT` - Tombstone penghapusan + badge WAS IN LIBRARY
+
+- **Tabel `media_tombstones`.** Menghapus judul tetap hard delete; identitas ringkas (judul, nama file, kode, serial/season/episode) disimpan terpisah agar katalog bisa membedakan judul yang belum pernah dilihat dari judul yang pernah diunduh lalu dihapus. Tidak ada `stream_url` atau path file di tabel ini; `torbox_item_id`/`unique_key` hanya disimpan internal dan tidak pernah ikut ke payload browser.
+- **Identitas dan retensi.** Kunci `code:<CODE>` -> `episode:<base>|sX|eY` -> `title:<key>` dengan upsert `ON CONFLICT(identity_key)`, sehingga unduh-hapus berulang memperbarui satu baris. Retensi **365 hari** dan maksimum **5000 baris**; prune berjalan setiap kali tombstone ditambahkan. `erase_all_media_data` mengosongkan tombstone (reset total), bukan membuat tombstone baru.
+- **Sumber tombstone.** `delete_media_physical` (`physical_delete`), `run_db_maintenance` untuk file lokal hilang (`missing_local_file`), dan `delete_media_record_and_cache` (`record_delete`). Penghapusan fisik membatalkan cache indeks Library supaya badge langsung berubah.
+- **Payload.** `/api/bootstrap` dan `/api/media` menambah `marks` (field identitas saja), `/api/adult/detail` menambah `was_in_library`. Roxxy menambahkan `in_library`/`was_in_library`/`library_state`/`was_library_match` di katalog, meta, dan episode; `_library_match_for_meta` dipakai ulang untuk indeks tombstone sehingga aturan minimal 6 karakter + huruf tetap sama.
+- **Prioritas badge.** **IN LIBRARY** (hijau) -> **WAS IN LIBRARY** (amber, tooltip "pernah ada di Library, sudah dihapus") -> NOT IN LIBRARY. Diterapkan di grid/detail/episode Roxxy, kartu + sheet Discovery v2, kartu Discovery legacy, serta modal adult v2 dan legacy.
+- **Tes.** `tests/test_media_tombstones.py` (hapus fisik, upsert, episode terpisah, kode JAV, prune umur/kapasitas, erase, maintenance, guard snapshot lama, status Roxxy) dan `tests/test_was_in_library_ui.py` (kontrak empat permukaan). Suite **568 passed, 238 subtests**.
+- **Verifikasi live** (`v1.3DT`, port 5050, antrean TorBox/lokal 0, task idle): `/api/bootstrap` 612 item + 0 `marks` setelah artefak uji dibersihkan; tabel tombstone dibuat oleh migrasi startup. Uji visual dengan tombstone sementara: Roxxy grid `WAS IN LIBRARY`, detail film/adult amber, episode `E190` bertanda `↺` + badge `WAS IN LIBRARY`; Discovery v2 kartu + sheet `WAS IN LIBRARY`; Discovery legacy `↺ WAS IN LIBRARY (1)`; modal adult v2 menampilkan `tag--was` + catatan amber; modal adult legacy badge + catatan amber dari `/api/adult/detail`. Semua tombstone buatan uji dihapus setelah verifikasi.
 
 ---
 
