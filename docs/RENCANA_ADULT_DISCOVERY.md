@@ -2,7 +2,7 @@
 
 **Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
 **Tanggal:** 28 November 2026
-**Versi acuan:** `v1.3DJ`
+**Versi acuan:** `v1.3DK`
 **Baseline tes:** `528 passed, 129 subtests passed`
 
 ---
@@ -16,7 +16,7 @@
 | A3 | SpankBang: validasi tempel URL (`POST /api/adult/link`) + penanda `manual` di `/providers` | **selesai** (backend), 8 tes |
 | A4 | `/api/adult/detail` (TPDB + in-library) + `/api/adult/webdl` + deteksi login wall | **selesai** (backend), 14 tes |
 | A5 | Tab English Adult di `/` lalu `/v2` | **selesai** untuk `/` (legacy), 5 tes statis; port `/v2` menyusul bersama Tahap 1 |
-| A6 | Modal kartu ala Roxxy: sumber stream langsung + analisis + unduhan lokal + monitoring unduhan | **selesai** untuk `/` (legacy), 23 tes baru; koreksi `v1.3DJ` (monitor di atas katalog, dua kolom, metadata halaman provider) +11 tes |
+| A6 | Modal kartu ala Roxxy: sumber stream langsung + analisis + unduhan lokal + monitoring unduhan | **selesai** untuk `/` (legacy), 23 tes baru; koreksi `v1.3DK` (monitor di atas katalog, dua kolom, metadata halaman provider) +11 tes |
 
 Hasil uji live (instance sementara port 5052, data dir terpisah, tidak mengganggu app di port 5000):
 
