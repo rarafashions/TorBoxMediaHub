@@ -39,7 +39,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DD"  # single source of truth; templates render this
+APP_VERSION = "v1.3DE"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -985,6 +985,47 @@ def _preserve_evidence_backed_category(
     return kept
 
 
+def _unmatched_movie_should_be_adult(item: Dict[str, Any]) -> bool:
+    """A filename-only movie that provider enrichment could not match is adult.
+
+    General Movie only ever collected adult scenes after a failed TMDb match; no
+    provider will return a poster for them. This requires that enrichment was
+    actually attempted (``poster_checked_at``) so a freshly imported film is
+    never re-filed before its provider lookup had a chance to succeed.
+    """
+    if str(item.get("content_category") or "") != "general_movie":
+        return False
+    if int(item.get("has_metadata") or 0):
+        return False
+    if str(item.get("code_id") or "").strip():
+        return False
+    source = str(item.get("metadata_source") or "").strip().lower()
+    if source not in {"filename_parser", "unmatched_adult_fallback"}:
+        return False
+    if not str(item.get("poster_checked_at") or "").strip():
+        return False
+    if str(item.get("classification_method") or "") == "indo_keyword_classifier":
+        return False
+    return True
+
+
+def _release_quality_score(name: str) -> int:
+    """Resolution rank parsed from a release name, for ordering duplicate episodes."""
+    text = str(name or "").lower()
+    for pattern, value in (
+        (r"\b(2160p|4k|uhd)\b", 2160),
+        (r"\b(1440p|qhd)\b", 1440),
+        (r"\b(1080p|fhd|fullhd)\b", 1080),
+        (r"\b(720p)\b", 720),
+        (r"\b(576p|540p)\b", 576),
+        (r"\b(480p|sd)\b", 480),
+        (r"\b(360p)\b", 360),
+    ):
+        if re.search(pattern, text):
+            return value
+    return 0
+
+
 def _get_lan_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1566,6 +1607,22 @@ def _classify_pending_worker() -> None:
                                 "JAV tanpa production code terverifikasi; kategori dipertahankan untuk review."
                             ]
                 result = _guard_adult_reclassification(item, result)
+                if _unmatched_movie_should_be_adult(item) and (
+                    result.get("classification_status") != "classified"
+                    or result.get("detected_category") == "general_movie"
+                ):
+                    # No TMDb match, no JAV code, no Indo signal: the General Movie
+                    # bucket was only holding adult scenes that no provider knows.
+                    result = dict(result)
+                    result["classification_status"] = "classified"
+                    result["detected_category"] = "english_adult"
+                    result["classification_method"] = "unmatched_adult_fallback"
+                    result["signals"] = list(result.get("signals") or []) + [
+                        "no_provider_match", "no_indo_signal",
+                    ]
+                    result["warnings"] = list(result.get("warnings") or []) + [
+                        "Tidak ada match TMDb dan tidak ada sinyal Indo/JAV; dikategorikan English Adult."
+                    ]
                 result = _preserve_evidence_backed_category(old_category, item, result)
                 # Record a verdict for every candidate. The category only moves
                 # when the bucket was provisional or an adult/episodic verdict is
@@ -3050,7 +3107,12 @@ def api_series_episodes_status():
         it for it in all_series_items
         if int(it.get("season_num") or 1) == active_season
     ]
-    season_items.sort(key=lambda x: (int(x.get("episode_num") or 9999), x.get("file_name") or ""))
+    season_items.sort(key=lambda x: (
+        int(x.get("episode_num") or 9999),
+        -_release_quality_score(x.get("file_name") or ""),
+        -(int(x.get("file_size") or 0)),
+        x.get("file_name") or "",
+    ))
     _attach_subtitle_track_summaries(season_items)
 
     present_ep_nums = sorted({int(it["episode_num"]) for it in season_items if it.get("episode_num") is not None})

@@ -1934,16 +1934,32 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
                 break
 
     if not meta:
+        # A movie-shaped release that neither TMDb nor a JAV/Indo signal knows is
+        # kept as English Adult: the General Movie bucket only ever held pirated
+        # adult scenes in this library, and no provider will ever supply a poster
+        # for them. This runs only after the provider lookup actually failed, so a
+        # real film that TMDb can match is never re-filed here.
+        unmatched_adult = (
+            bool(tmdb_key)
+            and not is_episodic
+            and not manually_locked
+            and pre_cat in ("general_movie", "uncategorized", "")
+        )
         meta = {
             "title": clean_title,
             "series_title": clean_title,
             "year": year_hint,
-            "content_category": "tv_show" if is_episodic else "general_movie",
-            "is_adult": 0,
+            "content_category": "english_adult" if unmatched_adult else ("tv_show" if is_episodic else "general_movie"),
+            "is_adult": 1 if unmatched_adult else 0,
             "has_metadata": 0,
-            "metadata_source": "filename_parser",
+            "metadata_source": "unmatched_adult_fallback" if unmatched_adult else "filename_parser",
             "_lookup": {"provider": "tmdb" if tmdb_key else "tmdb", "status": "not_found",
-                        "message": "No matching TMDb record was found. Check the search title, year, and TMDb API key."},
+                        "message": (
+                            "No TMDb record matched and no Indo/JAV signal was found; filed as English Adult."
+                            if unmatched_adult else
+                            "No matching TMDb record was found. Check the search title, year, and TMDb API key."
+                        )},
+            "genres": ["Adult"] if unmatched_adult else [],
         }
 
     return _finalize(meta)

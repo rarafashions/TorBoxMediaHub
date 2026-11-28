@@ -289,6 +289,49 @@ class ReclassifyWorkerPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["result"]["classification_status"], "needs_review")
         self.assertIn("1 needs review", task.finish.call_args.args[0])
 
+    def test_unmatched_movie_with_failed_enrichment_becomes_english_adult(self):
+        item = {
+            "id": 511, "file_name": "Hot Indian Teen Fucks Her Match In Hotel Bed.mp4",
+            "parent_name": "", "title": "Hot Indian Teen Fucks Her Match In Hotel Bed",
+            "normalized_title": None,
+            "content_category": "general_movie", "has_metadata": 0, "title_is_manual": 0,
+            "metadata_source": "filename_parser", "code_id": None,
+            "poster_status": "missing", "poster_checked_at": "2026-11-27T10:00:00",
+            "classification_method": "no_engine_matched",
+            "studio": "", "genres": [], "plot": "", "year": None,
+        }
+        verdict = {
+            "classification_status": "needs_review", "detected_category": None,
+            "normalized_title": "Hot Indian Teen", "classification_method": "no_engine_matched",
+            "category_confidence": 0, "signals": [],
+        }
+        saved, task = self._run(item, verdict)
+        self.assertEqual(saved["kwargs"]["apply_category"], True)
+        self.assertEqual(saved["result"]["classification_status"], "classified")
+        self.assertEqual(saved["result"]["detected_category"], "english_adult")
+        self.assertEqual(saved["result"]["classification_method"], "unmatched_adult_fallback")
+        self.assertIn("no_provider_match", saved["result"]["signals"])
+        self.assertIn("1 classified", task.finish.call_args.args[0])
+
+    def test_fresh_import_is_not_filed_adult_before_enrichment_runs(self):
+        item = {
+            "id": 512, "file_name": "Brand New Movie 2026 1080p.mkv", "parent_name": "",
+            "title": "Brand New Movie", "normalized_title": None,
+            "content_category": "general_movie", "has_metadata": 0, "title_is_manual": 0,
+            "metadata_source": "filename_parser", "code_id": None,
+            "poster_status": "not_checked", "poster_checked_at": None,
+            "classification_method": "title_plus_year",
+            "studio": "", "genres": [], "plot": "", "year": 2026,
+        }
+        verdict = {
+            "classification_status": "classified", "detected_category": "general_movie",
+            "normalized_title": "Brand New Movie", "classification_method": "title_plus_year",
+            "category_confidence": 82, "signals": [],
+        }
+        saved, task = self._run(item, verdict)
+        self.assertNotEqual(saved["result"].get("classification_method"), "unmatched_adult_fallback")
+        self.assertNotEqual(saved["result"].get("detected_category"), "english_adult")
+
     def test_manifest_category_is_kept_and_flagged_for_review(self):
         item = {
             "id": 503, "file_name": "Battle.Through.The.Heavens.E219.mkv", "parent_name": "",
@@ -306,6 +349,43 @@ class ReclassifyWorkerPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["result"]["classification_status"], "needs_review")
         self.assertIsNone(saved["result"]["detected_category"])
         self.assertIn("1 needs review", task.finish.call_args.args[0])
+
+
+class UnmatchedMovieFallbackTests(unittest.TestCase):
+    """General Movie only holds adult scenes when no provider matched."""
+
+    def _item(self, **overrides):
+        item = {
+            "content_category": "general_movie", "has_metadata": 0, "code_id": None,
+            "metadata_source": "filename_parser",
+            "poster_checked_at": "2026-11-27T10:00:00",
+            "classification_method": "no_engine_matched",
+        }
+        item.update(overrides)
+        return item
+
+    def test_filename_only_movie_after_failed_enrichment_qualifies(self):
+        self.assertTrue(app_module._unmatched_movie_should_be_adult(self._item()))
+
+    def test_provider_evidence_disqualifies(self):
+        self.assertFalse(app_module._unmatched_movie_should_be_adult(self._item(has_metadata=1)))
+        self.assertFalse(app_module._unmatched_movie_should_be_adult(self._item(metadata_source="tmdb")))
+        self.assertFalse(app_module._unmatched_movie_should_be_adult(self._item(code_id="ABC-123")))
+        self.assertFalse(
+            app_module._unmatched_movie_should_be_adult(
+                self._item(classification_method="indo_keyword_classifier")
+            )
+        )
+
+    def test_enrichment_must_have_been_attempted(self):
+        self.assertFalse(
+            app_module._unmatched_movie_should_be_adult(self._item(poster_checked_at=None))
+        )
+
+    def test_only_the_general_movie_bucket_qualifies(self):
+        self.assertFalse(
+            app_module._unmatched_movie_should_be_adult(self._item(content_category="tv_show"))
+        )
 
 
 if __name__ == "__main__":

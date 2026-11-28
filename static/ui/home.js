@@ -381,6 +381,34 @@
     return String(item.series_title || item.title || item.file_name || "").trim().toLowerCase();
   }
 
+  // Duplicate episodes from different sources are never hidden; the best copy
+  // of the same episode is simply listed first. Resolution comes from the
+  // release name, with file size as the tie-breaker.
+  const QUALITY_TOKENS = [
+    [/\b(2160p|4k|uhd)\b/i, 2160],
+    [/\b(1440p|qhd)\b/i, 1440],
+    [/\b(1080p|fhd|fullhd)\b/i, 1080],
+    [/\b(720p)\b/i, 720],
+    [/\b(576p|540p)\b/i, 576],
+    [/\b(480p|sd)\b/i, 480],
+    [/\b(360p)\b/i, 360],
+  ];
+
+  function videoQuality(item) {
+    const name = `${item.file_name || ""} ${item.title || ""}`;
+    for (const [re, value] of QUALITY_TOKENS) if (re.test(name)) return value;
+    return 0;
+  }
+
+  function episodeOrder(a, b) {
+    return (
+      Number(a.season_num || 1) - Number(b.season_num || 1) ||
+      Number(a.episode_num || 0) - Number(b.episode_num || 0) ||
+      videoQuality(b) - videoQuality(a) ||
+      (Number(b.file_size) || 0) - (Number(a.file_size) || 0)
+    );
+  }
+
   function groupSeries(items) {
     const map = new Map();
     for (const item of items) {
@@ -427,11 +455,7 @@
 
     const groups = Array.from(map.values());
     for (const group of groups) {
-      group.items.sort(
-        (a, b) =>
-          Number(a.season_num || 1) - Number(b.season_num || 1) ||
-          Number(a.episode_num || 0) - Number(b.episode_num || 0)
-      );
+      group.items.sort(episodeOrder);
       group.total = group.items.length;
       group.watched = group.watchedCount;
       group.posterItem = group.posterItem || group.items.find((it) => it.has_poster) || group.items[0] || null;
@@ -3512,11 +3536,7 @@
       if (status && Number(status.active_season) === Number(season) && Array.isArray(status.items)) {
         return status.items
           .map((it) => state.items.find((x) => Number(x.id) === Number(it.id)) || it)
-          .sort(
-            (a, b) =>
-              Number(a.episode_num || 9999) - Number(b.episode_num || 9999) ||
-              String(a.file_name || "").localeCompare(String(b.file_name || ""))
-          );
+          .sort(episodeOrder);
       }
       return group.items.filter((it) => Number(it.season_num || 1) === Number(season));
     };

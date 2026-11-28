@@ -160,6 +160,53 @@ class MovieTitleNormalizationTests(unittest.TestCase):
         self.assertEqual(mock_tmdb.call_args.args[0], "Spider-Man 9 Zbrusu nový den")
         self.assertEqual(result["has_metadata"], 0)
         self.assertEqual(result["_lookup"]["status"], "not_found")
+        # No provider matched this movie, so General Movie cannot hold it any more.
+        self.assertEqual(result["content_category"], "english_adult")
+        self.assertEqual(result["is_adult"], 1)
+        self.assertEqual(result["metadata_source"], "unmatched_adult_fallback")
+
+    @patch.object(meta, "download_poster_image_result", return_value={"local_poster_path": None, "poster_status": "missing", "poster_error": "No URL"})
+    @patch.object(meta, "_fetch_tmdb_metadata", return_value=None)
+    def test_unmatched_episode_stays_a_tv_show(self, _tmdb, _poster):
+        item = {
+            "unique_key": "unknown-show-s01e01",
+            "file_name": "Unknown Show S01E01 1080p.mkv",
+            "content_category": "general_movie", "season_num": 1, "episode_num": 1,
+        }
+        with patch.object(meta, "_fetch_tvmaze_fallback", return_value=None):
+            result = meta.enrich_media_item(item, {"tmdb_api_key": "test-key"})
+        self.assertEqual(result["content_category"], "tv_show")
+        self.assertEqual(result["is_adult"], 0)
+        self.assertEqual(result["metadata_source"], "filename_parser")
+
+    @patch.object(meta, "download_poster_image_result", return_value={"local_poster_path": None, "poster_status": "missing", "poster_error": "No URL"})
+    @patch.object(meta, "_fetch_tmdb_metadata", return_value=None)
+    def test_unmatched_movie_without_tmdb_key_stays_general_movie(self, _tmdb, _poster):
+        item = {"unique_key": "no-key", "file_name": "Some Obscure Film 2019 720p.mkv",
+                "content_category": "general_movie"}
+        result = meta.enrich_media_item(item, {})
+        self.assertEqual(result["content_category"], "general_movie")
+        self.assertEqual(result["is_adult"], 0)
+
+    @patch.object(meta, "download_poster_image_result", return_value={"local_poster_path": None, "poster_status": "missing", "poster_error": "No URL"})
+    @patch.object(meta, "_fetch_tmdb_metadata", return_value=None)
+    def test_manual_movie_classification_survives_the_adult_fallback(self, _tmdb, _poster):
+        item = {
+            "unique_key": "manual-movie", "file_name": "Manual Movie 2020 1080p.mkv",
+            "content_category": "general_movie", "classification_status": "manually_classified",
+        }
+        result = meta.enrich_media_item(item, {"tmdb_api_key": "test-key"})
+        self.assertEqual(result["content_category"], "general_movie")
+        self.assertEqual(result["is_adult"], 0)
+
+    @patch.object(meta, "download_poster_image_result", return_value={"local_poster_path": None, "poster_status": "missing", "poster_error": "No URL"})
+    @patch.object(meta, "_fetch_tmdb_metadata", return_value=None)
+    def test_indo_signal_beats_the_unmatched_adult_fallback(self, _tmdb, _poster):
+        item = {"unique_key": "indo-movie", "file_name": "Tante di Jakarta 720p.mp4",
+                "content_category": "general_movie"}
+        result = meta.enrich_media_item(item, {"tmdb_api_key": "test-key"})
+        self.assertEqual(result["content_category"], "indo")
+        self.assertEqual(result["metadata_source"], "indo_keyword_classifier")
 
     @patch.object(meta.HTTP_SESSION, "get")
     def test_tmdb_uses_canonical_alias_and_year_to_find_poster(self, mock_get):
