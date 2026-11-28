@@ -989,6 +989,235 @@ def _stream_download_options(analysis: Dict[str, Any], url: str) -> list:
     return options
 
 
+_ROXXY_EPISODE_SEARCH_TTL = 600.0
+_ROXXY_EPISODE_SEARCH_MAX = 64
+_EPISODE_SEARCH_CACHE: Dict[str, Any] = OrderedDict()
+_EPISODE_SEARCH_LOCK = threading.Lock()
+
+
+def _title_key(text: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
+
+
+def _title_matches(query: Any, candidate: Any) -> bool:
+    """Loose series-title match used to keep a catalog search on the right show."""
+    pairs = ((query, candidate), (_series_base_name(query), _series_base_name(candidate)))
+    for left_raw, right_raw in pairs:
+        left, right = _title_key(left_raw), _title_key(right_raw)
+        if not left or not right:
+            continue
+        if left == right:
+            return True
+        shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+        if len(shorter) >= 8 and shorter in longer:
+            return True
+    return False
+
+
+def _search_title_variants(title: Any) -> List[str]:
+    """Queries to try when a catalog indexes a shorter title than the library row."""
+    clean = " ".join(str(title or "").split()).strip()
+    if not clean:
+        return []
+    variants = [clean]
+    base = _series_base_name(clean)
+    if base and base.casefold() != clean.casefold():
+        variants.append(base)
+    stripped = re.sub(
+        r"(?i)\s+(?:nf|nfs|hd|tv|series|complete|uncut|uncensored)$", "", base or clean
+    ).strip(" -:–|")
+    if stripped and stripped.casefold() not in {item.casefold() for item in variants}:
+        variants.append(stripped)
+    return variants[:3]
+
+
+def _catalog_supports_search(catalog: Dict[str, Any]) -> bool:
+    extra = catalog.get("extra")
+    entries = extra if isinstance(extra, list) else ([extra] if isinstance(extra, dict) else [])
+    return any(
+        isinstance(entry, dict) and str(entry.get("name") or "").strip() == "search"
+        for entry in entries
+    )
+
+
+def search_episode_releases(
+    series_title: str,
+    season: int,
+    episodes: list,
+    source: str = "donghua",
+    max_catalogs: int = 4,
+    max_metas: int = 3,
+    max_stream_calls: int = 8,
+) -> Dict[str, Any]:
+    """Find torrent/NZB releases for missing episodes through the Roxxy addon.
+
+    Anime and Donghua catalogs publish per-episode streams; a title search is
+    resolved to a meta, then only the requested episodes are asked for streams.
+    Results are bounded and cached so one "search all episodes" click cannot
+    fan out into an unbounded number of addon requests.
+    """
+    canonical = _canonical_source(source)
+    label = ROXXY_SOURCE_LABELS.get(canonical, canonical)
+    wanted = sorted({int(value) for value in (episodes or []) if str(value).strip().isdigit() and int(value) > 0})
+    cache_key = f"{canonical}|{str(series_title or '').strip().lower()}|{int(season)}|{','.join(map(str, wanted))}"
+    now = time.time()
+    with _EPISODE_SEARCH_LOCK:
+        cached = _EPISODE_SEARCH_CACHE.get(cache_key)
+        if cached and now - cached[0] < _ROXXY_EPISODE_SEARCH_TTL:
+            _EPISODE_SEARCH_CACHE.move_to_end(cache_key)
+            return dict(cached[1])
+
+    result: Dict[str, Any] = {
+        "ok": True,
+        "source": canonical,
+        "label": label,
+        "catalogs": 0,
+        "metas": 0,
+        "stream_calls": 0,
+        "direct_streams": 0,
+        "candidates": [],
+        "errors": [],
+    }
+    if not _manifest_url(canonical):
+        result.update(ok=False, error=f"Manifest {label} belum diatur di Settings.")
+        return result
+
+    try:
+        manifest = _roxxy_get("manifest.json", source=canonical)
+    except Exception as exc:
+        result.update(ok=False, error=_safe_error(exc))
+        return result
+
+    searchable = [
+        catalog for catalog in (manifest.get("catalogs") or [])
+        if isinstance(catalog, dict) and catalog.get("id") and _catalog_supports_search(catalog)
+    ][: max(1, int(max_catalogs))]
+    if not searchable:
+        result.update(ok=False, error=f"Tidak ada katalog {label} yang mendukung pencarian.")
+        return result
+
+    seen_meta: set = set()
+    seen_stream: set = set()
+    metas = []
+    for catalog in searchable:
+        ctype = str(catalog.get("type") or "").strip()
+        cid = str(catalog.get("id") or "").strip()
+        if not ctype or not cid:
+            continue
+        result["catalogs"] += 1
+        variant_found = False
+        for variant in _search_title_variants(series_title):
+            path = (
+                f"catalog/{quote(ctype, safe='')}/{quote(cid, safe=':')}"
+                f"/search={quote(variant, safe='')}.json"
+            )
+            try:
+                data = _roxxy_get(path, source=canonical)
+            except Exception as exc:
+                result["errors"].append(f"{catalog.get('name') or cid}: {_safe_error(exc)}")
+                break
+            for meta in data.get("metas") or []:
+                if not isinstance(meta, dict) or not meta.get("id"):
+                    continue
+                if not _title_matches(variant, meta.get("name")):
+                    continue
+                key = (ctype, str(meta["id"]))
+                if key in seen_meta:
+                    continue
+                seen_meta.add(key)
+                metas.append((ctype, meta, str(catalog.get("name") or "")))
+                variant_found = True
+            if variant_found:
+                break
+
+    # Prefer the closest title match and the requested season, then keep the
+    # request count bounded.
+    def _meta_rank(item):
+        name = str(item[1].get("name") or "")
+        normalized = _title_key(_series_base_name(name))
+        requested = _title_key(_series_base_name(series_title))
+        exact = normalized == requested
+        season_hint = bool(re.search(rf"(?i)\b(?:season\s*{int(season)}|s{int(season):02d})\b", name))
+        return (0 if exact else 1, 0 if season_hint else 1, len(name))
+
+    metas.sort(key=_meta_rank)
+    metas = metas[: max(1, int(max_metas))]
+    result["metas"] = len(metas)
+
+    for ctype, meta, catalog_name in metas:
+        try:
+            detail = _roxxy_get(
+                f"meta/{quote(ctype, safe='')}/{quote(str(meta['id']), safe=':')}.json",
+                source=canonical,
+            ).get("meta") or {}
+        except Exception as exc:
+            result["errors"].append(f"{catalog_name}: {_safe_error(exc)}")
+            continue
+        index = _build_series_index(detail.get("videos"), detail.get("name") or meta.get("name"))
+        if not index:
+            continue
+        groups = index.get("seasons") or []
+        group = next((g for g in groups if int(g.get("season") or 1) == int(season)), None)
+        if group is None and len(groups) == 1:
+            group = groups[0]
+        if group is None:
+            continue
+        if wanted:
+            targets = [ep for ep in group.get("episodes") or [] if int(ep.get("episode") or -1) in wanted]
+        else:
+            targets = list(group.get("episodes") or [])[: max_stream_calls]
+
+        for episode in targets:
+            if result["stream_calls"] >= int(max_stream_calls):
+                break
+            ep_num = int(episode.get("episode") or 0) or None
+            video_id = str(episode.get("id") or "").strip()
+            if not video_id:
+                continue
+            result["stream_calls"] += 1
+            try:
+                streams = _roxxy_get(
+                    f"stream/{quote(ctype, safe='')}/{quote(video_id, safe=':')}.json",
+                    source=canonical,
+                ).get("streams") or []
+            except Exception as exc:
+                result["errors"].append(f"{catalog_name} E{ep_num}: {_safe_error(exc)}")
+                continue
+            for stream in streams[:12]:
+                if not isinstance(stream, dict) or not stream.get("url"):
+                    continue
+                analysis = _classify_stream(stream)
+                magnet = analysis.get("magnet") or ""
+                nzb_url = analysis.get("nzb_url") or ""
+                if not magnet and not nzb_url:
+                    result["direct_streams"] += 1
+                    continue
+                stream_key = magnet or nzb_url
+                if stream_key in seen_stream:
+                    continue
+                seen_stream.add(stream_key)
+                result["candidates"].append({
+                    "kind": "torrent" if magnet else "usenet",
+                    "source": f"Roxxy {label}",
+                    "indexer": catalog_name,
+                    "title": str(stream.get("name") or stream.get("title") or episode.get("title") or detail.get("name") or "").strip()[:300],
+                    "episode": ep_num,
+                    "magnet": magnet,
+                    "nzb_url": nzb_url,
+                    "quality": _stream_quality(stream),
+                    "seeders": None,
+                    "leechers": None,
+                    "size": None,
+                })
+
+    with _EPISODE_SEARCH_LOCK:
+        _EPISODE_SEARCH_CACHE[cache_key] = (now, dict(result))
+        _EPISODE_SEARCH_CACHE.move_to_end(cache_key)
+        while len(_EPISODE_SEARCH_CACHE) > _ROXXY_EPISODE_SEARCH_MAX:
+            _EPISODE_SEARCH_CACHE.popitem(last=False)
+    return result
+
+
 @roxxy_bp.post("/api/roxxy/analyze")
 def api_analyze_stream():
     payload = request.get_json(silent=True) or {}

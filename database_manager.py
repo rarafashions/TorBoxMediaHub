@@ -74,6 +74,7 @@ DEFAULT_SETTINGS: Dict[str, str] = {
     "torbox_api_key": "",
     "tmdb_api_key": "",
     "tpdb_api_key": "",
+    "nzbgeek_api_key": "",
     "local_scan_paths": "[]",
     "media_player": "vlc",
     "vlc_path": _DEFAULT_PATHS.get("vlc", ""),
@@ -1219,6 +1220,8 @@ def get_settings() -> Dict[str, str]:
         result["tmdb_api_key"] = os.environ["TMDB_API_KEY"].strip()
     if os.environ.get("TPDB_API_KEY") and not result.get("tpdb_api_key"):
         result["tpdb_api_key"] = os.environ["TPDB_API_KEY"].strip()
+    if os.environ.get("NZBGEEK_API_KEY") and not result.get("nzbgeek_api_key"):
+        result["nzbgeek_api_key"] = os.environ["NZBGEEK_API_KEY"].strip()
 
     if not (result.get("media_player") or "").strip():
         result["media_player"] = "vlc"
@@ -1233,7 +1236,7 @@ def get_settings() -> Dict[str, str]:
     return result
 
 
-SECRET_SETTING_KEYS = ("torbox_api_key", "tmdb_api_key", "tpdb_api_key")
+SECRET_SETTING_KEYS = ("torbox_api_key", "tmdb_api_key", "tpdb_api_key", "nzbgeek_api_key")
 
 
 def _mask_secret(val: str) -> str:

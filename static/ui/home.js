@@ -61,7 +61,7 @@
       customArgs: "",
       localPaths: "",
       indonesian: true,
-      keyDrafts: { torbox: "", tmdb: "", tpdb: "" },
+      keyDrafts: { torbox: "", tmdb: "", tpdb: "", nzbgeek: "" },
     },
   };
 
@@ -2881,6 +2881,13 @@
       label: "ThePornDB API Key",
       hint: "Fallback metadata English Adult dan JAV.",
     },
+    {
+      draft: "nzbgeek",
+      setting: "nzbgeek_api_key",
+      flag: "has_nzbgeek_api_key",
+      label: "NZBGeek API Key (premium)",
+      hint: "Indexer NZB berbayar untuk pencarian episode baru. Opsional; tanpa key, pencarian hanya memakai NZB gratis.",
+    },
   ];
 
   function applySettingsData(data) {
@@ -2903,7 +2910,7 @@
     }
     s.localPaths = Array.isArray(paths) ? paths.join("\n") : "";
     s.indonesian = Boolean((data.subtitle_preferences || {}).indonesian_enabled);
-    s.keyDrafts = { torbox: "", tmdb: "", tpdb: "" };
+    s.keyDrafts = { torbox: "", tmdb: "", tpdb: "", nzbgeek: "" };
     s.error = "";
   }
 
@@ -4195,7 +4202,10 @@
     const seasonBar = el("div", { class: "series__seasons", role: "tablist", "aria-label": "Pilih season" });
     const statusLine = el("p", { class: "series__status" });
     const listHost = el("div", { class: "series__list" });
+    const searchHost = el("div", { class: "series__search" });
     const seasonActions = el("div", { class: "detail__actions", style: "margin-top:12px" });
+    const searchState = { loading: false, scope: "", data: null, error: "" };
+    let searchToken = 0;
 
     const allSeasons = () => {
       const set = new Set(seasons);
@@ -4219,13 +4229,23 @@
       seasonBar.replaceChildren(
         ...allSeasons().map((season) => {
           const count = countIn(season);
+          const official = officialSeasons.find((s) => Number(s.season_number) === Number(season));
+          const expected = official ? Number(official.episode_count || 0) : 0;
           const isActive = Number(season) === Number(activeSeason);
+          const summary = expected
+            ? `${count}/${expected}`
+            : count
+              ? String(count)
+              : "";
           return el("button", {
             class: "series__tab" + (isActive ? " is-active" : ""),
             type: "button",
             role: "tab",
             "aria-selected": isActive ? "true" : "false",
-            text: `Season ${season}${count ? ` · ${count}` : ""}`,
+            text: `Season ${String(season).padStart(2, "0")}${summary ? ` · ${summary}` : ""}`,
+            title: expected
+              ? `${count} dari ${expected} episode ada di library`
+              : `${count} episode di library`,
             onclick: () => selectSeason(season),
           });
         })
@@ -4241,7 +4261,7 @@
         const missing = status.missing_episodes || [];
         if (missing.length) {
           const shown = missing.slice(0, 24).map(episodeLabel).join(", ");
-          text += `${text ? " · " : ""}Missing: ${shown}${missing.length > 24 ? " …" : ""}`;
+          text += `${text ? " · " : ""}Belum ada: ${shown}${missing.length > 24 ? " …" : ""}`;
         }
       } else {
         const count = itemsFor(activeSeason).length;
@@ -4253,8 +4273,17 @@
       statusLine.classList.toggle("is-loading", loadingStatus);
     }
 
+    function missingEpisodes() {
+      if (status && Number(status.active_season) === Number(activeSeason) && Array.isArray(status.missing_episodes)) {
+        return status.missing_episodes.map(Number).filter((n) => n > 0);
+      }
+      return [];
+    }
+
     function paintSeasonActions() {
       const items = itemsFor(activeSeason);
+      const missing = missingEpisodes();
+      const statusReady = Boolean(status && Number(status.active_season) === Number(activeSeason));
       const allWatched = items.length > 0 && items.every((it) => truthyFlag(it.is_watched));
       seasonActions.replaceChildren(
         el("button", {
@@ -4270,6 +4299,13 @@
           html: `${ICON.play}<span>Putar season</span>`,
           disabled: items.length === 0,
           onclick: () => playSeason(),
+        }),
+        el("button", {
+          class: "btn btn--ghost btn--sm",
+          type: "button",
+          html: `${ICON.search}<span>Cari semua episode hilang</span>`,
+          disabled: !statusReady || missing.length === 0 || searchState.loading,
+          onclick: () => runEpisodeSearch(missing),
         })
       );
     }
@@ -4317,22 +4353,344 @@
       );
     }
 
+    function missingRow(episode) {
+      return el(
+        "article",
+        { class: "episode episode--missing" },
+        el("span", { class: "episode__num", text: episodeLabel(episode), "aria-hidden": "true" }),
+        el(
+          "div",
+          { class: "episode__body" },
+          el("span", { class: "episode__title", text: `Episode ${String(episode).padStart(2, "0")} — belum ada di library` }),
+          el("span", { class: "episode__meta", text: "Cari rilis dari TorBox cache, torrent publik, NZB, atau Roxxy." })
+        ),
+        el(
+          "div",
+          { class: "episode__actions" },
+          el("button", {
+            class: "btn btn--ghost btn--sm",
+            type: "button",
+            html: `${ICON.search}<span>Cari episode</span>`,
+            disabled: searchState.loading,
+            onclick: () => runEpisodeSearch([episode]),
+          })
+        )
+      );
+    }
+
+    function releaseRow(release, torboxReady) {
+      const seeds = release.seeders;
+      const leech = release.leechers;
+      const peers = release.peers != null ? release.peers : (seeds != null || leech != null ? (seeds || 0) + (leech || 0) : null);
+      const peerText = seeds != null || leech != null
+        ? `Seed ${numberLabel(seeds || 0)} · Leech ${numberLabel(leech || 0)}${peers != null ? ` · Peer ${numberLabel(peers)}` : ""}`
+        : "";
+      const meta = [
+        peerText,
+        release.size ? bytesLabel(release.size) : "",
+        release.quality || "",
+        release.kind === "usenet" ? "NZB" : "Torrent",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+
+      return el(
+        "div",
+        { class: "release" },
+        el(
+          "div",
+          { class: "release__main" },
+          el(
+            "div",
+            { class: "release__badges" },
+            el("span", {
+              class:
+                "pill " +
+                (release.cached === true ? "pill--ok" : release.cached === false ? "" : "pill--idle"),
+              text: release.cached === true ? "CACHED" : release.cached === false ? "UNCACHED" : "CACHE ?",
+              title:
+                release.cached === true
+                  ? "Sudah tersedia di cache TorBox"
+                  : release.cached === false
+                    ? "Belum ada di cache TorBox"
+                    : "Status cache NZB tidak dapat dipastikan",
+            }),
+            el("span", { class: "release__source", text: release.source || release.indexer || "-" }),
+            release.indexer && release.indexer !== release.source
+              ? el("span", { class: "release__source", text: release.indexer })
+              : null,
+            release.episode ? el("span", { class: "release__ep", text: episodeLabel(release.episode) }) : null
+          ),
+          el("div", { class: "release__title", text: release.title || "-", title: release.title || "" }),
+          el("div", { class: "release__meta", text: meta })
+        ),
+        el("button", {
+          class: "btn btn--ghost btn--sm",
+          type: "button",
+          text: release.busy ? "Menambah..." : "+ TorBox",
+          disabled: Boolean(release.busy) || !torboxReady,
+          title: torboxReady ? "" : "TorBox API key belum diatur",
+          onclick: () => addReleaseToTorbox(release),
+        })
+      );
+    }
+
+    function releaseGroup(entry, torboxReady) {
+      const label = entry.episode
+        ? `Episode ${String(entry.episode).padStart(2, "0")}`
+        : entry.label || "Paket season";
+      return el(
+        "div",
+        { class: "release-group" },
+        el(
+          "div",
+          { class: "release-group__head" },
+          el("span", { class: "release-group__title", text: label }),
+          el("span", {
+            class: "release-group__meta",
+            text: `${entry.candidates.length} rilis · ${entry.cached_count || 0} cached`,
+          })
+        ),
+        ...entry.candidates.map((release) => releaseRow(release, torboxReady))
+      );
+    }
+
+    function sourceChip(source) {
+      const kind = source.state === "ok" ? "is-ok" : source.state === "error" ? "is-error" : source.state === "unconfigured" ? "is-warn" : "";
+      const count = source.count ? ` · ${source.count}` : "";
+      return el(
+        "span",
+        {
+          class: "source-chip " + kind,
+          title: source.error || source.note || "",
+        },
+        el("span", { class: "source-chip__dot" }),
+        el("span", { text: `${source.label}${count}` })
+      );
+    }
+
+    function searchPanel(data) {
+      const groups = (data.episodes || []).filter((entry) => (entry.candidates || []).length);
+      const torboxReady = Boolean(data.torbox && data.torbox.configured);
+      const notes = Array.isArray(data.notes) ? data.notes : [];
+      const sourceRow = el("div", { class: "source-row" }, ...(data.sources || []).map(sourceChip));
+
+      const body = [];
+      if (notes.length) {
+        body.push(el("p", { class: "search-panel__note", text: notes.join(" ") }));
+      }
+      body.push(sourceRow);
+      const directRoxxy = (data.sources || []).find(
+        (source) => source.key === "roxxy" && source.note && source.state === "ok"
+      );
+      if (directRoxxy) {
+        body.push(
+          el(
+            "p",
+            { class: "search-panel__note" },
+            el("span", { text: `${directRoxxy.note} ` }),
+            el("a", { class: "search-panel__link", href: "/roxxy", text: "Buka Roxxy" })
+          )
+        );
+      }
+      if (groups.length) {
+        body.push(...groups.map((entry) => releaseGroup(entry, torboxReady)));
+      } else {
+        body.push(
+          el("p", {
+            class: "search-panel__empty",
+            text: data.total_checked
+              ? "Tidak ada rilis magnet/NZB yang cocok untuk episode ini."
+              : "Tidak ada rilis ditemukan. Torrent publik bisa sedang sepi; NZB premium (NZBGeek) membantu untuk episode baru.",
+          })
+        );
+      }
+
+      return el(
+        "div",
+        { class: "search-panel" },
+        el(
+          "div",
+          { class: "search-panel__head" },
+          el("span", { class: "search-panel__title", text: `Hasil pencarian · Season ${String(activeSeason).padStart(2, "0")}` }),
+          el("span", {
+            class: "search-panel__meta",
+            text: `${numberLabel(data.cached_count || 0)} cached / ${numberLabel(data.total_checked || 0)} rilis · ${numberLabel(data.elapsed_ms || 0)} ms`,
+          })
+        ),
+        ...body
+      );
+    }
+
+    function paintSearch() {
+      const missing = missingEpisodes();
+      const statusReady = Boolean(status && Number(status.active_season) === Number(activeSeason));
+      const seasonLabel = String(activeSeason).padStart(2, "0");
+      const children = [];
+      children.push(
+        el(
+          "div",
+          { class: "series__searchbar" },
+          el(
+            "div",
+            { class: "series__searchbar-text" },
+            el("strong", {
+              text: !statusReady
+                ? "Memuat struktur season..."
+                : missing.length
+                  ? `${missing.length} episode belum ada di Season ${seasonLabel}`
+                  : `Season ${seasonLabel} lengkap`,
+            }),
+            el("span", {
+              text: !statusReady
+                ? "Jumlah episode resmi sedang diambil dari TMDb/TVMaze/AniList."
+                : missing.length
+                  ? "Cari di TorBox cache, torrent publik, NZB, dan Roxxy (Anime/Donghua)."
+                  : "Semua episode resmi sudah ada di library.",
+            })
+          ),
+          el("button", {
+            class: "btn btn--primary btn--sm",
+            type: "button",
+            html: `${ICON.search}<span>Cari semua episode hilang</span>`,
+            disabled: !statusReady || searchState.loading || missing.length === 0,
+            onclick: () => runEpisodeSearch(missing),
+          })
+        )
+      );
+      if (searchState.loading) {
+        children.push(
+          el(
+            "div",
+            { class: "search-panel" },
+            el("p", { class: "search-panel__note", text: searchState.label || "Mencari rilis..." })
+          )
+        );
+      } else if (searchState.error) {
+        children.push(
+          el(
+            "div",
+            { class: "search-panel" },
+            el("p", { class: "search-panel__note", text: searchState.error })
+          )
+        );
+      } else if (searchState.data) {
+        children.push(searchPanel(searchState.data));
+      }
+      searchHost.replaceChildren(...children);
+    }
+
+    async function runEpisodeSearch(episodes) {
+      const wanted = (episodes || []).map(Number).filter((n) => n > 0);
+      if (!wanted.length || searchState.loading) return;
+      const token = ++searchToken;
+      const seasonAtStart = Number(activeSeason);
+      searchState.loading = true;
+      searchState.error = "";
+      searchState.data = null;
+      searchState.scope = wanted.join(",");
+      searchState.label =
+        wanted.length === 1
+          ? `Mencari Episode ${String(wanted[0]).padStart(2, "0")} di TorBox cache, indexer, dan Roxxy...`
+          : `Mencari ${wanted.length} episode hilang di TorBox cache, indexer, dan Roxxy...`;
+      paintSearch();
+      try {
+        const data = await api(
+          "/api/series/episode-search",
+          jsonBody({
+            series_title: group.title,
+            category: group.category || "tv_show",
+            season: seasonAtStart,
+            episodes: wanted,
+            tmdb_id: (status && status.tmdb_id) || null,
+          })
+        );
+        if (token !== searchToken || seasonAtStart !== Number(activeSeason)) return;
+        searchState.data = data;
+      } catch (err) {
+        if (token !== searchToken) return;
+        searchState.error = err.message;
+      } finally {
+        if (token === searchToken) {
+          searchState.loading = false;
+          paintSearch();
+        }
+      }
+    }
+
+    async function addReleaseToTorbox(release) {
+      if (!release || release.busy) return;
+      release.busy = true;
+      paintSearch();
+      try {
+        const data = await api(
+          "/api/torbox/add-cached",
+          jsonBody({
+            kind: release.kind || "torrent",
+            magnet: release.magnet || "",
+            nzb_url: release.nzb_url || "",
+            title: release.title || "",
+            series_title: group.title,
+            category: group.category || "tv_show",
+            season: Number(activeSeason),
+          })
+        );
+        toast(data.message || "Rilis ditambahkan ke TorBox", "ok");
+      } catch (err) {
+        toast(err.message, "error");
+      } finally {
+        release.busy = false;
+        paintSearch();
+      }
+    }
+
     function paintEpisodes() {
       const items = itemsFor(activeSeason);
       paintSeasonActions();
-      if (!items.length) {
+      const expected = status && Number(status.active_season) === Number(activeSeason)
+        ? Number(status.expected_total || 0)
+        : 0;
+
+      const byEpisode = new Map();
+      const unnumbered = [];
+      let maxPresent = 0;
+      for (const item of items) {
+        const number = parseInt(item.episode_num, 10);
+        if (Number.isFinite(number) && number > 0) {
+          if (!byEpisode.has(number)) byEpisode.set(number, []);
+          byEpisode.get(number).push(item);
+          maxPresent = Math.max(maxPresent, number);
+        } else {
+          unnumbered.push(item);
+        }
+      }
+
+      const total = Math.max(expected, maxPresent);
+      const rows = [];
+      for (let episode = 1; episode <= total; episode += 1) {
+        const copies = byEpisode.get(episode);
+        if (copies && copies.length) {
+          rows.push(...copies.map(episodeRow));
+        } else {
+          rows.push(missingRow(episode));
+        }
+      }
+      rows.push(...unnumbered.map(episodeRow));
+
+      if (!rows.length) {
         listHost.replaceChildren(
           el("p", { class: "series__empty", text: `Belum ada episode Season ${activeSeason} di library.` })
         );
         return;
       }
-      listHost.replaceChildren(...items.map(episodeRow));
+      listHost.replaceChildren(...rows);
     }
 
     function paintAll() {
       paintTabs();
       paintStatus();
       paintEpisodes();
+      paintSearch();
     }
 
     function selectSeason(season) {
@@ -4340,6 +4698,10 @@
       if (next === Number(activeSeason) && status && Number(status.active_season) === next) return;
       activeSeason = next;
       status = null;
+      searchToken += 1;
+      searchState.loading = false;
+      searchState.data = null;
+      searchState.error = "";
       paintAll();
       loadStatus(next);
     }
@@ -4480,7 +4842,7 @@
               )
             )
           ),
-          el("div", { class: "series" }, seasonBar, statusLine, seasonActions, listHost)
+          el("div", { class: "series" }, seasonBar, statusLine, seasonActions, searchHost, listHost)
         )
       )
     );

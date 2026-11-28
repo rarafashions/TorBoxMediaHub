@@ -39,7 +39,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DF"  # single source of truth; templates render this
+APP_VERSION = "v1.3DG"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -2542,6 +2542,692 @@ def _search_public_nzb_candidates(
     return candidates
 
 
+_EPISODE_SEARCH_MAX_EPISODES = 24
+_EPISODE_SEARCH_TIMEOUT = 6
+_TVMAZE_TITLE_CACHE: Dict[str, Tuple[float, str]] = {}
+_TVMAZE_TITLE_TTL = 6 * 3600
+
+_SIZE_UNITS = {
+    "b": 1,
+    "kb": 1024,
+    "kib": 1024,
+    "mb": 1024 ** 2,
+    "mib": 1024 ** 2,
+    "gb": 1024 ** 3,
+    "gib": 1024 ** 3,
+    "tb": 1024 ** 4,
+    "tib": 1024 ** 4,
+}
+
+
+def _parse_size_bytes(raw: Any) -> Optional[int]:
+    """Parse "1.4 GB", "700 MiB" or a plain byte count into bytes."""
+    text = str(raw or "").strip().replace(",", ".")
+    if not text:
+        return None
+    if re.fullmatch(r"\d+", text):
+        value = int(text)
+        return value if value > 0 else None
+    match = re.match(r"^([\d.]+)\s*([a-zA-Z]+)$", text)
+    if not match:
+        return None
+    try:
+        number = float(match.group(1))
+    except ValueError:
+        return None
+    unit = _SIZE_UNITS.get(match.group(2).lower())
+    if not unit or number <= 0:
+        return None
+    return int(number * unit)
+
+
+def _release_quality_label(title: str) -> str:
+    score = _release_quality_score(title)
+    return f"{score}p" if score else ""
+
+
+def _episode_release_candidate(
+    kind: str,
+    source: str,
+    title: str,
+    episode: Optional[int] = None,
+    magnet: str = "",
+    nzb_url: str = "",
+    seeders: Any = None,
+    leechers: Any = None,
+    size_bytes: Any = None,
+    indexer: str = "",
+) -> Optional[Dict[str, Any]]:
+    clean_title = " ".join(str(title or "").split())[:300]
+    clean_magnet = str(magnet or "").strip()
+    clean_nzb = str(nzb_url or "").strip()
+    torrent_hash = _extract_infohash_from_magnet(clean_magnet) or ""
+    if kind == "torrent" and not torrent_hash:
+        return None
+    if kind == "usenet":
+        if not clean_nzb:
+            return None
+        torrent_hash = hashlib.md5(clean_title.encode("utf-8")).hexdigest().lower()
+
+    def _count(value: Any) -> Optional[int]:
+        try:
+            number = int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return number if number >= 0 else None
+
+    try:
+        ep_num = int(episode) if episode is not None else None
+    except (TypeError, ValueError):
+        ep_num = None
+    seeds = _count(seeders)
+    leech = _count(leechers)
+    return {
+        "kind": kind,
+        "source": source,
+        "indexer": indexer or source,
+        "title": clean_title,
+        "episode": ep_num,
+        "hash": torrent_hash,
+        "magnet": clean_magnet,
+        "nzb_url": clean_nzb,
+        "seeders": seeds,
+        "leechers": leech,
+        "peers": (seeds or 0) + (leech or 0) if (seeds is not None or leech is not None) else None,
+        "size": _parse_size_bytes(size_bytes),
+        "quality": _release_quality_label(clean_title),
+        "tags": _extract_quality_tags(clean_title),
+        "cached": False,
+    }
+
+
+_SECRET_QUERY_RE = re.compile(r"(?i)\b(apikey|api_key|token|key|pass|password)=([^&\s\"']+)")
+_RELEASE_MARKER_RE = re.compile(
+    r"(?i)\bS\d{1,2}E\d{1,3}\b|\bS\d{1,2}\b|\b(?:season|episode|ep)\s*\d{1,3}\b|\s-\s\d{1,4}\b"
+)
+_RELEASE_ALLOWED_EXTRA = {
+    "the", "a", "an", "of", "and", "season", "complete", "series", "part",
+    "movie", "nf", "nfs", "tv", "hd", "uk", "us", "au", "ca", "uncut", "uncensored",
+}
+
+
+def _release_show_matches(release_title: Any, query_title: Any) -> bool:
+    """Reject indexer hits for a different show whose name merely contains the query.
+
+    TPB/NZB search engines match tokens loosely, so "Dark" also returns
+    "Dark Matter 2024". Compare the show part (before SxxExx) against the query
+    and only allow small, known extras such as years or region tags.
+    """
+    text = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", str(release_title or ""))
+    marker = _RELEASE_MARKER_RE.search(text)
+    show = text[: marker.start()] if marker else text
+    show_tokens = [t for t in re.split(r"[^a-z0-9]+", show.lower()) if t]
+    query_tokens = [t for t in re.split(r"[^a-z0-9]+", str(query_title or "").lower()) if t]
+    if not show_tokens or not query_tokens:
+        return True
+    if not set(show_tokens) & set(query_tokens):
+        return False
+
+    def _allowed(token: str) -> bool:
+        return token in _RELEASE_ALLOWED_EXTRA or token.isdigit()
+
+    return all(_allowed(t) for t in set(show_tokens) - set(query_tokens)) and all(
+        _allowed(t) for t in set(query_tokens) - set(show_tokens)
+    )
+
+
+def _sanitize_error_text(value: Any, limit: int = 200) -> str:
+    """Keep indexer errors useful without leaking API keys or query tokens."""
+    text = str(value or "")
+    text = re.sub(r"https?://[^\s\"']+", lambda m: m.group(0).split("?")[0], text)
+    text = _SECRET_QUERY_RE.sub(lambda m: f"{m.group(1)}=***", text)
+    return " ".join(text.split())[:limit]
+
+
+def _tvmaze_series_title(series_title: str, category: str) -> Tuple[str, str]:
+    """Canonical search title: TVMaze for TV shows, library title otherwise."""
+    clean = (series_title or "").strip()
+    if not clean or category != "tv_show":
+        return clean, "library"
+    key = clean.lower()
+    now = time.time()
+    cached = _TVMAZE_TITLE_CACHE.get(key)
+    if cached and now - cached[0] < _TVMAZE_TITLE_TTL:
+        return cached[1], "tvmaze"
+    try:
+        response = meta_eng.HTTP_SESSION.get(
+            "https://api.tvmaze.com/singlesearch/shows",
+            params={"q": clean},
+            timeout=_EPISODE_SEARCH_TIMEOUT,
+        )
+        if response.status_code == 200:
+            name = str(response.json().get("name") or "").strip()
+            if name:
+                _TVMAZE_TITLE_CACHE[key] = (now, name)
+                return name, "tvmaze"
+    except Exception:
+        pass
+    return clean, "library"
+
+
+def _tpb_episode_candidates(query_title: str, season: int, episode: int) -> List[Dict[str, Any]]:
+    query = f"{query_title} S{int(season):02d}E{int(episode):02d}"
+    response = meta_eng.HTTP_SESSION.get(
+        "https://apibay.org/q.php", params={"q": query, "cat": "205"}, timeout=_EPISODE_SEARCH_TIMEOUT
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not isinstance(rows, list) or (rows and rows[0].get("name") == "No results returned"):
+        return []
+    out: List[Dict[str, Any]] = []
+    for row in rows[:12]:
+        info_hash = str(row.get("info_hash") or "").strip()
+        if not info_hash or set(info_hash) == {"0"}:
+            continue
+        name = str(row.get("name") or "")
+        if not _release_show_matches(name, query_title):
+            continue
+        _, parsed_ep = meta_eng._extract_season_episode(name)
+        candidate = _episode_release_candidate(
+            "torrent",
+            "TPB",
+            name,
+            episode=parsed_ep,
+            magnet=f"magnet:?xt=urn:btih:{info_hash.lower()}&dn={quote_plus(name)}",
+            seeders=row.get("seeders"),
+            leechers=row.get("leechers"),
+            size_bytes=row.get("size"),
+        )
+        if candidate:
+            out.append(candidate)
+    return out
+
+
+def _nyaa_episode_candidates(query_title: str, season: int, episode: int) -> List[Dict[str, Any]]:
+    queries = [f"{query_title} S{int(season):02d}E{int(episode):02d}", f"{query_title} {int(episode):02d}"]
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    for query in queries:
+        try:
+            response = meta_eng.HTTP_SESSION.get(
+                f"https://nyaa.si/?page=rss&q={quote_plus(query)}&c=1_0&f=0",
+                timeout=_EPISODE_SEARCH_TIMEOUT,
+            )
+            if response.status_code != 200 or "<item>" not in response.text:
+                continue
+            soup = BeautifulSoup(response.text, "xml")
+        except Exception:
+            continue
+        for item in soup.find_all("item")[:10]:
+            title_tag = item.find("title")
+            info_tag = item.find("nyaa:infoHash")
+            name = title_tag.get_text(strip=True) if title_tag else ""
+            info_hash = info_tag.get_text(strip=True) if info_tag else ""
+            if not info_hash or info_hash.lower() in seen:
+                continue
+            seen.add(info_hash.lower())
+            _, parsed_ep = meta_eng._extract_season_episode(name)
+            seeders = item.find("nyaa:seeders")
+            leechers = item.find("nyaa:leechers")
+            size = item.find("nyaa:size")
+            candidate = _episode_release_candidate(
+                "torrent",
+                "Nyaa",
+                name,
+                episode=parsed_ep,
+                magnet=f"magnet:?xt=urn:btih:{info_hash.lower()}&dn={quote_plus(name)}",
+                seeders=seeders.get_text(strip=True) if seeders else None,
+                leechers=leechers.get_text(strip=True) if leechers else None,
+                size_bytes=size.get_text(strip=True) if size else None,
+            )
+            if candidate:
+                out.append(candidate)
+        if out:
+            break
+    return out
+
+
+def _eztv_episode_candidates(imdb_id: Optional[str], season: int, episodes: List[int]) -> List[Dict[str, Any]]:
+    if not imdb_id or not str(imdb_id).startswith("tt"):
+        return []
+    wanted = set(int(ep) for ep in episodes)
+    response = meta_eng.HTTP_SESSION.get(
+        f"https://eztvx.to/api/get-torrents?imdb_id={str(imdb_id)[2:]}&limit=100",
+        timeout=_EPISODE_SEARCH_TIMEOUT,
+    )
+    response.raise_for_status()
+    out: List[Dict[str, Any]] = []
+    for torrent in response.json().get("torrents") or []:
+        try:
+            t_season = int(torrent.get("season") or 0)
+            t_episode = int(torrent.get("episode") or 0)
+        except (TypeError, ValueError):
+            continue
+        if t_season != int(season) or t_episode not in wanted:
+            continue
+        name = str(torrent.get("title") or torrent.get("filename") or "")
+        info_hash = str(torrent.get("hash") or "").strip()
+        magnet = str(torrent.get("magnet_url") or "").strip()
+        if not magnet and info_hash:
+            magnet = f"magnet:?xt=urn:btih:{info_hash.lower()}&dn={quote_plus(name)}"
+        try:
+            seeds = int(torrent.get("seeds") or 0)
+            peers = int(torrent.get("peers") or 0)
+        except (TypeError, ValueError):
+            seeds, peers = 0, 0
+        candidate = _episode_release_candidate(
+            "torrent",
+            "EZTV",
+            name,
+            episode=t_episode,
+            magnet=magnet,
+            seeders=seeds,
+            leechers=max(0, peers - seeds),
+            size_bytes=torrent.get("size_bytes"),
+        )
+        if candidate:
+            out.append(candidate)
+    return out
+
+
+def _torrentio_episode_candidates(stremio_id: str, season: int, episode: int) -> List[Dict[str, Any]]:
+    url = f"https://torrentio.strem.fun/stream/series/{stremio_id}:{int(season)}:{int(episode)}.json"
+    response = meta_eng.HTTP_SESSION.get(url, timeout=_EPISODE_SEARCH_TIMEOUT)
+    response.raise_for_status()
+    out: List[Dict[str, Any]] = []
+    for stream in (response.json().get("streams") or [])[:10]:
+        info_hash = str(stream.get("infoHash") or "").strip()
+        if not info_hash:
+            continue
+        detail = str(stream.get("title") or stream.get("name") or "")
+        seeds_match = re.search(r"👤\s*(\d+)", detail)
+        size_match = re.search(r"💾\s*([\d.]+\s*[KMGT]i?B)", detail, re.I)
+        candidate = _episode_release_candidate(
+            "torrent",
+            "Torrentio",
+            detail or f"{stremio_id} S{int(season):02d}E{int(episode):02d}",
+            episode=episode,
+            magnet=f"magnet:?xt=urn:btih:{info_hash.lower()}&dn={quote_plus(detail[:200])}",
+            seeders=seeds_match.group(1) if seeds_match else None,
+            size_bytes=size_match.group(1) if size_match else None,
+        )
+        if candidate:
+            out.append(candidate)
+    return out
+
+
+def _nzbindex_episode_candidates(query_title: str, season: int, episode: int) -> List[Dict[str, Any]]:
+    query = f"{query_title} S{int(season):02d}E{int(episode):02d}"
+    response = meta_eng.HTTP_SESSION.get(
+        f"https://nzbindex.com/rss/?q={quote_plus(query)}&sort=agedesc&max=10",
+        timeout=_EPISODE_SEARCH_TIMEOUT,
+    )
+    if response.status_code != 200 or "<item>" not in response.text:
+        return []
+    soup = BeautifulSoup(response.text, "xml")
+    out: List[Dict[str, Any]] = []
+    for item in soup.find_all("item")[:10]:
+        title_tag = item.find("title")
+        name = title_tag.get_text(strip=True) if title_tag else ""
+        enclosure = item.find("enclosure")
+        link_tag = item.find("link")
+        nzb_url = (
+            str(enclosure.get("url") or "").strip()
+            if enclosure
+            else (link_tag.get_text(strip=True) if link_tag else "")
+        )
+        if not name or not nzb_url:
+            continue
+        if not _release_show_matches(name, query_title):
+            continue
+        size_bytes = str(enclosure.get("length") or "").strip() if enclosure else None
+        for tag in item.find_all(True):
+            local_name = str(tag.name or "").split(":")[-1]
+            attr_name = str(tag.get("name") or "").lower()
+            if local_name == "attr" and attr_name in ("size", "usenetrage", "filesize"):
+                size_bytes = tag.get("value") or size_bytes
+                break
+        _, parsed_ep = meta_eng._extract_season_episode(name)
+        candidate = _episode_release_candidate(
+            "usenet",
+            "NZBIndex",
+            name,
+            episode=parsed_ep,
+            nzb_url=nzb_url,
+            size_bytes=size_bytes,
+        )
+        if candidate:
+            out.append(candidate)
+    return out
+
+
+def _nzbgeek_episode_candidates(
+    query_title: str, season: int, episode: int, api_key: str
+) -> List[Dict[str, Any]]:
+    query = f"{query_title} S{int(season):02d}E{int(episode):02d}"
+    response = meta_eng.HTTP_SESSION.get(
+        "https://api.nzbgeek.info/api",
+        params={"t": "search", "q": query, "apikey": api_key, "o": "json", "limit": "20"},
+        timeout=_EPISODE_SEARCH_TIMEOUT,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    channel = payload.get("channel")
+    items = (channel or {}).get("item") if isinstance(channel, dict) else None
+    if not items:
+        items = payload.get("item") or []
+    if isinstance(items, dict):
+        items = [items]
+    out: List[Dict[str, Any]] = []
+    for item in items[:12]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("title") or "").strip()
+        nzb_url = str(item.get("link") or item.get("guid") or "").strip()
+        size_bytes = item.get("size")
+        for attr in item.get("attr") or []:
+            if isinstance(attr, dict) and str(attr.get("name") or "").lower() in ("size", "usenetrage", "filesize"):
+                size_bytes = attr.get("value") or size_bytes
+        if not name or not nzb_url:
+            continue
+        if not _release_show_matches(name, query_title):
+            continue
+        _, parsed_ep = meta_eng._extract_season_episode(name)
+        candidate = _episode_release_candidate(
+            "usenet",
+            "NZBGeek",
+            name,
+            episode=parsed_ep,
+            nzb_url=nzb_url,
+            size_bytes=size_bytes,
+        )
+        if candidate:
+            out.append(candidate)
+    return out
+
+
+def _check_cached_hashes_chunked(api_key: str, kind: str, hashes: List[str]) -> set:
+    unique = list(dict.fromkeys(h for h in hashes if h))[:200]
+    cached: set = set()
+    for index in range(0, len(unique), 25):
+        cached |= _check_torbox_cached_hashes(api_key, kind, unique[index:index + 25])
+    return cached
+
+
+def _search_episode_release_candidates(
+    series_title: str,
+    category: str,
+    season: int,
+    episodes: List[int],
+    tmdb_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Aggregate cached TorBox, public indexers and Roxxy for missing episodes."""
+    settings = db.get_settings()
+    torbox_api_key = (settings.get("torbox_api_key") or "").strip()
+    nzbgeek_key = (settings.get("nzbgeek_api_key") or "").strip()
+    query_title, title_source = _tvmaze_series_title(series_title, category)
+
+    wanted = sorted({int(ep) for ep in episodes if str(ep).strip().isdigit() and int(ep) > 0})
+    truncated = len(wanted) > _EPISODE_SEARCH_MAX_EPISODES
+    target_eps = wanted[:_EPISODE_SEARCH_MAX_EPISODES]
+
+    imdb_id = _resolve_imdb_id_from_tmdb(
+        int(tmdb_id) if tmdb_id else None,
+        (settings.get("tmdb_api_key") or "").strip(),
+        media_type="tv",
+    ) if tmdb_id else None
+
+    sources: Dict[str, Dict[str, Any]] = {
+        "torbox_cache": {
+            "key": "torbox_cache",
+            "label": "TorBox cache",
+            "kind": "cache",
+            "state": "ok" if torbox_api_key else "unconfigured",
+            "count": 0,
+            "error": "",
+            "note": "" if torbox_api_key else "TorBox API key belum diatur; status cached tidak dapat diperiksa.",
+        },
+        "tpb": {"key": "tpb", "label": "The Pirate Bay (APIBay)", "kind": "torrent", "state": "idle", "count": 0, "error": ""},
+        "eztv": {"key": "eztv", "label": "EZTV", "kind": "torrent", "state": "idle", "count": 0, "error": ""},
+        "torrentio": {"key": "torrentio", "label": "Torrentio", "kind": "torrent", "state": "idle", "count": 0, "error": ""},
+        "nyaa": {"key": "nyaa", "label": "Nyaa", "kind": "torrent", "state": "idle", "count": 0, "error": ""},
+        "nzbindex": {"key": "nzbindex", "label": "NZBIndex (gratis)", "kind": "usenet", "state": "idle", "count": 0, "error": ""},
+        "nzbgeek": {
+            "key": "nzbgeek",
+            "label": "NZBGeek (premium)",
+            "kind": "usenet",
+            "state": "ok" if nzbgeek_key else "unconfigured",
+            "count": 0,
+            "error": "",
+            "note": "" if nzbgeek_key else "NZBGeek adalah indexer NZB premium berbayar; tambahkan API key di Pengaturan → API keys.",
+        },
+    }
+    if category in ("anime", "donghua"):
+        sources["roxxy"] = {
+            "key": "roxxy",
+            "label": "Roxxy (Donghua)",
+            "kind": "torrent",
+            "state": "idle",
+            "count": 0,
+            "error": "",
+        }
+    else:
+        sources["roxxy"] = {
+            "key": "roxxy",
+            "label": "Roxxy",
+            "kind": "torrent",
+            "state": "skipped",
+            "count": 0,
+            "error": "",
+            "note": "Roxxy hanya dipakai untuk Anime dan Donghua.",
+        }
+
+    jobs: List[Tuple[str, Any]] = []
+    if category not in ("anime", "donghua"):
+        sources["nyaa"]["state"] = "skipped"
+        sources["nyaa"]["note"] = "Nyaa dipakai untuk Anime dan Donghua."
+    stremio_id = imdb_id or (f"tmdb:{int(tmdb_id)}" if tmdb_id else "")
+    if not stremio_id:
+        sources["torrentio"]["state"] = "skipped"
+        sources["torrentio"]["note"] = "Butuh TMDb/IMDb ID untuk Torrentio."
+    if not imdb_id:
+        sources["eztv"]["state"] = "skipped"
+        sources["eztv"]["note"] = "Butuh IMDb ID untuk EZTV."
+    for episode in target_eps:
+        jobs.append(("tpb", lambda ep=episode: _tpb_episode_candidates(query_title, season, ep)))
+        jobs.append(("nzbindex", lambda ep=episode: _nzbindex_episode_candidates(query_title, season, ep)))
+        if category in ("anime", "donghua"):
+            jobs.append(("nyaa", lambda ep=episode: _nyaa_episode_candidates(query_title, season, ep)))
+        if nzbgeek_key:
+            jobs.append(("nzbgeek", lambda ep=episode: _nzbgeek_episode_candidates(query_title, season, ep, nzbgeek_key)))
+        if stremio_id:
+            jobs.append(("torrentio", lambda ep=episode, sid=stremio_id: _torrentio_episode_candidates(sid, season, ep)))
+    if imdb_id:
+        jobs.append(("eztv", lambda: _eztv_episode_candidates(imdb_id, season, target_eps)))
+
+    candidates: List[Dict[str, Any]] = []
+    roxxy_holder: Dict[str, Any] = {"result": {}}
+    if category in ("anime", "donghua"):
+        from roxxy_module import search_episode_releases
+
+        def _roxxy_job() -> List[Dict[str, Any]]:
+            roxxy_holder["result"] = search_episode_releases(series_title, season, target_eps, source="donghua")
+            return []
+
+        jobs.append(("roxxy", _roxxy_job))
+
+    errors_by_source: Dict[str, str] = {}
+    if jobs:
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            futures = {}
+            for key, job in jobs:
+                futures[pool.submit(job)] = key
+            for future in as_completed(futures):
+                key = futures[future]
+                try:
+                    rows = future.result() or []
+                except Exception as exc:
+                    errors_by_source.setdefault(key, _sanitize_error_text(exc))
+                    continue
+                candidates.extend(rows)
+
+    roxxy_result: Dict[str, Any] = roxxy_holder["result"] or {}
+    if category in ("anime", "donghua"):
+        for candidate in roxxy_result.get("candidates") or []:
+            normalized = _episode_release_candidate(
+                candidate.get("kind") or "torrent",
+                candidate.get("source") or "Roxxy",
+                candidate.get("title") or "",
+                episode=candidate.get("episode"),
+                magnet=candidate.get("magnet") or "",
+                nzb_url=candidate.get("nzb_url") or "",
+                indexer=candidate.get("indexer") or "",
+            )
+            if normalized:
+                candidates.append(normalized)
+        sources["roxxy"].update(
+            state="ok" if roxxy_result.get("ok") else "error",
+            count=len(roxxy_result.get("candidates") or []),
+            error=_sanitize_error_text(roxxy_result.get("error") or "", 300),
+        )
+        direct = int(roxxy_result.get("direct_streams") or 0)
+        if direct:
+            sources["roxxy"]["note"] = f"{direct} stream direct (bukan magnet/NZB) dilewati; buka Roxxy untuk memutar."
+    elif not jobs:
+        sources["roxxy"]["state"] = "skipped"
+
+    source_keys = {
+        "tpb": {"TPB"},
+        "eztv": {"EZTV"},
+        "torrentio": {"Torrentio"},
+        "nyaa": {"Nyaa"},
+        "nzbindex": {"NZBIndex"},
+        "nzbgeek": {"NZBGeek"},
+        "roxxy": {"Roxxy Donghua", "Roxxy (Donghua)"},
+    }
+    for key, status in sources.items():
+        if key in ("torbox_cache", "roxxy"):
+            continue
+        if key == "nzbgeek" and not nzbgeek_key:
+            continue
+        if status["state"] in ("unconfigured", "skipped"):
+            continue
+        found = sum(1 for c in candidates if c.get("source") in source_keys.get(key, set()))
+        if key in errors_by_source:
+            status["state"] = "error"
+            status["error"] = errors_by_source[key]
+        elif found:
+            status["state"] = "ok"
+            status["count"] = found
+        else:
+            status["state"] = "empty"
+
+    # Unique by source/hash/title, keeping the row that first found it.
+    seen: set = set()
+    unique_candidates: List[Dict[str, Any]] = []
+    for candidate in candidates:
+        key = (candidate.get("kind"), candidate.get("hash"), candidate.get("episode"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_candidates.append(candidate)
+
+    cached_torrents = _check_cached_hashes_chunked(
+        torbox_api_key, "torrent", [c["hash"] for c in unique_candidates if c["kind"] == "torrent" and c.get("hash")]
+    ) if torbox_api_key else set()
+    user_info = _get_torbox_user_info(torbox_api_key) if torbox_api_key else {"is_pro": False, "plan": 0}
+    cached_usenet = (
+        _check_cached_hashes_chunked(
+            torbox_api_key, "usenet", [c["hash"] for c in unique_candidates if c["kind"] == "usenet" and c.get("hash")]
+        )
+        if torbox_api_key and user_info.get("is_pro")
+        else set()
+    )
+    for candidate in unique_candidates:
+        if candidate["kind"] == "torrent":
+            candidate["cached"] = candidate["hash"] in cached_torrents
+        else:
+            # Usenet cache is keyed on the NZB file hash, but indexer results only
+            # give a title. A match means cached; otherwise the state is unknown.
+            candidate["cached"] = True if candidate["hash"] in cached_usenet else None
+    sources["torbox_cache"]["count"] = sum(1 for c in unique_candidates if c["cached"] is True)
+    usenet_unknown = sum(1 for c in unique_candidates if c["kind"] == "usenet" and c["cached"] is None)
+    if usenet_unknown:
+        note = "Status cache NZB tidak dapat dipastikan (TorBox memakai hash file NZB, bukan judul)."
+        existing = sources["torbox_cache"].get("note") or ""
+        sources["torbox_cache"]["note"] = f"{existing} {note}".strip()
+    if torbox_api_key and not user_info.get("is_pro"):
+        sources["torbox_cache"]["note"] = "TorBox Standard: cache Usenet/NZB tidak diperiksa (butuh Pro)."
+
+    unique_candidates.sort(
+        key=lambda c: (
+            0 if c.get("cached") else 1,
+            -(c.get("seeders") or 0),
+            -_release_quality_score(c.get("title") or ""),
+            -(c.get("size") or 0),
+            c.get("title") or "",
+        )
+    )
+
+    buckets: Dict[int, List[Dict[str, Any]]] = {ep: [] for ep in target_eps}
+    packs: List[Dict[str, Any]] = []
+    for candidate in unique_candidates:
+        episode = candidate.get("episode")
+        if episode in buckets:
+            buckets[episode].append(candidate)
+        else:
+            packs.append(candidate)
+
+    episode_rows = [
+        {"episode": ep, "candidates": buckets[ep], "cached_count": sum(1 for c in buckets[ep] if c["cached"])}
+        for ep in target_eps
+    ]
+    if packs:
+        episode_rows.append({
+            "episode": None,
+            "label": "Paket season / tanpa nomor episode",
+            "candidates": packs,
+            "cached_count": sum(1 for c in packs if c["cached"]),
+        })
+
+    notes: List[str] = []
+    if title_source == "tvmaze" and query_title.lower() != series_title.strip().lower():
+        notes.append(f"Judul pencarian memakai nama TVMaze: {query_title}.")
+    if truncated:
+        notes.append(f"Pencarian dibatasi {_EPISODE_SEARCH_MAX_EPISODES} episode per permintaan.")
+    if not nzbgeek_key:
+        notes.append("NZBGeek (premium) belum dikonfigurasi. Indexer NZB gratis sering kosong untuk episode baru; torrent publik juga bisa sepi seed.")
+    if category not in ("anime", "donghua"):
+        notes.append("Roxxy tidak dipakai untuk kategori ini.")
+
+    return {
+        "ok": True,
+        "series_title": series_title,
+        "query_title": query_title,
+        "title_source": title_source,
+        "category": category,
+        "season": int(season),
+        "episodes": episode_rows,
+        "candidates": unique_candidates,
+        "cached_count": sum(1 for c in unique_candidates if c.get("cached")),
+        "total_checked": len(unique_candidates),
+        "torbox": {
+            "configured": bool(torbox_api_key),
+            "is_pro": bool(user_info.get("is_pro")),
+            "plan": user_info.get("plan", 0),
+        },
+        "sources": list(sources.values()),
+        "notes": notes,
+        "truncated": truncated,
+        "roxxy": {
+            "ok": bool(roxxy_result.get("ok")),
+            "catalogs": roxxy_result.get("catalogs", 0),
+            "metas": roxxy_result.get("metas", 0),
+            "error": _sanitize_error_text(roxxy_result.get("error", ""), 300),
+        } if category in ("anime", "donghua") else None,
+    }
+
+
 def _check_torbox_cached_hashes(api_key: str, kind: str, hashes: List[str]) -> set:
     """Queries TorBox /torrents/checkcached or /usenet/checkcached and returns set of cached hashes."""
     cached = set()
@@ -3127,10 +3813,11 @@ def api_series_episodes_status():
 
     is_complete = bool(expected_total > 0 and len(missing_episodes) == 0 and len(present_ep_nums) >= expected_total)
     status_message = (
-        f"Anda memiliki full episode Season {active_season} ({len(present_ep_nums)}/{expected_total} Episodes)"
+        f"Season {active_season}: Episode lengkap ({len(present_ep_nums)}/{expected_total})"
         if is_complete
         else (
-            f"Season {active_season}: {len(present_ep_nums)}/{expected_total} Episodes tersedia ({len(missing_episodes)} missing)"
+            f"Season {active_season}: {len(present_ep_nums)}/{expected_total} episode tersedia · "
+            f"{len(missing_episodes)} belum ada"
             if expected_total > 0
             else f"Season {active_season}: {len(season_items)} video tersedia di library"
         )
@@ -3223,6 +3910,50 @@ def api_series_check_torbox_cache():
             "results": results[:20],
         }
     )
+
+
+@app.route("/api/series/episode-search", methods=["POST"])
+def api_series_episode_search():
+    """Search TorBox cache, public indexers and Roxxy for missing episodes."""
+    payload = request.get_json(silent=True) or {}
+    series_title = (payload.get("series_title") or "").strip()
+    category = (payload.get("category") or "tv_show").strip().lower()
+    season = payload.get("season")
+    raw_episodes = payload.get("episodes")
+
+    if not series_title:
+        return jsonify({"ok": False, "error": "series_title is required."}), 400
+    if category not in ("tv_show", "anime", "donghua"):
+        return jsonify({"ok": False, "error": "Kategori pencarian hanya untuk Serial TV, Anime, atau Donghua."}), 400
+    try:
+        season_num = int(season or 1)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Season tidak valid."}), 400
+    if season_num < 1:
+        return jsonify({"ok": False, "error": "Season tidak valid."}), 400
+    if not isinstance(raw_episodes, list) or not raw_episodes:
+        return jsonify({"ok": False, "error": "Daftar episode yang dicari kosong."}), 400
+    episodes: List[int] = []
+    for value in raw_episodes:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "error": "Nomor episode tidak valid."}), 400
+        if number < 1:
+            return jsonify({"ok": False, "error": "Nomor episode tidak valid."}), 400
+        if number not in episodes:
+            episodes.append(number)
+
+    started = time.time()
+    tmdb_id = payload.get("tmdb_id")
+    try:
+        tmdb_id = int(tmdb_id) if tmdb_id else None
+    except (TypeError, ValueError):
+        tmdb_id = None
+
+    result = _search_episode_release_candidates(series_title, category, season_num, episodes, tmdb_id=tmdb_id)
+    result["elapsed_ms"] = int((time.time() - started) * 1000)
+    return jsonify(result)
 
 
 def _validate_usenet_link(raw_url: str) -> Tuple[bool, str]:
