@@ -2,8 +2,8 @@
 
 **Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
 **Tanggal:** 28 November 2026
-**Versi acuan:** `v1.3DL`
-**Baseline tes:** `529 passed, 141 subtests passed`
+**Versi acuan:** `v1.3DM`
+**Baseline tes:** `534 passed, 185 subtests passed`
 
 ---
 
@@ -579,6 +579,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | `POST /api/adult/streams` URL XVideos (koreksi A6) | 2 stream; kartu generik `embedframe` tergantikan oleh halaman asli (`title`, poster, durasi **417 s**) |
 | `GET /` instance verifikasi | marka `Monitor Unduhan`, `Auto-add Library`, `adult-provider-health`, `adult-detail-synopsis`, `adult-download-empty` semua ada |
 | Playwright port 5055 (tema Roxxy `v1.3DL`) | kanvas `rgb(5,7,11)`, panel `.roxxy-panel` blur 18 px, drawer 448 px `rgb(10,15,26)`, tab Semua→Lokal beralih, Escape menutup drawer |
+| Playwright port 5056 (`/v2#/discover`, `v1.3DM`) | 50 kartu Film tanpa error konsol, gate adult lalu 60 item, sheet adult memuat sinopsis/tag/tombol WebDL, panel detail menampilkan 4 aksi kurasi, sheet rilis merender 2 baris mock (1 CACHED + 1 UNCACHED) |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 
@@ -588,9 +589,11 @@ Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app liv
 
 | Tahap | Isi | Ketergantungan |
 |---|---|---|
-| **1** | Discovery di v2 (mainstream + adult), hapus fisik, edit manual + klasifikasi, poster manual | A1–A4 menyuplai API adult |
+| **1** | Discovery di v2 (mainstream + adult), hapus fisik, edit manual + klasifikasi, poster manual — **selesai `v1.3DM`** | A1–A4 menyuplai API adult |
 | **2** | Audit subtitle + filter kualitas, remote M3U per item, scope playlist | Tidak bergantung adult |
 | **3** | `/` diarahkan ke v2, UI lama di `/legacy` | Semua di atas |
+
+**Status Tahap 1 (`v1.3DM`):** view `/v2#/discover` memuat film/serial/anime/donghua dari `/api/discover` dan tab English Adult bergate dari `/api/adult/*`; sheet rilis memakai `search-cache` + `add-cached`, sedangkan WebDL adult memakai `/api/adult/webdl`. Panel detail v2 sekarang punya aksi **Edit metadata**, **Klasifikasi**, **Poster**, dan **Hapus fisik** lewat route media lama. Tidak ada endpoint baru dan discovery legacy di `/` tetap utuh. Verifikasi Playwright di port 5056 (salinan DB): 50 kartu Film, 60 item adult, sheet rilis dengan dua baris mock, keempat aksi kurasi terbuka.
 
 Urutan yang disarankan: **A1 → A2 → A3 → A4 → A5(legacy) → Tahap 1 (v2 Discovery + kurasi) → Tahap 2 → Tahap 3.** Dengan begitu Discovery adult sudah bisa dipakai sebelum wajah v2 diubah.
 

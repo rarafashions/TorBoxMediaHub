@@ -1,8 +1,8 @@
 # Dokumentasi Lengkap — TorBox Media Hub
 
-**Versi aplikasi:** `v1.3DH`  
+**Versi aplikasi:** `v1.3DM`  
 **Status dokumen:** 28 November 2026  
-**Baseline tes:** `python -m pytest tests -q --no-header` → **425 passed, 63 subtests passed**
+**Baseline tes:** `python -m pytest tests -q --no-header` → **534 passed, 185 subtests passed**
 
 Dokumen ini menjelaskan aplikasi secara menyeluruh: fitur, cara menjalankan untuk pengguna baru, konfigurasi, mesin internal, keamanan, batasan, dan pemecahan masalah. Untuk catatan rilis dan keputusan pengembangan, lihat [`CATATAN_VERSI_PENGEMBANGAN.md`](CATATAN_VERSI_PENGEMBANGAN.md). Untuk draf README GitHub, lihat [`README_GITHUB_DRAFT.md`](README_GITHUB_DRAFT.md).
 
@@ -249,9 +249,9 @@ Konfigurasi Video Feeds terpisah: buka `/roxxy` → **Pengaturan** → tempel ma
 | | UI lama `/` | UI v2 `/v2` |
 |---|---|---|
 | Gaya | Tailwind single-page, padat | Netflix/Prime-style, `static/ui/*` tanpa framework |
-| Navigasi | Library, Discovery, Settings & DB | Beranda, Library, Serial, Playlist, Unduhan, Statistik, Pengaturan |
-| Discovery | Modal penuh 4 kategori | Tidak ada tab; pintasan membuka `/?discover=1` |
-| Detail | Modal lengkap: edit manual, preview/apply klasifikasi, riwayat, hapus fisik, poster manual, audit subtitle | Panel detail: putar, tonton, rating, subtitle EN/ID, enrich, poster retry, playlist |
+| Navigasi | Library, Discovery, Settings & DB | Beranda, Discovery, Library, Serial, Playlist, Unduhan, Statistik, Pengaturan |
+| Discovery | Modal penuh 4 kategori | View Discovery: 4 kategori + tab English Adult 18+ |
+| Detail | Modal lengkap: edit manual, preview/apply klasifikasi, riwayat, hapus fisik, poster manual, audit subtitle | Panel detail: putar, tonton, rating, subtitle EN/ID, enrich, poster retry, playlist, **kurasi (edit metadata, klasifikasi, poster, hapus fisik)** |
 | Serial | Kartu/grup + flat episode | Kartu serial + panel season dengan pencarian episode dan progres unduhan |
 | Status | Fitur terlengkap untuk kurasi data | Fitur harian dan pemantauan |
 
@@ -265,7 +265,7 @@ Keduanya memakai API, database, dan mesin yang sama. Route lama tidak diubah; v2
 
 - **Billboard** untuk satu item pilihan dengan poster latar dan aksi **Putar**.
 - **Strip statistik**: total item, cloud/lokal, sudah ditonton, punya subtitle, jumlah playlist. Klik kartu membuka filter terkait.
-- **Pintasan**: Library lengkap, Serial & episode, Playlist, Pusat unduhan, Discovery (UI lama), Video Feeds.
+- **Pintasan**: Library lengkap, Serial & episode, Playlist, Pusat unduhan, Discovery (v2), Video Feeds.
 - **Rail**: Baru Ditambahkan, Belum Ditonton, Rating Tertinggi, lalu satu rail per kategori yang memiliki isi.
 
 ### 6.2 Library
@@ -385,7 +385,15 @@ Enam panel:
 5. **Lingkungan** — platform, Python, mode headless/docker, ffmpeg/ffprobe, URL LAN, data dir.
 6. **Database & cache** — backup, maintenance/VACUUM, reset metadata & poster, hapus semua media (dengan konfirmasi), daftar backup dan restore.
 
-### 6.8 Discovery Hub (UI lama)
+### 6.8 Discovery (v2)
+
+Route `#/discover`, tombol nav **Discovery**. Dua tab:
+
+- **Film & Serial** — empat kategori: **Film**, **Serial TV**, **Anime**, **Donghua** (kategori adult/Indo tetap ditolak `400`). Urutan **Trending/Populer/Rating** memakai `GET /api/discover`; kotak pencarian memakai `feed=search`.
+- Kartu membuka sheet detail (poster, sinopsis, tahun/rating, jumlah episode). Tombol **Cari rilis** memanggil `POST /api/discover/search-cache` dengan `query`, `category`, `tmdb_id`, `year`, dan `season`/`episode` untuk serial; hasil menampilkan badge **CACHED/UNCACHED**, sumber, dan tombol **Tambahkan** (`POST /api/torbox/add-cached` + `delete_remote_on_replace`). Pencarian tidak dijalankan otomatis karena satu query indexer butuh puluhan detik.
+- **English Adult 18+** — gate sekali per browser (`tbh_adult_v2_gate`) sebelum katalog tampil. Sumber dan status diambil dari `GET /api/adult/providers`; katalog dari `GET /api/adult/feed`/`GET /api/adult/search` (kata kunci minimal 2 karakter). Detail membaca cover, sinopsis, dan durasi dari halaman provider (`GET /api/adult/detail`, `POST /api/adult/streams`), dengan TPDB sebagai pelengkap. Tombol **Simpan ke TorBox Cloud (WebDL)** memakai `POST /api/adult/webdl` (batas 100 GB per tautan) dan hasilnya masuk Library lewat auto-add.
+
+### 6.9 Discovery Hub (UI lama)
 
 - Empat kategori: **Movies**, **TV Shows**, **Anime**, **Donghua**. Kategori adult/Indo ditolak `400` dan ditangani di Video Feeds.
 - Mode: Trending, Popular, Top Rated, Search.
@@ -818,7 +826,7 @@ python -m pytest tests -q --no-header
 9. **WebDL bergantung pada dukungan TorBox** dan extractor yt-dlp; provider/hoster tertentu ditolak.
 10. **Usenet butuh TorBox Pro**; fitur NZBIndex/NZBGeek dan cache Usenet tidak berfungsi penuh di paket gratis.
 11. **`indo_movie` tidak di-enrich otomatis** dan tidak masuk pencarian subtitle otomatis.
-12. **UI v2 belum punya editor manual/klasifikasi/hapus fisik**; gunakan UI lama untuk kurasi mendalam.
+12. **Audit subtitle dan riwayat klasifikasi** masih di UI lama. Kurasi inti (edit metadata, klasifikasi, poster, hapus fisik) sudah tersedia di panel detail v2.
 13. **Manifest Roxxy bergantung pihak ketiga.** Bila addon berubah/mati, katalog dan stream ikut terpengaruh.
 14. **Kualitas klasifikasi bergantung nama file/folder.** Penamaan yang buruk dapat menghasilkan `needs_review`.
 
@@ -828,7 +836,7 @@ python -m pytest tests -q --no-header
 
 Ringkasan uji yang disarankan setelah instalasi/restart (antrean unduhan harus kosong):
 
-- Buka `/v2`: tujuh tab tampil, tidak ada scrollbar horizontal di 1024 px, navbar tidak menutupi judul.
+- Buka `/v2`: delapan tab tampil; pada layar sempit daftar tab digeser di dalam nav (tanpa scrollbar halaman), navbar tidak menutupi judul.
 - Library: chip kategori, enam filter, sort, mode pilih, bulk tonton/putar.
 - Detail film dan serial: rating, subtitle ID/EN, tambah/hapus playlist, Escape, tombol Back, deep link `#media-<id>`.
 - Serial: tab season, episode hilang, **Cari episode**, hasil dengan seed/leech/ukuran, **+ TorBox**, tray progres, toast impor, baris berubah **Putar**, completeness naik.
@@ -836,7 +844,9 @@ Ringkasan uji yang disarankan setelah instalasi/restart (antrean unduhan harus k
 - `/roxxy`: lima sumber (bila dikonfigurasi), cari semua katalog, filter katalog vs genre, analisis stream otomatis, badge IN LIBRARY.
 - Unduhan lokal: satu job selesai, satu gagal lalu **Coba ulang**, **Bersihkan** tidak membuang job aktif/registrasi.
 - WebDL: satu provider didukung berhasil; Spotify/Keep2Share ditolak dengan pesan jelas.
-- Discovery: hanya empat tab; `category=jav/english_adult/indo` → `400`.
+- Discovery (v2, `#/discover`): 50 kartu per feed, chip kategori/urutan berpindah, sheet detail menampilkan sinopsis, **Cari rilis** menampilkan CACHED/UNCACHED dan **Tambahkan**. Tab **English Adult 18+** meminta konfirmasi sekali, lalu memuat feed; sheet adult menampilkan cover/sinopsis/durasi dan tombol **Simpan ke TorBox Cloud (WebDL)**.
+- Kurasi v2: dari panel detail, **Edit metadata** menyimpan perubahan, **Klasifikasi** menampilkan pratinjau lalu menyimpan, **Poster** menerima URL manual, dan **Hapus fisik** meminta konfirmasi sebelum menghapus.
+- Discovery lama: hanya empat tab; `category=jav/english_adult/indo` → `400`.
 - Pengaturan: simpan tanpa perubahan, ganti folder, ganti manifest; tidak ada token di pesan.
 - Backup DB, restore, maintenance, reset metadata, hapus semua media (di lingkungan uji).
 - Restart saat idle: `/v2` 200, log tidak memuat traceback, `download-status` 400 tanpa judul dan 200 dengan judul.

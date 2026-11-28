@@ -63,6 +63,29 @@
       indonesian: true,
       keyDrafts: { torbox: "", tmdb: "", tpdb: "", nzbgeek: "" },
     },
+    discover: {
+      tab: "mainstream",
+      category: "general_movie",
+      feed: "trending",
+      q: "",
+      items: [],
+      loading: false,
+      error: "",
+      loadedKey: "",
+      adultApproved: false,
+      adultProviders: [],
+      adultModes: [],
+      adultProvider: "all",
+      adultMode: "popular",
+      adultQ: "",
+      adultItems: [],
+      adultWarnings: [],
+      adultLoading: false,
+      adultError: "",
+      adultPage: 1,
+      adultHasMore: false,
+      adultLoadedKey: "",
+    },
   };
 
   const CATEGORY_LABEL = {
@@ -104,6 +127,7 @@
 
   const VIEW_TITLE = {
     home: "Beranda",
+    discover: "Discovery",
     library: "Library",
     series: "Serial",
     playlists: "Playlist",
@@ -328,6 +352,7 @@
       state.loading = false;
       render();
       openFromHash();
+      ensureDiscoveryView();
     }
   }
 
@@ -1144,7 +1169,7 @@
         el(
           "div",
           { style: "margin-top:20px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap" },
-          el("a", { class: "btn btn--light", href: "/?discover=1", text: "Buka Discovery" }),
+          el("a", { class: "btn btn--light", href: "#/discover", text: "Buka Discovery" }),
           el("a", { class: "btn btn--ghost", href: "/roxxy", text: "Buka Video Feeds" }),
           el("button", {
             class: "btn btn--ghost",
@@ -1293,7 +1318,7 @@
         quickTile(ICON.tv, "Serial & episode", `${numberLabel(dfSeriesCount())} serial terdeteksi`, () => setView("series")),
         quickTile(ICON.list, "Playlist", "Buat, tambah, unduh M3U, atau putar", () => setView("playlists")),
         quickTile(ICON.download, "Pusat unduhan", "Antrean lokal, TorBox, dan tugas latar", () => setView("downloads")),
-        quickTile(ICON.external, "Discovery", "Cari judul baru di UI lama", null, "/?discover=1"),
+        quickTile(ICON.search, "Discovery", "Film, serial, anime, donghua + English Adult 18+", () => setView("discover")),
         quickTile(ICON.spark, "Video Feeds", "Katalog Roxxy dan unduhan lokal", null, "/roxxy")
       )
     );
@@ -3696,11 +3721,12 @@
       renderSkeleton();
       return;
     }
-    if (state.error && !state.items.length && state.view !== "settings") {
+    const standalone = state.view === "settings" || state.view === "discover";
+    if (state.error && !state.items.length && !standalone) {
       renderError(state.error);
       return;
     }
-    if (!state.items.length && state.view !== "settings") {
+    if (!state.items.length && !standalone) {
       root.replaceChildren(renderEmptyCatalog());
       syncNav();
       return;
@@ -3720,6 +3746,1281 @@
     }
     const badge = $("#v2-version");
     if (badge && state.version) badge.textContent = state.version;
+  }
+
+  /* ----------------------------- Discovery v2 ---------------------------- */
+
+  const DISCOVER_CATEGORIES = [
+    { id: "general_movie", label: "Film" },
+    { id: "tv_show", label: "Serial TV" },
+    { id: "anime", label: "Anime" },
+    { id: "donghua", label: "Donghua" },
+  ];
+
+  const DISCOVER_FEEDS = [
+    { id: "trending", label: "Trending" },
+    { id: "popular", label: "Populer" },
+    { id: "top_rated", label: "Rating" },
+  ];
+
+  const ADULT_STATUS_LABEL = {
+    ok: "aktif",
+    cooldown: "jeda sementara",
+    blocked: "terblokir",
+    search_only: "hanya pencarian",
+    disabled: "nonaktif",
+    mode_unsupported: "mode tidak didukung",
+  };
+
+  const ADULT_GATE_KEY = "tbh_adult_v2_gate";
+
+  function adultGateApproved() {
+    try {
+      return localStorage.getItem(ADULT_GATE_KEY) === "1";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function approveAdultGate() {
+    try {
+      localStorage.setItem(ADULT_GATE_KEY, "1");
+    } catch (_) {
+      /* mode privat: cukup untuk sesi ini */
+    }
+    state.discover.adultApproved = true;
+    render();
+    ensureAdultDiscover(true);
+  }
+
+  function durationLabel(seconds) {
+    const total = Math.round(Number(seconds) || 0);
+    if (total <= 0) return "";
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return `${h}j ${m}m`;
+    if (m > 0) return `${m}m ${s}s`;
+    return `${s}s`;
+  }
+
+  function discoverTabButton(tab, label) {
+    const active = state.discover.tab === tab;
+    return el("button", {
+      class: "discover-tab" + (active ? " is-active" : ""),
+      type: "button",
+      role: "tab",
+      "aria-selected": active ? "true" : "false",
+      text: label,
+      onclick: () => switchDiscoverTab(tab),
+    });
+  }
+
+  function switchDiscoverTab(tab) {
+    const d = state.discover;
+    if (d.tab === tab) return;
+    d.tab = tab;
+    render();
+    if (tab === "mainstream") ensureDiscoverFeed();
+    else if (adultGateApproved()) {
+      d.adultApproved = true;
+      ensureAdultDiscover();
+    }
+  }
+
+  function renderDiscover() {
+    const d = state.discover;
+    const refresh = el("button", {
+      class: "btn btn--ghost btn--sm",
+      type: "button",
+      html: `${ICON.refresh}<span>Segarkan</span>`,
+      onclick: () => {
+        if (d.tab === "adult") ensureAdultDiscover(true);
+        else ensureDiscoverFeed(true);
+      },
+    });
+
+    const tabs = el(
+      "div",
+      { class: "discover-tabs", role: "tablist", "aria-label": "Sumber Discovery" },
+      discoverTabButton("mainstream", "Film & Serial"),
+      discoverTabButton("adult", "English Adult 18+")
+    );
+
+    return el(
+      "section",
+      { class: "view" },
+      viewHead(
+        "Discovery",
+        "Cari judul baru dari sumber publik, lalu kirim ke TorBox Cloud. Item yang selesai diimpor otomatis masuk Library.",
+        [refresh]
+      ),
+      tabs,
+      d.tab === "adult" ? renderAdultDiscover() : renderMainstreamDiscover()
+    );
+  }
+
+  function ensureDiscoverFeed(force) {
+    const d = state.discover;
+    const key = `${d.category}|${d.feed}|${d.q}`;
+    if (!force && d.loadedKey === key && d.items.length) {
+      render();
+      return;
+    }
+    loadDiscoverFeed(force);
+  }
+
+  function ensureDiscoveryView() {
+    if (state.view !== "discover") return;
+    const d = state.discover;
+    if (d.tab === "adult") {
+      if (!adultGateApproved()) return;
+      d.adultApproved = true;
+      if (!d.adultItems.length && !d.adultLoading) ensureAdultDiscover();
+      return;
+    }
+    if (!d.loadedKey && !d.loading) ensureDiscoverFeed();
+  }
+
+  async function loadDiscoverFeed(force) {
+    const d = state.discover;
+    if (d.loading) return;
+    const key = `${d.category}|${d.feed}|${d.q}`;
+    if (!force && d.loadedKey === key && d.items.length) {
+      render();
+      return;
+    }
+    d.loading = true;
+    d.error = "";
+    render();
+    try {
+      const params = new URLSearchParams({
+        category: d.category,
+        feed: d.q ? "search" : d.feed,
+        limit: "50",
+      });
+      if (d.q) params.set("query", d.q);
+      const data = await api(`/api/discover?${params}`);
+      d.items = Array.isArray(data.results) ? data.results : [];
+      d.loadedKey = key;
+    } catch (err) {
+      d.items = [];
+      d.error = err.message;
+    } finally {
+      d.loading = false;
+      render();
+    }
+  }
+
+  function discoverCard(item) {
+    const title = item.title || "Tanpa judul";
+    const frame = el("div", { class: "card__frame" });
+    frame.append(el("div", { class: "card__fallback", text: initials(title), "aria-hidden": "true" }));
+    if (item.poster_url) {
+      const img = el("img", {
+        class: "card__img",
+        alt: "",
+        loading: "lazy",
+        decoding: "async",
+        referrerpolicy: "no-referrer",
+        src: item.poster_url,
+      });
+      img.addEventListener("load", () => img.classList.add("is-loaded"));
+      img.addEventListener("error", () => img.remove());
+      frame.append(img);
+    }
+
+    const badges = el("div", { class: "card__badges" });
+    if (item.category) {
+      badges.append(el("span", { class: "card__badge card__badge--cat", text: catLabel(item.category) }));
+    }
+    if (Number(item.rating) > 0) {
+      badges.append(el("span", { class: "card__badge", text: `★ ${Number(item.rating).toFixed(1)}` }));
+    }
+    if (badges.childElementCount) frame.append(badges);
+
+    const subParts = [];
+    if (item.year) subParts.push(String(item.year));
+    if (item.episodes) subParts.push(`${item.episodes} EP`);
+
+    return el(
+      "button",
+      {
+        class: "card",
+        type: "button",
+        "aria-label": `Buka rilis ${title}`,
+        onclick: () => openDiscoverItem(item),
+      },
+      frame,
+      el(
+        "div",
+        { class: "card__body" },
+        el("p", { class: "card__title clamp-2", text: title }),
+        subParts.length ? el("p", { class: "card__sub", text: subParts.join(" · ") }) : null
+      )
+    );
+  }
+
+  function renderMainstreamDiscover() {
+    const d = state.discover;
+
+    const categories = chipRow({
+      label: "Kategori Discovery",
+      items: DISCOVER_CATEGORIES.map((c) => ({
+        label: c.label,
+        active: d.category === c.id,
+        onclick: () => {
+          d.category = c.id;
+          d.loadedKey = "";
+          ensureDiscoverFeed(true);
+        },
+      })),
+    });
+
+    const feeds = chipRow({
+      label: "Urutan feed",
+      items: DISCOVER_FEEDS.map((f) => ({
+        label: f.label,
+        active: !d.q && d.feed === f.id,
+        onclick: () => {
+          d.feed = f.id;
+          d.q = "";
+          d.loadedKey = "";
+          ensureDiscoverFeed(true);
+        },
+      })),
+    });
+
+    const input = el("input", {
+      class: "input",
+      type: "search",
+      value: d.q,
+      placeholder: "Cari judul film, serial, atau anime...",
+      "aria-label": "Cari di Discovery",
+    });
+    input.addEventListener("input", () => {
+      d.q = input.value;
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      d.loadedKey = "";
+      ensureDiscoverFeed(true);
+    });
+
+    const clearBtn = d.q
+      ? el("button", {
+          class: "btn btn--ghost btn--sm",
+          type: "button",
+          text: "Reset",
+          onclick: () => {
+            d.q = "";
+            d.loadedKey = "";
+            ensureDiscoverFeed(true);
+          },
+        })
+      : null;
+
+    const searchRow = el(
+      "div",
+      { class: "discover-search" },
+      input,
+      el("button", {
+        class: "btn btn--primary",
+        type: "button",
+        html: `${ICON.search}<span>Cari</span>`,
+        onclick: () => {
+          d.loadedKey = "";
+          ensureDiscoverFeed(true);
+        },
+      }),
+      clearBtn
+    );
+
+    const categoryLabel = (DISCOVER_CATEGORIES.find((c) => c.id === d.category) || {}).label || d.category;
+    const statusText = d.loading
+      ? "Memuat katalog Discovery..."
+      : d.error
+      ? `Gagal memuat: ${d.error}`
+      : `${numberLabel(d.items.length)} judul · ${categoryLabel}${d.q ? ` · "${d.q}"` : ""}`;
+
+    const resultbar = el(
+      "div",
+      { class: "resultbar" },
+      el("span", { class: "resultbar__count", text: statusText }),
+      el("span", { class: "resultbar__spacer" }),
+      el("span", { class: "disc-hint", text: "Auto-import Library aktif" })
+    );
+
+    const grid = el("div", { class: "lib-grid" });
+    if (d.loading && !d.items.length) {
+      grid.append(
+        el(
+          "div",
+          { class: "search-panel", style: "grid-column:1/-1" },
+          el("p", { class: "search-panel__note", text: "Mengambil feed dari sumber publik..." })
+        )
+      );
+    } else if (!d.items.length) {
+      const missingKey = /TMDb API Key/i.test(d.error || "");
+      grid.append(
+        el(
+          "div",
+          { class: "empty", style: "grid-column:1/-1" },
+          el("p", { class: "empty__title", text: d.error ? "Katalog tidak tersedia" : "Tidak ada hasil" }),
+          el("p", {
+            text: d.error
+              ? d.error
+              : "Coba kategori lain, urutan feed lain, atau kata kunci yang lebih pendek.",
+          }),
+          missingKey
+            ? el(
+                "div",
+                { style: "margin-top:14px" },
+                el("button", {
+                  class: "btn btn--light",
+                  type: "button",
+                  text: "Buka Pengaturan",
+                  onclick: () => setView("settings"),
+                })
+              )
+            : null
+        )
+      );
+    } else {
+      for (const item of d.items) grid.append(discoverCard(item));
+    }
+
+    return el("div", { class: "discovery" }, categories, feeds, searchRow, resultbar, grid);
+  }
+
+  function openDiscoverItem(item) {
+    const isSeries = SERIES_CATEGORIES.has(item.category);
+    const seasonInput = isSeries
+      ? el("input", { class: "input", type: "number", min: "1", value: "1", "aria-label": "Season" })
+      : null;
+    const episodeInput = isSeries
+      ? el("input", {
+          class: "input",
+          type: "number",
+          min: "1",
+          placeholder: "Episode (opsional)",
+          "aria-label": "Episode",
+        })
+      : null;
+
+    const results = el("div", { class: "disc-releases" });
+    results.append(
+      el("p", {
+        class: "search-panel__note",
+        text: "Tekan Cari rilis untuk memeriksa indexer dan status cache TorBox.",
+      })
+    );
+    const note = el("p", {
+      class: "search-panel__note",
+      text: "Rilis CACHED siap instan. UNCACHED tetap bisa dikirim, tetapi TorBox mengunduh lebih dulu sebelum impor ke Library.",
+    });
+
+    const metaLine = [item.year, Number(item.rating) > 0 ? `★ ${Number(item.rating).toFixed(1)}` : "", catLabel(item.category)]
+      .filter(Boolean)
+      .join(" · ");
+
+    const poster = el(
+      "div",
+      { class: "disc-detail__poster" },
+      el("div", { class: "card__fallback", text: initials(item.title), "aria-hidden": "true" })
+    );
+    if (item.poster_url) {
+      const img = el("img", {
+        alt: "",
+        referrerpolicy: "no-referrer",
+        src: item.poster_url,
+      });
+      img.addEventListener("error", () => img.remove());
+      poster.append(img);
+    }
+
+    const controls = el(
+      "div",
+      { class: "discover-search" },
+      isSeries ? field("Season", seasonInput) : null,
+      isSeries ? field("Episode", episodeInput) : null,
+      el("button", {
+        class: "btn btn--primary",
+        type: "button",
+        html: `${ICON.search}<span>Cari rilis</span>`,
+        onclick: (ev) => {
+          const btn = ev.currentTarget;
+          const season = isSeries ? Number(seasonInput.value) || 1 : 1;
+          const episode = isSeries && episodeInput.value ? Number(episodeInput.value) : null;
+          runDiscoverReleaseSearch(item, { season, episode }, results, note, btn, modal);
+        },
+      })
+    );
+
+    const modal = openModal({
+      title: item.title || "Tanpa judul",
+      subtitle: metaLine,
+      wide: true,
+      body: el(
+        "div",
+        { class: "disc-detail" },
+        el(
+          "div",
+          { class: "disc-detail__head" },
+          poster,
+          el(
+            "div",
+            { class: "disc-detail__info" },
+            item.overview
+              ? el("p", { class: "detail__plot", text: item.overview })
+              : el("p", { class: "search-panel__note", text: "Belum ada sinopsis dari sumber katalog." }),
+            el(
+              "div",
+              { class: "tagrow" },
+              ...(item.year ? [el("span", { class: "tag", text: String(item.year) })] : []),
+              ...(Number(item.rating) > 0
+                ? [el("span", { class: "tag", text: `★ ${Number(item.rating).toFixed(1)}` })]
+                : []),
+              ...(item.episodes ? [el("span", { class: "tag", text: `${item.episodes} episode` })] : [])
+            )
+          )
+        ),
+        el(
+          "div",
+          { class: "sheet__section" },
+          el("h3", { class: "sheet__label", text: "Kirim ke TorBox Cloud" }),
+          controls,
+          results,
+          note
+        )
+      ),
+    });
+  }
+
+  async function runDiscoverReleaseSearch(item, opts, host, note, button, modal) {
+    const label = button ? button.innerHTML : "";
+    if (button) {
+      button.disabled = true;
+      button.innerHTML = `${ICON.refresh}<span>Mencari...</span>`;
+    }
+    host.replaceChildren(
+      el("div", { class: "search-panel" }, el("p", { class: "search-panel__note", text: "Mencari rilis di indexer dan memeriksa cache TorBox..." }))
+    );
+    try {
+      const data = await api(
+        "/api/discover/search-cache",
+        jsonBody({
+          query: item.search_query || item.title,
+          category: item.category,
+          tmdb_id: item.tmdb_id || null,
+          year: item.year || null,
+          season: SERIES_CATEGORIES.has(item.category) ? opts.season : null,
+          episode: SERIES_CATEGORIES.has(item.category) ? opts.episode : null,
+        })
+      );
+      const rows = Array.isArray(data.results) ? data.results : [];
+      if (!rows.length) {
+        host.replaceChildren(
+          el("p", { class: "search-panel__note", text: "Tidak ada rilis yang cocok untuk judul ini." })
+        );
+        return;
+      }
+      const summary = el("p", {
+        class: "search-panel__note",
+        text: `${numberLabel(data.cached_count || 0)} CACHED / ${numberLabel(rows.length)} rilis ditemukan.`,
+      });
+      host.replaceChildren(summary, ...rows.map((rel) => discoverReleaseRow(rel, item, opts, modal)));
+      if (note) note.textContent = "Pilih rilis CACHED untuk impor instan, atau UNCACHED untuk unduh di TorBox lebih dulu.";
+    } catch (err) {
+      host.replaceChildren(el("p", { class: "search-panel__note", text: `Gagal mencari rilis: ${err.message}` }));
+    } finally {
+      if (button) {
+        button.disabled = false;
+        button.innerHTML = label || `${ICON.search}<span>Cari rilis</span>`;
+      }
+    }
+  }
+
+  function discoverReleaseRow(rel, item, opts, modal) {
+    const cached = Boolean(rel.cached);
+    const row = el(
+      "div",
+      { class: "disc-release" },
+      el(
+        "div",
+        { class: "disc-release__main" },
+        el(
+          "div",
+          { class: "tagrow" },
+          el("span", { class: "tag " + (cached ? "tag--ok" : "tag--warn"), text: cached ? "CACHED" : "UNCACHED" }),
+          rel.kind ? el("span", { class: "tag", text: String(rel.kind) }) : null,
+          rel.source ? el("span", { class: "tag", text: String(rel.source) }) : null
+        ),
+        el("p", { class: "disc-release__title", text: rel.title || "" })
+      )
+    );
+    const add = el("button", {
+      class: "btn " + (cached ? "btn--primary" : "btn--ghost") + " btn--sm",
+      type: "button",
+      text: "Tambahkan",
+    });
+    add.addEventListener("click", async () => {
+      add.disabled = true;
+      add.textContent = "Mengirim...";
+      try {
+        await api(
+          "/api/torbox/add-cached",
+          jsonBody({
+            ...rel,
+            series_title: SERIES_CATEGORIES.has(item.category) ? item.title : "",
+            category: item.category,
+            season: SERIES_CATEGORIES.has(item.category) ? opts.season : 1,
+            delete_remote_on_replace: true,
+          })
+        );
+        toast("Dikirim ke TorBox Cloud. Auto-import ke Library berjalan.", "ok");
+        if (modal) modal.close();
+      } catch (err) {
+        add.disabled = false;
+        add.textContent = "Tambahkan";
+        toast(err.message, "error");
+      }
+    });
+    row.append(add);
+    return row;
+  }
+
+  function ensureAdultDiscover(force) {
+    const d = state.discover;
+    if (!d.adultApproved) d.adultApproved = adultGateApproved();
+    if (!d.adultApproved) return;
+    if (!d.adultProviders.length) {
+      loadAdultProviders().then(() => loadAdultFeed(force));
+      return;
+    }
+    loadAdultFeed(force);
+  }
+
+  async function loadAdultProviders() {
+    const d = state.discover;
+    try {
+      const data = await api("/api/adult/providers");
+      d.adultProviders = Array.isArray(data.providers) ? data.providers : [];
+      d.adultModes = Array.isArray(data.modes) && data.modes.length
+        ? data.modes
+        : [
+            { id: "popular", label: "Populer" },
+            { id: "new", label: "Terbaru" },
+            { id: "top_rated", label: "Rating Tinggi" },
+          ];
+    } catch (err) {
+      d.adultError = err.message;
+    }
+  }
+
+  async function loadAdultFeed(force, append) {
+    const d = state.discover;
+    if (!d.adultApproved || d.adultLoading) return;
+    const q = d.adultQ.trim();
+    const page = append ? d.adultPage + 1 : 1;
+    const key = `${d.adultProvider}|${d.adultMode}|${q}|${page}`;
+    if (!force && !append && d.adultLoadedKey === key && d.adultItems.length) {
+      render();
+      return;
+    }
+    d.adultLoading = true;
+    d.adultError = "";
+    d.adultPage = page;
+    render();
+    try {
+      let data;
+      if (q) {
+        const params = new URLSearchParams({ q, page: String(page) });
+        if (d.adultProvider !== "all") params.set("providers", d.adultProvider);
+        data = await api(`/api/adult/search?${params}`);
+      } else {
+        const params = new URLSearchParams({
+          provider: d.adultProvider,
+          mode: d.adultMode,
+          page: String(page),
+        });
+        data = await api(`/api/adult/feed?${params}`);
+      }
+      const items = Array.isArray(data.items) ? data.items : [];
+      d.adultItems = append ? d.adultItems.concat(items) : items;
+      d.adultWarnings = Array.isArray(data.warnings) ? data.warnings : [];
+      d.adultHasMore = Boolean(data.has_more);
+      d.adultLoadedKey = key;
+    } catch (err) {
+      if (!append) {
+        d.adultItems = [];
+        d.adultWarnings = [];
+      } else {
+        d.adultPage = page - 1;
+      }
+      d.adultError = err.message;
+    } finally {
+      d.adultLoading = false;
+      render();
+    }
+  }
+
+  function renderAdultDiscover() {
+    const d = state.discover;
+    if (!d.adultApproved) {
+      return el(
+        "div",
+        { class: "disc-gate" },
+        el("span", { class: "disc-gate__badge", text: "18+" }),
+        el("h2", { class: "disc-gate__title", text: "English Adult Discovery" }),
+        el("p", {
+          class: "disc-gate__text",
+          text: "Bagian ini memuat katalog dewasa dari sumber publik. Konfirmasi bahwa Anda berusia 18 tahun atau lebih untuk melanjutkan.",
+        }),
+        el("button", {
+          class: "btn btn--primary",
+          type: "button",
+          text: "Saya 18+ — tampilkan katalog",
+          onclick: () => approveAdultGate(),
+        })
+      );
+    }
+
+    const providerOptions = [{ value: "all", label: "Semua sumber" }];
+    for (const p of d.adultProviders) {
+      if (!p.enabled) continue;
+      const status = ADULT_STATUS_LABEL[p.status] || p.status || "";
+      providerOptions.push({ value: p.id, label: `${p.label || p.id}${status ? ` (${status})` : ""}` });
+    }
+
+    const providerSelect = selectNode(providerOptions, d.adultProvider, (value) => {
+      d.adultProvider = value;
+      d.adultLoadedKey = "";
+      loadAdultFeed(true);
+    });
+
+    const modeItems = (d.adultModes.length ? d.adultModes : [{ id: "popular", label: "Populer" }]).map((m) => ({
+      label: m.label,
+      active: !d.adultQ && d.adultMode === m.id,
+      onclick: () => {
+        d.adultMode = m.id;
+        d.adultQ = "";
+        d.adultLoadedKey = "";
+        loadAdultFeed(true);
+      },
+    }));
+
+    const input = el("input", {
+      class: "input",
+      type: "search",
+      value: d.adultQ,
+      placeholder: "Cari judul di sumber adult...",
+      "aria-label": "Cari di katalog English Adult",
+    });
+    input.addEventListener("input", () => {
+      d.adultQ = input.value;
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key !== "Enter") return;
+      ev.preventDefault();
+      runAdultSearch();
+    });
+
+    const searchRow = el(
+      "div",
+      { class: "discover-search" },
+      input,
+      el("button", {
+        class: "btn btn--primary",
+        type: "button",
+        html: `${ICON.search}<span>Cari</span>`,
+        onclick: () => runAdultSearch(),
+      }),
+      d.adultQ
+        ? el("button", {
+            class: "btn btn--ghost btn--sm",
+            type: "button",
+            text: "Reset",
+            onclick: () => {
+              d.adultQ = "";
+              d.adultLoadedKey = "";
+              loadAdultFeed(true);
+            },
+          })
+        : null
+    );
+
+    const statusText = d.adultLoading
+      ? "Memuat katalog adult..."
+      : d.adultError
+      ? `Gagal memuat: ${d.adultError}`
+      : `${numberLabel(d.adultItems.length)} item · ${d.adultQ ? `pencarian "${d.adultQ}"` : "feed katalog"}`;
+
+    const resultbar = el(
+      "div",
+      { class: "resultbar" },
+      el("span", { class: "resultbar__count", text: statusText }),
+      el("span", { class: "resultbar__spacer" }),
+      el("span", { class: "disc-hint", text: "WebDL → auto-add Library" })
+    );
+
+    const warnings = el("div", { class: "disc-warnings" });
+    if (d.adultWarnings.length) {
+      for (const warn of d.adultWarnings.slice(0, 3)) {
+        warnings.append(el("p", { class: "search-panel__note", text: warn.message || String(warn) }));
+      }
+    }
+
+    const controls = el(
+      "div",
+      { class: "discover-controls" },
+      chipRow({ label: "Urutan katalog adult", items: modeItems }),
+      el("div", { class: "discover-controls__row" }, field("Sumber", providerSelect), searchRow)
+    );
+
+    const grid = el("div", { class: "lib-grid disc-adult-grid" });
+    if (!d.adultItems.length && !d.adultLoading) {
+      grid.append(
+        el(
+          "div",
+          { class: "empty", style: "grid-column:1/-1" },
+          el("p", { class: "empty__title", text: d.adultError ? "Katalog tidak tersedia" : "Tidak ada item" }),
+          el("p", {
+            text: d.adultError
+              ? d.adultError
+              : "Coba sumber lain, mode lain, atau kata kunci yang lebih pendek.",
+          })
+        )
+      );
+    } else {
+      d.adultItems.forEach((item, index) => grid.append(adultDiscoverCard(item, index)));
+    }
+
+    const loadMore = d.adultHasMore
+      ? el(
+          "div",
+          { class: "disc-loadmore" },
+          el("button", {
+            class: "btn btn--ghost",
+            type: "button",
+            text: d.adultLoading ? "Memuat..." : "Muat lebih banyak",
+            disabled: d.adultLoading ? true : null,
+            onclick: () => loadAdultFeed(false, true),
+          })
+        )
+      : null;
+
+    return el("div", { class: "discovery discovery--adult" }, controls, resultbar, warnings, grid, loadMore);
+  }
+
+  function runAdultSearch() {
+    const d = state.discover;
+    const q = d.adultQ.trim();
+    if (q && q.length < 2) {
+      toast("Kata kunci minimal 2 karakter.", "error");
+      return;
+    }
+    d.adultLoadedKey = "";
+    loadAdultFeed(true);
+  }
+
+  function adultDiscoverCard(item, index) {
+    const title = item.title || "Tanpa judul";
+    const frame = el("div", { class: "card__frame" });
+    frame.append(el("div", { class: "card__fallback", text: initials(title), "aria-hidden": "true" }));
+    const thumb = /^https?:\/\//i.test(String(item.thumb || "")) ? String(item.thumb) : "";
+    if (thumb) {
+      const img = el("img", {
+        class: "card__img",
+        alt: "",
+        loading: "lazy",
+        decoding: "async",
+        referrerpolicy: "no-referrer",
+        src: thumb,
+      });
+      img.addEventListener("load", () => img.classList.add("is-loaded"));
+      img.addEventListener("error", () => img.remove());
+      frame.append(img);
+    }
+
+    const badges = el("div", { class: "card__badges" });
+    badges.append(
+      el("span", { class: "card__badge card__badge--cat", text: item.site_label || item.provider || "Adult" })
+    );
+    if (item.duration_sec) {
+      badges.append(el("span", { class: "card__badge", text: durationLabel(item.duration_sec) }));
+    }
+    frame.append(badges);
+
+    const subParts = [];
+    if (Number(item.rating) > 0) subParts.push(`★ ${Number(item.rating).toFixed(1)}`);
+    if (item.views) subParts.push(`${numberLabel(item.views)} tayangan`);
+
+    return el(
+      "button",
+      {
+        class: "card disc-video-card",
+        type: "button",
+        "aria-label": `Buka ${title}`,
+        dataset: { index: String(index) },
+        onclick: () => openAdultDiscoverItem(item),
+      },
+      frame,
+      el(
+        "div",
+        { class: "card__body" },
+        el("p", { class: "card__title clamp-2", text: title }),
+        subParts.length ? el("p", { class: "card__sub", text: subParts.join(" · ") }) : null
+      )
+    );
+  }
+
+  function openAdultDiscoverItem(item) {
+    const host = el("div", { class: "disc-detail" });
+    const metaLine = [item.site_label || item.provider, durationLabel(item.duration_sec)].filter(Boolean).join(" · ");
+    const modal = openModal({
+      title: item.title || "English Adult",
+      subtitle: metaLine,
+      wide: true,
+      body: host,
+    });
+    host.append(
+      el(
+        "div",
+        { class: "search-panel" },
+        el("p", { class: "search-panel__note", text: "Membaca cover, sinopsis, dan durasi dari halaman provider..." })
+      )
+    );
+
+    (async () => {
+      let detail = null;
+      let page = {};
+      try {
+        detail = await api(
+          `/api/adult/detail?provider=${encodeURIComponent(item.provider)}&id=${encodeURIComponent(item.provider_id)}`
+        );
+      } catch (_) {
+        detail = null;
+      }
+      try {
+        const streams = await api(
+          "/api/adult/streams",
+          jsonBody({ provider: item.provider, id: item.provider_id })
+        );
+        page = streams.page_meta || {};
+      } catch (_) {
+        page = {};
+      }
+      paintAdultDiscoverDetail(host, modal, item, detail, page);
+    })();
+  }
+
+  function paintAdultDiscoverDetail(host, modal, item, detail, page) {
+    const merged = Object.assign({}, item, (detail && detail.item) || {});
+    const tpdb = detail && detail.tpdb && detail.tpdb.status === "found" ? detail.tpdb : {};
+    const inLibrary = detail && Array.isArray(detail.in_library) ? detail.in_library : [];
+    const tags = [...(Array.isArray(merged.tags) ? merged.tags : []), ...(Array.isArray(tpdb.tags) ? tpdb.tags : [])]
+      .map((t) => String(t).trim())
+      .filter(Boolean);
+    const uniqueTags = [...new Set(tags)];
+    const posterUrlValue = String(page.poster || merged.poster || merged.thumb || "").trim();
+    const description = String(page.description || tpdb.plot || merged.description || "").trim();
+    const duration = durationLabel(merged.duration_sec || page.duration_sec);
+
+    const poster = el(
+      "div",
+      { class: "disc-detail__poster disc-detail__poster--video" },
+      el("div", { class: "card__fallback", text: initials(merged.title), "aria-hidden": "true" })
+    );
+    if (/^https?:\/\//i.test(posterUrlValue)) {
+      const img = el("img", { alt: "", referrerpolicy: "no-referrer", src: posterUrlValue });
+      img.addEventListener("error", () => img.remove());
+      poster.append(img);
+    }
+
+    const note = el("p", {
+      class: "search-panel__note",
+      text: "Link halaman dikirim ke TorBox WebDL; monitor akan mengimpor ke Library sebagai English Adult. Batas WebDL: 100 GB per tautan.",
+    });
+
+    const submit = el("button", {
+      class: "btn btn--primary",
+      type: "button",
+      html: `${ICON.download}<span>Simpan ke TorBox Cloud (WebDL)</span>`,
+    });
+    submit.addEventListener("click", async () => {
+      submit.disabled = true;
+      submit.textContent = "Mengirim...";
+      try {
+        const payload = adultWebdlPayload(merged, tpdb, page);
+        const data = await api("/api/adult/webdl", jsonBody(payload));
+        note.textContent = `${data.message || "Terkirim ke TorBox WebDL."}${data.tracked_id ? ` (monitor #${data.tracked_id})` : ""}`;
+        toast(data.message || "Link dikirim ke TorBox WebDL.", "ok");
+        modal.close();
+      } catch (err) {
+        note.textContent = `Gagal mengirim: ${err.message}`;
+        toast(`Gagal mengirim: ${err.message}`, "error");
+      } finally {
+        submit.disabled = false;
+        submit.innerHTML = `${ICON.download}<span>Simpan ke TorBox Cloud (WebDL)</span>`;
+      }
+    });
+
+    host.replaceChildren(
+      el(
+        "div",
+        { class: "disc-detail__head" },
+        poster,
+        el(
+          "div",
+          { class: "disc-detail__info" },
+          el("h3", { class: "disc-detail__title", text: merged.title || "Tanpa judul" }),
+          el(
+            "div",
+            { class: "tagrow" },
+            el("span", { class: "tag", text: merged.site_label || merged.provider || "Adult" }),
+            duration ? el("span", { class: "tag", text: duration }) : null,
+            Number(merged.rating) > 0 ? el("span", { class: "tag", text: `★ ${Number(merged.rating).toFixed(1)}` }) : null,
+            merged.views ? el("span", { class: "tag", text: `${numberLabel(merged.views)} tayangan` }) : null
+          ),
+          description
+            ? el("p", { class: "detail__plot", text: description })
+            : el("p", { class: "search-panel__note", text: "Sinopsis belum tersedia dari halaman provider." }),
+          uniqueTags.length
+            ? el("div", { class: "tagrow" }, ...uniqueTags.slice(0, 8).map((t) => el("span", { class: "tag", text: t })))
+            : null,
+          el("p", {
+            class: "search-panel__note",
+            text: inLibrary.length
+              ? `Sudah ada di Library (${inLibrary.length}): ${inLibrary.map((it) => it.title || it.id).join(" · ")}`
+              : "Belum ada judul serupa di Library kategori English Adult.",
+          })
+        )
+      ),
+      el(
+        "div",
+        { class: "sheet__section" },
+        el("h3", { class: "sheet__label", text: "Simpan ke Library" }),
+        el("div", { class: "disc-detail__actions" }, submit),
+        note
+      )
+    );
+  }
+
+  function adultWebdlPayload(merged, tpdb, page) {
+    const tags = [...(Array.isArray(merged.tags) ? merged.tags : []), ...(Array.isArray(tpdb.tags) ? tpdb.tags : [])]
+      .map((t) => String(t).trim())
+      .filter(Boolean);
+    const uniqueTags = [...new Set(tags)];
+    const poster = String(page.poster || merged.poster || merged.thumb || "").trim();
+    const metadata = {
+      name: tpdb.title || page.title || merged.title || "English Adult",
+      description: String(page.description || tpdb.plot || uniqueTags.join(", ")).trim(),
+      studio: tpdb.studio || "",
+      year: tpdb.year || 0,
+      runtime: Math.round(Number(merged.duration_sec || page.duration_sec || 0) / 60) || 0,
+      poster,
+      genres: uniqueTags,
+      cast: Array.isArray(tpdb.performers) ? tpdb.performers : [],
+      imdbRating: Number(tpdb.rating || 0) || 0,
+      _roxxySource: "english_adult",
+    };
+    const payload = { url: merged.page_url, title: merged.title, metadata };
+    if (/^https?:\/\//i.test(poster)) payload.poster_url = poster;
+    return payload;
+  }
+
+  /* ---------------------------- Curation -------------------------------- */
+
+  function field(labelText, control) {
+    return el("label", { class: "field" }, el("span", { class: "field__label", text: labelText }), control);
+  }
+
+  function textInput(value, attrs) {
+    const props = Object.assign(
+      { class: "input", type: "text", value: value == null ? "" : String(value) },
+      attrs || {}
+    );
+    return el("input", props);
+  }
+
+  function categorySelect(current) {
+    const node = el("select", { class: "select" });
+    for (const cat of CATEGORY_ORDER) {
+      node.append(el("option", { value: cat, text: catLabel(cat) }));
+    }
+    node.value = CATEGORY_ORDER.includes(current) ? current : "uncategorized";
+    return node;
+  }
+
+  function refreshMediaAfterCuration(itemId) {
+    return loadAll({ silent: true }).then(() => {
+      closeDetail();
+      const fresh = readItem(itemId);
+      if (fresh) openDetail(fresh);
+    });
+  }
+
+  function openEditMetadataSheet(item) {
+    const title = textInput(item.title || "");
+    const seriesTitle = textInput(item.series_title || "");
+    const category = categorySelect(item.content_category);
+    const season = textInput(item.season_num || "", { type: "number", min: "0" });
+    const episode = textInput(item.episode_num || "", { type: "number", min: "0" });
+    const code = textInput(item.code_id || "");
+    const year = textInput(item.year || "", { type: "number", min: "0" });
+    const runtime = textInput(item.runtime || "", { type: "number", min: "0" });
+    const studio = textInput(item.studio || "");
+    const plot = el("textarea", { class: "input", rows: "3", value: item.plot || "" });
+
+    const save = el("button", { class: "btn btn--primary", type: "button", text: "Simpan metadata" });
+    const modal = openModal({
+      title: "Edit metadata",
+      subtitle: item.file_name || "",
+      wide: true,
+      body: el(
+        "div",
+        { class: "curate-grid" },
+        field("Judul", title),
+        field("Serial", seriesTitle),
+        field("Kategori", category),
+        field("Season", season),
+        field("Episode", episode),
+        field("Kode", code),
+        field("Tahun", year),
+        field("Durasi (menit)", runtime),
+        field("Studio", studio),
+        el("div", { class: "curate-grid__full" }, field("Sinopsis", plot))
+      ),
+      footer: el(
+        "div",
+        { class: "curate-actions" },
+        el("button", { class: "btn btn--ghost", type: "button", text: "Batal", onclick: () => modal.close() }),
+        save
+      ),
+    });
+
+    save.addEventListener("click", async () => {
+      save.disabled = true;
+      save.textContent = "Menyimpan...";
+      try {
+        await api(
+          `/api/media/${item.id}/manual`,
+          jsonBody({
+            title: title.value,
+            series_title: seriesTitle.value,
+            content_category: category.value,
+            season_num: season.value,
+            episode_num: episode.value,
+            code_id: code.value,
+            year: year.value,
+            runtime: runtime.value,
+            studio: studio.value,
+            plot: plot.value,
+          })
+        );
+        modal.close();
+        toast("Metadata disimpan", "ok");
+        await refreshMediaAfterCuration(item.id);
+      } catch (err) {
+        toast(err.message, "error");
+        save.disabled = false;
+        save.textContent = "Simpan metadata";
+      }
+    });
+  }
+
+  function openClassificationSheet(item) {
+    const normalized = textInput(item.title || "");
+    const category = categorySelect(item.content_category);
+    const lock = el("input", { type: "checkbox", checked: true, "aria-label": "Kunci klasifikasi" });
+    const previewBox = el("div", { class: "classification-preview" });
+
+    const previewBtn = el("button", {
+      class: "btn btn--ghost",
+      type: "button",
+      html: `${ICON.spark}<span>Pratinjau</span>`,
+    });
+    const applyBtn = el("button", { class: "btn btn--primary", type: "button", text: "Simpan klasifikasi" });
+
+    const modal = openModal({
+      title: "Klasifikasi manual",
+      subtitle: item.title || "",
+      wide: true,
+      body: el(
+        "div",
+        { class: "curate-grid" },
+        field("Judul ternormalisasi", normalized),
+        field("Kategori", category),
+        el(
+          "label",
+          { class: "field field--inline" },
+          lock,
+          el("span", { class: "field__label", text: "Kunci klasifikasi (jangan ditimpa otomatis)" })
+        ),
+        el("div", { class: "curate-grid__full" }, previewBox)
+      ),
+      footer: el("div", { class: "curate-actions" }, previewBtn, applyBtn),
+    });
+
+    previewBtn.addEventListener("click", async () => {
+      previewBtn.disabled = true;
+      previewBox.replaceChildren(el("p", { class: "search-panel__note", text: "Menjalankan klasifikasi..." }));
+      try {
+        const data = await api(
+          `/api/media/${item.id}/classification/preview`,
+          jsonBody({ normalized_title: normalized.value })
+        );
+        const result = data.result || {};
+        const detected = result.detected_category || "needs_review";
+        const confidence = result.category_confidence != null ? Number(result.category_confidence) : null;
+        const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+        const signals = Array.isArray(result.signals) ? result.signals : [];
+        previewBox.replaceChildren(
+          el("p", {
+            class: "classification-preview__title",
+            text: `Rekomendasi: ${CATEGORY_LABEL[detected] || "Needs Review"}${confidence != null ? ` (${Math.round(confidence * 100)}% yakin)` : ""}`,
+          }),
+          el("p", { class: "search-panel__note", text: signals.length ? `Sinyal: ${signals.join(", ")}` : "Tidak ada sinyal kuat." }),
+          el("p", { class: "search-panel__note", text: warnings.length ? `Peringatan: ${warnings.join("; ")}` : "Tanpa peringatan." })
+        );
+        if (result.detected_category && CATEGORY_ORDER.includes(result.detected_category)) {
+          category.value = result.detected_category;
+        }
+      } catch (err) {
+        previewBox.replaceChildren(el("p", { class: "search-panel__note", text: `Gagal pratinjau: ${err.message}` }));
+      } finally {
+        previewBtn.disabled = false;
+      }
+    });
+
+    applyBtn.addEventListener("click", async () => {
+      applyBtn.disabled = true;
+      applyBtn.textContent = "Menyimpan...";
+      try {
+        await api(
+          `/api/media/${item.id}/classification/apply`,
+          jsonBody({
+            category: category.value,
+            normalized_title: normalized.value,
+            lock: lock.checked,
+            note: "Manual confirmation from v2 Discovery",
+          })
+        );
+        modal.close();
+        toast(`Kategori disimpan: ${catLabel(category.value)}`, "ok");
+        await refreshMediaAfterCuration(item.id);
+      } catch (err) {
+        toast(err.message, "error");
+        applyBtn.disabled = false;
+        applyBtn.textContent = "Simpan klasifikasi";
+      }
+    });
+  }
+
+  function openPosterSheet(item) {
+    const status = item.poster_status || (item.has_poster ? "found" : "not_checked");
+    const input = textInput(item.poster_is_manual ? item.poster_url || "" : "", {
+      placeholder: "https://.../poster.jpg",
+    });
+    const save = el("button", { class: "btn btn--primary", type: "button", text: "Simpan poster" });
+    const automatic = item.poster_is_manual
+      ? el("button", { class: "btn btn--ghost", type: "button", text: "Kembali ke poster otomatis" })
+      : null;
+    const retry = el("button", { class: "btn btn--ghost", type: "button", text: "Coba poster provider" });
+
+    const modal = openModal({
+      title: "Poster",
+      subtitle: `Status: ${String(status).replace(/_/g, " ")}${item.poster_is_manual ? " · manual" : ""}`,
+      body: el(
+        "div",
+        { class: "curate-grid" },
+        el("div", { class: "curate-grid__full" }, field("URL poster manual", input)),
+        el("p", {
+          class: "search-panel__note",
+          text: "Gambar diunduh dan divalidasi dulu; poster manual tidak akan ditimpa oleh pencarian otomatis.",
+        })
+      ),
+      footer: el(
+        "div",
+        { class: "curate-actions" },
+        automatic,
+        retry,
+        save
+      ),
+    });
+
+    save.addEventListener("click", async () => {
+      const url = input.value.trim();
+      if (!url) {
+        toast("Tempel URL gambar poster dulu.", "error");
+        return;
+      }
+      save.disabled = true;
+      save.textContent = "Mengunduh...";
+      try {
+        await api(`/api/media/${item.id}/poster/manual`, jsonBody({ poster_url: url }));
+        modal.close();
+        toast("Poster manual disimpan dan dikunci", "ok");
+        await refreshMediaAfterCuration(item.id);
+      } catch (err) {
+        toast(err.message, "error");
+        save.disabled = false;
+        save.textContent = "Simpan poster";
+      }
+    });
+
+    if (automatic) {
+      automatic.addEventListener("click", async () => {
+        automatic.disabled = true;
+        try {
+          await api(`/api/media/${item.id}/poster/automatic`, jsonBody({}));
+          modal.close();
+          toast("Poster otomatis dipulihkan", "ok");
+          await refreshMediaAfterCuration(item.id);
+        } catch (err) {
+          toast(err.message, "error");
+          automatic.disabled = false;
+        }
+      });
+    }
+
+    retry.addEventListener("click", async () => {
+      retry.disabled = true;
+      try {
+        await api(`/api/media/${item.id}/poster/retry`, jsonBody({}));
+        modal.close();
+        toast("Pencarian poster dijalankan", "ok");
+        await refreshMediaAfterCuration(item.id);
+      } catch (err) {
+        toast(err.message, "error");
+        retry.disabled = false;
+      }
+    });
+  }
+
+  async function deletePhysicalItem(item) {
+    const where = item.source_type === "cloud" ? "TorBox Cloud" : "disk lokal";
+    const target = item.file_path || item.file_name || "";
+    const ok = await confirmDialog({
+      title: "Hapus file permanen",
+      message: `Hapus "${item.title || item.file_name}" dari ${where}?\n\nTarget: ${target}\n\nFile/torrent, subtitle, poster cache, entri database, dan keanggotaan playlist akan dihapus. Tindakan ini tidak bisa dibatalkan.`,
+      confirmLabel: "Hapus permanen",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const data = await api(
+        `/api/media/${item.id}/delete-physical`,
+        jsonBody({ delete_local: true, delete_remote: true })
+      );
+      closeDetail();
+      toast(data.message || `"${item.title || item.file_name}" dihapus permanen`, "ok");
+      await loadAll({ silent: true });
+    } catch (err) {
+      toast(err.message, "error");
+    }
   }
 
   /* ------------------------------ Routing ------------------------------- */
@@ -3750,6 +5051,7 @@
       if (!state.downloads.lastLoaded || Date.now() - state.downloads.lastLoaded > 15000) loadDownloads();
       startDownloadsPoll();
     }
+    ensureDiscoveryView();
   }
 
   function openFromHash() {
@@ -3787,6 +5089,7 @@
         loadDownloads();
         startDownloadsPoll();
       }
+      ensureDiscoveryView();
     } else if (closedDetail) {
       render();
     }
@@ -3796,6 +5099,7 @@
 
   const VIEWS = {
     home: renderHome,
+    discover: renderDiscover,
     library: renderLibrary,
     series: renderSeriesView,
     playlists: renderPlaylistsView,
@@ -3918,6 +5222,36 @@
 
     const chipsHost = el("div", { class: "detail__playlists" });
     const addHost = el("div", { class: "detail__extra" });
+    const curationHost = el(
+      "div",
+      { class: "detail__extra detail__extra--curation" },
+      el("span", { class: "detail__extra-label", text: "Kurasi" }),
+      el("button", {
+        class: "btn btn--ghost btn--sm",
+        type: "button",
+        html: `${ICON.list}<span>Edit metadata</span>`,
+        onclick: () => openEditMetadataSheet(item),
+      }),
+      el("button", {
+        class: "btn btn--ghost btn--sm",
+        type: "button",
+        html: `${ICON.spark}<span>Klasifikasi</span>`,
+        onclick: () => openClassificationSheet(item),
+      }),
+      el("button", {
+        class: "btn btn--ghost btn--sm",
+        type: "button",
+        html: `${ICON.film}<span>Poster</span>`,
+        onclick: () => openPosterSheet(item),
+      }),
+      el("span", { style: "flex:1 1 auto" }),
+      el("button", {
+        class: "btn btn--danger btn--sm",
+        type: "button",
+        html: `${ICON.trash}<span>Hapus fisik</span>`,
+        onclick: () => deletePhysicalItem(item),
+      })
+    );
 
     function paintPlaylistSection() {
       const mine = playlistsForItem(item.id);
@@ -4128,6 +5462,7 @@
           ),
           chipsHost,
           addHost,
+          curationHost,
           el(
             "div",
             { class: "detail__facts" },
@@ -5126,6 +6461,7 @@
     initNavbar();
     const startView = viewFromHash();
     state.view = startView;
+    state.discover.adultApproved = adultGateApproved();
     if (location.hash && !String(location.hash).startsWith("#media-") && location.hash !== `#/${startView}`) {
       history.replaceState({ view: startView }, "", `#/${startView}`);
     }
