@@ -10,7 +10,10 @@
   --surface-1: #121215;   /* rail, panel */
   --surface-2: #1b1b20;   /* kartu hover, elevasi */
   --surface-3: #2a2a31;   /* border, pemisah */
+  --surface-4: #34343c;   /* hover kuat, thumb track */
   --surface-glass: rgba(18, 18, 21, 0.72);
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
 
   /* --- Teks ------------------------------------------------------------- */
   --text-1: #f6f6f8;
