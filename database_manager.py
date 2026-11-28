@@ -7,6 +7,7 @@ import re
 import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.abspath(os.environ.get("TBH_DATA_DIR") or BASE_DIR)
@@ -1238,6 +1239,33 @@ def get_settings() -> Dict[str, str]:
 
 SECRET_SETTING_KEYS = ("torbox_api_key", "tmdb_api_key", "tpdb_api_key", "nzbgeek_api_key")
 
+# Manifest URLs carry the addon token in the path. They stay in the database and
+# are read by the server; any payload sent to the browser shows a masked form.
+MANIFEST_SETTING_KEYS = (
+    "roxxy_manifest_url",
+    "roxxy_extra_manifest_url",
+    "roxxy_manifest_url_jav",
+    "roxxy_manifest_url_english_adult",
+    "roxxy_manifest_url_onlyfans",
+    "roxxy_manifest_url_indo_movie",
+    "roxxy_manifest_url_donghua",
+)
+
+
+def _mask_manifest_url(val: str) -> str:
+    """Keep scheme/host and the file name, hide the token path segment."""
+    s = (val or "").strip()
+    if not s:
+        return ""
+    try:
+        parsed = urlsplit(s)
+    except ValueError:
+        return "••••manifest"
+    if not parsed.scheme or not parsed.netloc:
+        return "••••manifest"
+    name = parsed.path.rstrip("/").rsplit("/", 1)[-1] or "manifest.json"
+    return f"{parsed.scheme}://{parsed.netloc}/…/{name}"
+
 
 def _mask_secret(val: str) -> str:
     s = (val or "").strip()
@@ -1255,6 +1283,9 @@ def get_masked_settings() -> Dict[str, Any]:
         secret_val = raw.get(k) or ""
         masked[f"has_{k}"] = bool(secret_val.strip())
         masked[k] = _mask_secret(secret_val)
+    for k in MANIFEST_SETTING_KEYS:
+        if k in masked:
+            masked[k] = _mask_manifest_url(raw.get(k) or "")
     return masked
 
 

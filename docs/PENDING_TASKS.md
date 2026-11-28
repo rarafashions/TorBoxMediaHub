@@ -1,6 +1,6 @@
 # Pending Tasks
 
-Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **543 passed, 219 subtests passed** (0 gagal).
+Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **550 passed, 219 subtests passed** (0 gagal).
 
 ---
 
@@ -74,6 +74,7 @@ Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-h
 | 50 | Discovery v2: badge IN LIBRARY untuk semua kategori | `static/ui/home.js`, `static/ui/app.css`, `tests/test_v2_ui.py` | Indeks Library per kategori dari `state.items`; pencocokan `tmdb_id`/`anilist_id`, lalu judul ternormalisasi + tahun (containment untuk judul khas, adult tanpa penjaga tahun). Badge hijau `card__lib-badge` berikon centang di kartu Film/Serial TV/Anime/Donghua/English Adult dan tag `.tag--lib` di sheet detail. Suite **536 passed, 204 subtests**; verifikasi Playwright 5056: 8/2/1/5 badge per tab dan 1 badge pada pencarian Donghua "Swallowed Star". |
 | 51 | Tahap 2 v2: filter kualitas, scope playlist, audit subtitle, M3U per item | `static/ui/home.js`, `static/ui/app.css`, `app.py` (versi), `tests/test_v2_ui.py` | Library punya select **Kualitas** (4K/1440/1080/720/SD/tanpa info) dan chip **Scope playlist** (Semua/Belum/Sudah; hitungan mengikuti filter lain). Detail item punya **Audit subtitle** (`POST /api/subtitle-quality/audit`, hasil per track) dan tautan **M3U LAN** ke `/api/media/<id>/remote-m3u`. Verifikasi live: 611 item (539 belum / 72 sudah), filter 1080p = 53 judul, M3U 200 `audio/x-mpegurl`, audit embedded 2 track; suite **537 passed, 219 subtests**. |
 | 52 | Tahap 3 v2: `/` menjadi UI v2, UI lama di `/legacy` | `app.py`, `templates/home_v2.html`, `templates/index.html`, `static/ui/home.js`, `tests/test_ui_routes.py` | `/` merender `home_v2.html`; `/v2` tetap alias; `/legacy` merender `index.html`; `/?discover=1` → `302 /legacy?discover=1` dengan query utuh. Tautan silang: footer/Pengaturan v2 ke `/legacy`, header UI lama ke `/`. `/roxxy` dan `/api/*` tidak berubah. Verifikasi live 200/200/200, modal Discovery tetap terbuka; suite **543 passed, 219 subtests**. |
+| 53 | Permukaan secret browser: mask manifest URL + buang signed `stream_url` | `database_manager.py`, `app.py`, `tests/test_secret_surface.py` | `get_masked_settings()` memask tujuh slot manifest (`skema://host/…/manifest.json`). `_public_item`/`_public_items` dan `_public_playlist(s)` membuang `stream_url` dari `/api/bootstrap`, `/api/media`, `/api/playlists*`, dan respons mutasi media; server tetap memakai nilai asli untuk Play/M3U. 7 tes baru; suite **550 passed, 219 subtests**; live `v1.3DS` 0 token/0 signed URL di keempat permukaan. |
 
 ---
 
@@ -91,7 +92,7 @@ Audit DB live 28 November 2026 (585 baris) menemukan empat sumber masalah; keemp
 Sisa perbaikan data yang belum dikerjakan (bukan blocker):
 
 - Duplikat episode masih ikut terhitung di total Library/statistik dan di "Putar season"/"Putar full season"; yang berubah baru urutannya. Setelah perbaikan nomor episode (baris 38) ada **21 grup** episode ganda, maksimal 3 salinan per episode.
-- 15 baris adult (12 `adult_scene_parser`, 2 `theporndb`, 1 `roxxy`) dan 5 JAV berkode hasil parse nama file masih Needs Review sampai ada verdict baru. Satu baris impor baru (#586) masih `pending` dan akan diproses batch berikutnya.
+- **29** baris masih Needs Review (termasuk 15 adult dan 5 JAV berkode hasil parse nama file). Klasifikasi ulang `v1.3DS` memproses seluruh baris `pending`: 7 kandidat -> 5 classified + 2 needs review, sehingga `classification_pending_count` kini **0** dan run berikutnya tidak menemukan kandidat.
 
 ### V1 - verifikasi manual (butuh app berjalan)
 
@@ -122,7 +123,17 @@ Sisa perbaikan data yang belum dikerjakan (bukan blocker):
 | `/roxxy`, `/api/bootstrap` | 200 tanpa perubahan |
 | Konsol + tata letak | Tanpa `pageerror`; Pengaturan v2 6 panel; tanpa overflow |
 
-Sisa item checklist yang **belum** dijalankan karena memerlukan aksi tulis/kuota: simpan Pengaturan, probe stream gagal, cache magnet batch, impor manifest, NZB forwarder, job gagal, reklasifikasi, auto-add Indo, riwayat lebih dari 50 job, konfirmasi unduhan IN LIBRARY, badge setelah impor, watcher TorBox, impor Donghua, unduhan IndonesiaMovies, dan pengiriman `+ TorBox` dari panel Serial.
+**Dijalankan 28 November 2026 (`v1.3DS`, port 5050, antrean 0):**
+
+| Item | Hasil |
+|---|---|
+| Simpan Pengaturan tanpa perubahan | 200, digest setting identik, API key dan URL manifest tidak berubah |
+| Klasifikasi ulang (dua kali) | 7 kandidat -> 5 classified, 2 needs review; `pending` 0; run kedua 0 kandidat |
+| Statistik Indonesia Movies | `/api/task/status` = 1 = jumlah item `indo_movie` di `/api/bootstrap` |
+| Masking token | `/api/settings`, `/api/bootstrap`, `/api/media`, `/api/roxxy/config` -> 0 token manifest, 0 signed URL |
+| Koneksi | PID 96676 hanya `Listen`, `CloseWait` 0 setelah idle |
+
+Sisa item checklist yang **belum** dijalankan karena memerlukan aksi tulis/kuota: ganti folder/manifest di Pengaturan, probe stream gagal, cache magnet batch, impor manifest/judul, NZB forwarder, job gagal, auto-add Indo, riwayat lebih dari 50 job, konfirmasi unduhan IN LIBRARY, badge setelah impor, watcher TorBox, impor Donghua, unduhan IndonesiaMovies, dan pengiriman `+ TorBox` dari panel Serial.
 - Buka `/` (UI v2) dan periksa delapan tab: **Beranda** (hero + 4 stat + 6 pintasan + rail), **Library** (chip kategori + chip scope playlist, 7 filter termasuk **Kualitas** dan **Status klasifikasi / Needs Review**, sort, mode pilih), **Serial** (kartu progres + panel season), **Playlist** (kartu, kelola, picker, M3U), **Unduhan** (4 panel, tombol task, retry, poll 5 s), **Statistik** (bar kategori, kelengkapan, lingkungan, backup), **Pengaturan** (API key tersamarkan, media player + Auto-Detect/Browse, folder lokal, subtitle, runtime, database/backup). Pastikan tidak ada scrollbar horizontal di 1024 px dan di jendela sempit navbar menjadi dua baris tanpa menutupi judul. Detail: buka satu film dan satu serial, coba rating, subtitle ID/EN, tambah/hapus playlist, Escape, tombol Back browser, dan deep link `#media-<id>`. Unduhan: pastikan antrean lokal kosong saat uji, lalu mulai satu task dari panel dan hentikan bila perlu.
 - Buka `/legacy` dan pastikan UI lama tampil penuh (Library, Discovery, Settings & DB); tombol **UI v2** kembali ke `/`.
 - Buka Discovery Hub (dari UI lama) dan pastikan hanya ada empat tab (Movies, TV Shows, Anime, Donghua); feed Trending/Popular/Top Rated dan Search harus memuat untuk keempatnya.

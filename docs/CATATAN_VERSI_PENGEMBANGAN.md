@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DR`
+**Versi saat ini:** `v1.3DS`
 **Tanggal status:** 28 November 2026
-**Baseline tes:** `python -m pytest tests -q --no-header` → **543 passed, 219 subtests passed** (0 gagal)
+**Baseline tes:** `python -m pytest tests -q --no-header` → **550 passed, 219 subtests passed** (0 gagal)
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -64,6 +64,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DP` | 28 Nov 2026 | Kartu Discovery (Film, Serial TV, Anime, Donghua, English Adult) menampilkan badge centang **IN LIBRARY**; sheet detail juga menampilkan tag yang sama |
 | `v1.3DQ` | 28 Nov 2026 | Tahap 2: filter kualitas + scope playlist di Library, audit subtitle per item, dan tautan M3U LAN di detail |
 | `v1.3DR` | 28 Nov 2026 | Tahap 3: `/` menampilkan UI v2, UI lama dipindah ke `/legacy`, deep link `/?discover=1` dialihkan ke `/legacy?discover=1` |
+| `v1.3DS` | 28 Nov 2026 | `/api/settings` memask URL manifest; signed `stream_url` dibuang dari bootstrap/media/playlist; pending task tanpa kuota diverifikasi |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -256,6 +257,15 @@ Restart app live port 5050 dilakukan setelah antrean TorBox/lokal 0 dan task idl
 - **Tes**: `tests/test_ui_routes.py` (6 tes) menjaga `/` = v2, `/v2` = alias, `/legacy` = UI lama, tautan silang, dan redirect deep link; suite **543 passed, 219 subtests**.
 - **Verifikasi live** (port 5050, `v1.3DR`, antrean 0, task idle): `/` 200 dengan `#v2-main`, 8 tab, versi `v1.3DR`; `/v2#/library` 60 kartu; `/legacy` 200 dengan `#view-library` + `#tab-discover` dan tombol **UI v2** → `/`; `/?discover=1` → `302 /legacy?discover=1` dengan modal Discovery terbuka (5 chip kategori); `/roxxy` dan `/api/bootstrap` 200; Pengaturan v2 6 panel; tanpa `pageerror`.
 
+
+### 4.20 `v1.3DS` — Permukaan secret ditutup, pending task tanpa kuota dijalankan
+
+- **`/api/settings` memask URL manifest.** Tujuh slot manifest (`roxxy_manifest_url`, `_extra_`, `_jav`, `_english_adult`, `_onlyfans`, `_indo_movie`, `_donghua`) kini melewati `_mask_manifest_url`: skema dan host tetap terlihat, token path diganti `…`, nama file dipertahankan. Nilai asli tetap di database dan hanya dibaca server.
+- **Signed stream URL tidak lagi ikut ke browser.** `_public_item`/`_public_items` membuang `stream_url` dari `/api/bootstrap`, `/api/media`, dan respons mutasi media (poster retry/manual, klasifikasi, enrich, edit manual, tonton, rating, subtitle). `_public_playlist(s)` melakukan hal sama untuk `/api/bootstrap` dan `/api/playlists*`. Play dan pembuatan M3U tetap memakai nilai asli di server.
+- **Tes**: `tests/test_secret_surface.py` (7 tes) menjaga masking manifest, `/api/settings`, `/api/bootstrap`, `/api/media`, dan `/api/playlists`; suite **550 passed, 219 subtests**.
+- **Verifikasi live** (`v1.3DS`, antrean 0): `/api/bootstrap` 539 item + 5 playlist dengan 0 `stream_url`, 0 query token, 0 token manifest; `/api/media` 0; `/api/settings` menampilkan 7 manifest sebagai `https://hub.roxxy-tech.com/…/manifest.json`; `/api/roxxy/config` 0. UI: Library 60 kartu, 3 chip scope, Playlist 5 kartu, detail terbuka 31 aksi, tanpa `pageerror`.
+- **Pending task yang dijalankan** (tanpa kuota): simpan Pengaturan tanpa perubahan → 200 dan digest setting identik; klasifikasi ulang → 7 kandidat (5 classified, 2 needs review), `pending` 0, run kedua 0 kandidat; statistik Indonesia Movies 1 = 1 item; PID baru hanya `Listen`, `CloseWait` 0.
+
 ---
 
 ## 5. Keputusan yang mengikat
@@ -274,7 +284,7 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 10. **v2 tanpa framework/bundler/npm/Tailwind.** Hanya `static/ui/*` + `templates/home_v2.html`.
 11. **Route split sejak `v1.3DR`.** `/` menyajikan UI v2, `/legacy` menyajikan UI lama, `/v2` tetap alias; `/?discover=1` dialihkan ke `/legacy?discover=1`. `/roxxy` dan `/api/*` tidak berubah.
 12. **Label UI berbahasa Indonesia** dan mengutamakan fungsi di atas estetika.
-13. **Secret tidak pernah tampil mentah.** API key, token manifest, dan signed stream URL tidak dikirim ke browser.
+13. **Secret tidak pernah tampil mentah.** API key dimask, URL manifest dimask lewat `_mask_manifest_url`, dan `stream_url` bertanda tangan dibuang dari payload browser (`_public_item`/`_public_playlists`).
 14. **Restart hanya saat antrean 0 dan task idle.** Jangan mengganggu unduhan/antrean aktif.
 15. **Commit lokal tanpa push** sampai pengguna meminta.
 16. **Tes konservatif.** Jangan mengubah ekspektasi tes lama hanya agar suite hijau; baseline wajib tetap hijau.

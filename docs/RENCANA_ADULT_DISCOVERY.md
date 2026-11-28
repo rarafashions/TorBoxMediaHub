@@ -2,8 +2,8 @@
 
 **Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy; Tahap 1, Tahap 2, dan Tahap 3 selesai (`/` sekarang UI v2, UI lama di `/legacy`)
 **Tanggal:** 28 November 2026
-**Versi acuan:** `v1.3DR`
-**Baseline tes:** `543 passed, 219 subtests passed`
+**Versi acuan:** `v1.3DS`
+**Baseline tes:** `550 passed, 219 subtests passed`
 
 ---
 
@@ -586,6 +586,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | Live port 5050 (`v1.3DP`, salinan DB asli) | Delapan view v2 tanpa galat; Discovery 50 kartu/feed, badge Film 7/Serial 2/Anime 2/Adult 5, poster proxy 0 panggilan; legacy dua kolom + 4 baris health; `/roxxy` 341 hasil search-all dan MissAV Uncensored 100 judul; panel Serial 425 rilis (122 CACHED); token manifest tersamarkan; CloseWait stabil 10 |
 | Live port 5050 (`v1.3DQ`, Tahap 2) | Chip scope 611/539/72; filter 1080p 53 judul dengan label kualitas di subjudul; detail: meta kualitas, `M3U LAN` 200 `audio/x-mpegurl`, audit `Embedded · 2 track`; tanpa error konsol |
 | Live port 5050 (`v1.3DR`, Tahap 3) | `/` 200 UI v2 (8 tab), `/v2` alias 60 kartu, `/legacy` 200 dengan `#view-library`, `/?discover=1` 302 ke `/legacy?discover=1` dan modal Discovery terbuka; `/roxxy` + `/api/bootstrap` 200; tanpa error konsol |
+| Live port 5050 (`v1.3DS`, permukaan secret) | `/api/bootstrap` 539 item + 5 playlist tanpa `stream_url`; `/api/media`, `/api/settings`, `/api/roxxy/config` 0 token manifest dan 0 signed URL; Library 60 kartu, Playlist 5 kartu, detail 31 aksi; tanpa `pageerror` |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 

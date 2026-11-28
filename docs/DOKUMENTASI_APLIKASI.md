@@ -1,8 +1,8 @@
 # Dokumentasi Lengkap — TorBox Media Hub
 
-**Versi aplikasi:** `v1.3DR`  
+**Versi aplikasi:** `v1.3DS`  
 **Status dokumen:** 28 November 2026  
-**Baseline tes:** `python -m pytest tests -q --no-header` → **543 passed, 219 subtests passed**
+**Baseline tes:** `python -m pytest tests -q --no-header` → **550 passed, 219 subtests passed**
 
 Dokumen ini menjelaskan aplikasi secara menyeluruh: fitur, cara menjalankan untuk pengguna baru, konfigurasi, mesin internal, keamanan, batasan, dan pemecahan masalah. Untuk catatan rilis dan keputusan pengembangan, lihat [`CATATAN_VERSI_PENGEMBANGAN.md`](CATATAN_VERSI_PENGEMBANGAN.md). Untuk draf README GitHub, lihat [`README_GITHUB_DRAFT.md`](README_GITHUB_DRAFT.md).
 
@@ -785,8 +785,8 @@ Akses dari perangkat lain: `http://<IP-host>:5050`. Buka firewall untuk port ter
 
 - **Tanpa login.** Default bind `127.0.0.1`. Siapa pun yang bisa menjangkau port dapat mengubah pengaturan, memulai unduhan, dan menghapus file. Untuk LAN, gunakan reverse proxy berautentikasi atau jaringan tepercaya.
 - **Guard tulis lintas situs.** `POST/PUT/PATCH/DELETE` dengan `Origin`/`Referer` beda host atau `Sec-Fetch-Site: cross-site` ditolak `403`. Request tanpa header (curl/skrip/launcher) sengaja diizinkan.
-- **Secret tidak pernah dikirim mentah.** API key dimask (`••••••••xxxx`), manifest Roxxy disamarkan, field input selalu kosong setelah simpan.
-- **Signed stream URL tidak ditampilkan di UI.** Tautan `requestdl` dibuat di server saat Play atau saat membangun M3U; browser tidak menampilkannya, tetapi file M3U yang diunduh memang berisi tautan yang diperlukan pemutar.
+- **Secret tidak pernah dikirim mentah.** API key dimask (`••••••••xxxx`); URL manifest Roxxy dimask (`https://host/…/manifest.json`) termasuk di `/api/settings`; field input selalu kosong setelah simpan.
+- **Signed stream URL tidak ditampilkan di UI dan tidak ikut di payload.** Tautan `requestdl` dibuat di server saat Play atau saat membangun M3U; `/api/bootstrap`, `/api/media`, `/api/playlists*`, dan respons mutasi media membuang field `stream_url`. File M3U yang diunduh memang berisi tautan yang diperlukan pemutar.
 - **Guard SSRF poster & subtitle.** Resolusi semua IP, tolak IP privat/localhost/`*.local`, redirect manual maksimal 5 hop, batas ukuran 5 MB.
 - **Guard path unduhan.** Tolak OS tree, `Program Files*`, `ProgramData`, Startup, direktori aplikasi, prefix `\\?\`.
 - **WebDL hanya URL halaman publik.** URL media langsung dan hoster terlarang ditolak.

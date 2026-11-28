@@ -41,7 +41,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DR"  # single source of truth; templates render this
+APP_VERSION = "v1.3DS"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -3368,6 +3368,40 @@ def index_legacy():
     return render_template("index.html", app_version=APP_VERSION)
 
 
+def _public_item(item):
+    """Item payload for the browser: signed stream URLs stay server-side."""
+    if not item:
+        return item
+    copy = dict(item)
+    copy.pop("stream_url", None)
+    return copy
+
+
+def _public_items(items):
+    return [_public_item(item) for item in items or []]
+
+
+def _public_playlists(playlists):
+    """Playlist payload for the browser: signed stream URLs stay server-side."""
+    public = []
+    for pl in playlists or []:
+        items = []
+        for it in pl.get("items") or []:
+            item = dict(it)
+            item.pop("stream_url", None)
+            items.append(item)
+        copy = dict(pl)
+        copy["items"] = items
+        public.append(copy)
+    return public
+
+
+def _public_playlist(playlist):
+    if not playlist:
+        return playlist
+    return _public_playlists([playlist])[0]
+
+
 @app.route("/api/bootstrap", methods=["GET"])
 def api_bootstrap():
     db.verify_subtitle_files()
@@ -3391,8 +3425,8 @@ def api_bootstrap():
             "version": APP_VERSION,
             "env": _get_environment_info(),
             "stats": db.get_telemetry_stats(),
-            "items": items,
-            "playlists": db.get_all_playlists(),
+            "items": _public_items(items),
+            "playlists": _public_playlists(db.get_all_playlists()),
             "task": TASK_MGR.status(),
         }
     )
@@ -5142,7 +5176,7 @@ def api_media_list():
         classification_status=request.args.get("classification_status", "all"),
     )
     _attach_subtitle_track_summaries(items)
-    return jsonify({"ok": True, "items": items, "stats": db.get_telemetry_stats()})
+    return jsonify({"ok": True, "items": _public_items(items), "stats": db.get_telemetry_stats()})
 
 
 @app.route("/api/media/<int:media_id>/poster", methods=["GET"])
@@ -5203,7 +5237,7 @@ def api_media_poster_retry(media_id: int):
             replace_url=(poster_url != item.get("poster_url")),
         )
     updated = db.get_media_item(media_id)
-    return jsonify({"ok": result.get("poster_status") == "found", "result": result, "item": updated})
+    return jsonify({"ok": result.get("poster_status") == "found", "result": result, "item": _public_item(updated)})
 
 
 @app.route("/api/media/<int:media_id>/poster/manual", methods=["POST"])
@@ -5226,7 +5260,7 @@ def api_media_poster_manual(media_id: int):
         status="manual", error=None, source="manual",
         is_manual=True, allow_manual_overwrite=True,
     )
-    return jsonify({"ok": True, "item": db.get_media_item(media_id)})
+    return jsonify({"ok": True, "item": _public_item(db.get_media_item(media_id))})
 
 
 @app.route("/api/media/<int:media_id>/poster/automatic", methods=["POST"])
@@ -5346,7 +5380,7 @@ def api_media_classification_apply(media_id: int):
         return jsonify({"ok": False, "error": str(exc)}), 400
     if not updated:
         return jsonify({"ok": False, "error": "Media not found."}), 404
-    return jsonify({"ok": True, "item": updated, "history": db.get_classification_history(media_id, 10),
+    return jsonify({"ok": True, "item": _public_item(updated), "history": db.get_classification_history(media_id, 10),
                     "stats": db.get_telemetry_stats()})
 
 
@@ -5387,7 +5421,7 @@ def api_media_enrich_single(media_id: int):
             "Single-item enrichment media_id=%s provider=%s status=%s query=%s poster_status=%s",
             media_id, lookup.get("provider"), lookup.get("status"), lookup.get("query"), lookup.get("poster_status")
         )
-        return jsonify({"ok": True, "item": updated, "lookup": lookup, "stats": db.get_telemetry_stats()})
+        return jsonify({"ok": True, "item": _public_item(updated), "lookup": lookup, "stats": db.get_telemetry_stats()})
     except Exception as exc:
         app.logger.exception("Single-item metadata enrichment failed for media_id=%s", media_id)
         return jsonify({"ok": False, "error": f"Metadata enrichment failed: {exc}"}), 500
@@ -5399,7 +5433,7 @@ def api_media_manual_edit(media_id: int):
     updated = db.update_media_manual(media_id, payload)
     if not updated:
         return jsonify({"ok": False, "error": "Media not found."}), 404
-    return jsonify({"ok": True, "item": updated, "stats": db.get_telemetry_stats()})
+    return jsonify({"ok": True, "item": _public_item(updated), "stats": db.get_telemetry_stats()})
 
 
 @app.route("/api/media/<int:media_id>/delete-physical", methods=["POST"])
@@ -5419,14 +5453,14 @@ def api_media_delete_physical(media_id: int):
 def api_media_watched(media_id: int):
     payload = request.get_json(silent=True) or {}
     db.update_media_watched(media_id, int(payload.get("is_watched", 1)))
-    return jsonify({"ok": True, "item": db.get_media_item(media_id), "stats": db.get_telemetry_stats()})
+    return jsonify({"ok": True, "item": _public_item(db.get_media_item(media_id)), "stats": db.get_telemetry_stats()})
 
 
 @app.route("/api/media/<int:media_id>/rating", methods=["POST"])
 def api_media_rating(media_id: int):
     payload = request.get_json(silent=True) or {}
     db.update_media_rating(media_id, int(payload.get("rating_star", 0)))
-    return jsonify({"ok": True, "item": db.get_media_item(media_id), "stats": db.get_telemetry_stats()})
+    return jsonify({"ok": True, "item": _public_item(db.get_media_item(media_id)), "stats": db.get_telemetry_stats()})
 
 
 @app.route("/api/media/<int:media_id>/subtitle/<language>", methods=["POST"])
@@ -5442,7 +5476,7 @@ def api_media_subtitle_language(media_id: int, language: str):
     existing = next((x for x in db.get_media_subtitles(media_id) if x.get("language") == language), None)
     if existing:
         return jsonify({"ok": True, "already_available": True, "subtitle": existing,
-                        "item": db.get_media_item(media_id)})
+                        "item": _public_item(db.get_media_item(media_id))})
 
     settings = db.get_settings()
     torbox_key = (settings.get("torbox_api_key") or "").strip()
@@ -5464,7 +5498,7 @@ def api_media_subtitle_language(media_id: int, language: str):
         stream_index=result.get("stream_index"), verified=True,
     )
     return jsonify({"ok": True, "already_available": False, "subtitle": result,
-                    "item": db.get_media_item(media_id), "stats": db.get_telemetry_stats()})
+                    "item": _public_item(db.get_media_item(media_id)), "stats": db.get_telemetry_stats()})
 
 
 @app.route("/api/media/<int:media_id>/subtitle", methods=["POST"])
@@ -5483,7 +5517,7 @@ def api_media_subtitle_single(media_id: int):
             res.get("subtitle_lang") or "en",
             res.get("subtitle_source") or "auto",
         )
-        return jsonify({"ok": True, "item": db.get_media_item(media_id), "stats": db.get_telemetry_stats()})
+        return jsonify({"ok": True, "item": _public_item(db.get_media_item(media_id)), "stats": db.get_telemetry_stats()})
 
     cat = item.get("content_category") or "uncategorized"
     if cat == "english_adult":
@@ -5744,7 +5778,7 @@ def _append_playlist_worker(playlist_id: int, media_ids: List[int]) -> None:
 @app.route("/api/playlists", methods=["GET", "POST"])
 def api_playlists():
     if request.method == "GET":
-        return jsonify({"ok": True, "playlists": db.get_all_playlists(), "stats": db.get_telemetry_stats()})
+        return jsonify({"ok": True, "playlists": _public_playlists(db.get_all_playlists()), "stats": db.get_telemetry_stats()})
 
     payload = request.get_json(silent=True) or {}
     name = (payload.get("name") or "").strip()
@@ -5784,13 +5818,13 @@ def api_playlist_remove_item(playlist_id: int, media_id: int):
     pl = db.get_playlist_by_id(playlist_id)
     if pl:
         _generate_m3u_file(pl["name"], pl["items"], existing_file_path=pl["file_path"])
-    return jsonify({"ok": True, "playlist": pl, "playlists": db.get_all_playlists(), "stats": db.get_telemetry_stats()})
+    return jsonify({"ok": True, "playlist": _public_playlist(pl), "playlists": _public_playlists(db.get_all_playlists()), "stats": db.get_telemetry_stats()})
 
 
 @app.route("/api/playlists/<int:playlist_id>", methods=["DELETE"])
 def api_playlist_delete(playlist_id: int):
     db.delete_playlist_record(playlist_id)
-    return jsonify({"ok": True, "playlists": db.get_all_playlists(), "stats": db.get_telemetry_stats()})
+    return jsonify({"ok": True, "playlists": _public_playlists(db.get_all_playlists()), "stats": db.get_telemetry_stats()})
 
 
 @app.route("/api/playlists/<int:playlist_id>/download", methods=["GET"])
