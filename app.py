@@ -32,6 +32,7 @@ import subtitle_quality_audit as subtitle_audit
 import platform_support as platform_env
 import webdl_resolver as webdl
 import adult_discovery as adult_disc
+import adult_streams
 from roxxy_module import (
     ROXXY_ALL_SOURCES,
     ROXXY_SOURCE_CATEGORIES,
@@ -40,7 +41,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DH"  # single source of truth; templates render this
+APP_VERSION = "v1.3DI"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -50,6 +51,7 @@ app = Flask(
 )
 app.register_blueprint(roxxy_bp)
 from roxxy_download_engine import attach_provided_subtitles, cache_library_poster, localdl_bp
+import roxxy_download_engine as local_engine
 app.register_blueprint(localdl_bp)
 
 
@@ -4664,6 +4666,141 @@ def api_adult_detail():
             "in_library": _adult_library_matches(item.get("title") or ""),
         }
     )
+
+
+@app.route("/api/adult/streams", methods=["POST"])
+def api_adult_streams():
+    """Direct media URLs published by the provider page, for local engines.
+
+    TorBox WebDL never needs this list; it exists so the card modal can offer
+    the same ``yt-dlp``/``aria2c`` routes as the Roxxy download center.
+    """
+    payload = request.get_json(silent=True) or {}
+    raw_url = str(payload.get("url") or "").strip()
+    provider = str(payload.get("provider") or "").strip()
+    provider_id = str(payload.get("id") or payload.get("provider_id") or "").strip()
+    try:
+        if raw_url:
+            item = adult_disc.link(raw_url)["item"]
+        else:
+            item = adult_disc.cached_item(provider, provider_id)
+    except adult_disc.AdultDiscoveryError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), exc.status
+    if not item:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": (
+                        "Item tidak ada di cache katalog. Buka ulang katalog atau "
+                        "tempel URL halaman."
+                    ),
+                }
+            ),
+            404,
+        )
+    try:
+        result = adult_streams.streams_for(
+            item, force=payload.get("force") is True
+        )
+    except adult_disc.AdultDiscoveryError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), exc.status
+    return jsonify({"ok": True, "item": item, **result})
+
+
+_ADULT_DOWNLOAD_FIELDS = (
+    "item_id",
+    "kind",
+    "title",
+    "progress",
+    "download_state",
+    "finished",
+    "category",
+    "library_stage",
+    "library_message",
+)
+
+
+def _adult_download_entries(entries: Any, title: str = "") -> List[Dict[str, Any]]:
+    """Adult rows from a monitor snapshot; a title match catches old hints."""
+    wanted = " ".join(str(title or "").split()).casefold()
+    rows: List[Dict[str, Any]] = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        category = str(entry.get("category") or "").strip().lower()
+        candidate = " ".join(str(entry.get("title") or "").split()).casefold()
+        by_title = (
+            bool(wanted)
+            and len(wanted) >= 4
+            and (wanted in candidate or candidate in wanted)
+        )
+        if category != "english_adult" and not by_title:
+            continue
+        row = {field: entry.get(field) for field in _ADULT_DOWNLOAD_FIELDS}
+        row["matched"] = "category" if category == "english_adult" else "title"
+        rows.append(row)
+    return rows
+
+
+@app.route("/api/adult/download-status", methods=["GET"])
+def api_adult_download_status():
+    """Progress of English Adult cloud downloads without consuming imports.
+
+    ``consume_imported=False`` keeps the completion event available to the
+    Downloads view while the adult modal observes the same import.
+    """
+    title = (request.args.get("title") or "").strip()
+    snapshot = TORBOX_MONITOR.status(consume_imported=False)
+    active = _adult_download_entries(snapshot.get("active") or [], title)
+    syncing = _adult_download_entries(snapshot.get("syncing") or [], title)
+    imported = _adult_download_entries(snapshot.get("newly_imported") or [], title)
+    return jsonify(
+        {
+            "ok": True,
+            "active": active,
+            "syncing": syncing,
+            "imported": imported,
+            "active_count": len(active) + len(syncing),
+        }
+    )
+
+
+_ADULT_LOCAL_JOB_FIELDS = (
+    "id",
+    "title",
+    "engine",
+    "engine_active",
+    "status",
+    "progress",
+    "message",
+    "created_at",
+    "updated_at",
+    "completed_at",
+    "library_status",
+    "library_message",
+    "library_task_id",
+)
+
+
+@app.route("/api/adult/local-status", methods=["GET"])
+def api_adult_local_status():
+    """Local Roxxy jobs that were started from the English Adult modal.
+
+    The download engine keeps one global job map, so the ``_roxxySource`` marker
+    stored in the metadata snapshot is what separates adult jobs from Roxxy
+    ones. Only display fields leave the engine: URLs, file paths and PIDs stay
+    private.
+    """
+    rows: List[Dict[str, Any]] = []
+    with local_engine._lock:
+        for job in local_engine._jobs.values():
+            meta = job.get("meta_snapshot") or {}
+            if str(meta.get("_roxxySource") or "") != "english_adult":
+                continue
+            rows.append({field: job.get(field) for field in _ADULT_LOCAL_JOB_FIELDS})
+    rows.sort(key=lambda row: str(row.get("created_at") or ""), reverse=True)
+    return jsonify({"ok": True, "jobs": rows[:20]})
 
 
 @app.route("/api/torbox/watch-status", methods=["GET"])
