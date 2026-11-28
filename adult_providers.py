@@ -196,7 +196,7 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
             "https://www.youporn.com/search/?query={query}",
             "https://www.youporn.com/search/?query={query}&page={page}",
         ),
-        "note": "HTML; halaman relatif besar (sekitar 500 KB).",
+        "note": "HTML; dapat mengalihkan ke halaman login (dilaporkan blocked).",
     },
     "youjizz": {
         **_BASE,

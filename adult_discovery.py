@@ -190,6 +190,34 @@ def reset_state_for_tests() -> None:
         _STATE.clear()
 
 
+def cached_item(provider: Any, provider_id: Any = "", page_url: Any = "") -> Optional[Dict[str, Any]]:
+    """Find one item in the cached catalogue pages.
+
+    Detail views need the full card (thumb, rating, tags) without re-fetching a
+    listing. Only live cache entries are searched; a miss simply tells the UI
+    to open the catalogue again or paste the page URL.
+    """
+    key = str(provider or "").strip().lower()
+    pid = str(provider_id or "").strip()
+    url = str(page_url or "").strip()
+    if not key or not (pid or url):
+        return None
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        entries = list(_CACHE.items())
+    for _cache_key, (stored_at, payload) in entries:
+        if now - stored_at > CACHE_TTL_SECONDS:
+            continue
+        for item in payload.get("items") or ():
+            if str(item.get("provider") or "").lower() != key:
+                continue
+            if (pid and str(item.get("provider_id") or "") == pid) or (
+                url and item.get("page_url") == url
+            ):
+                return dict(item)
+    return None
+
+
 # --------------------------------------------------------------------------- #
 # HTTP
 # --------------------------------------------------------------------------- #
@@ -263,9 +291,34 @@ def _fetch(url: str, params: Optional[Dict[str, Any]], provider: str, accept: st
             return {"ok": False, "code": "rate_limited"}
         if status != 200:
             return {"ok": False, "code": "http_error", "status": status}
+        if _is_login_wall(getattr(response, "url", ""), text):
+            return {"ok": False, "code": "blocked"}
         return {"ok": True, "text": text}
     finally:
         _close(response)
+
+
+_LOGIN_PATHS = ("/login", "/signin", "/sign-in", "/register", "/age-verification")
+_LOGIN_TITLES = ("<title>login", "<title>sign in", "<title>log in", "<title>register")
+
+
+def _is_login_wall(final_url: Any, text: str) -> bool:
+    """Detect a soft login wall served with HTTP 200.
+
+    YouPorn started answering unauthenticated listings with a redirect to
+    ``/login/`` and a login page instead of videos. Reporting ``blocked`` is
+    honest: retrying would only hammer the same wall. Only the final path and
+    the page title are used; login forms embedded in a normal page must not
+    flag the whole provider.
+    """
+    try:
+        path = urlparse(str(final_url or "")).path.lower()
+    except Exception:
+        path = ""
+    if path.startswith(_LOGIN_PATHS):
+        return True
+    head = str(text or "")[:4000].lower()
+    return any(marker in head for marker in _LOGIN_TITLES)
 
 
 def _request_json(url: str, params: Dict[str, Any], provider: str) -> Dict[str, Any]:
@@ -532,6 +585,26 @@ def _normalise_tags(value: Any) -> List[str]:
     return seen
 
 
+def _attr_id(raw: Any) -> str:
+    """Read an id from a plain attribute or a JSON-encoded one.
+
+    XVideos and XNXX put ``{"id": "1j1fu4db", ...}`` in ``data-video``, so
+    passing the attribute through would store a JSON blob as the dedupe key.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith("{"):
+        try:
+            data = json.loads(text)
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(data, dict):
+            return ""
+        text = str(data.get("id") or "").strip()
+    return re.sub(r"[^0-9A-Za-z_.-]", "", text)[:64]
+
+
 def _provider_id(provider: str, explicit: Any, page_url: str) -> str:
     """Stable id for dedupe: explicit attribute, else digits, else path hash."""
     text = str(explicit or "").strip()
@@ -695,7 +768,7 @@ def _parse_xvideos(soup: BeautifulSoup) -> List[Dict[str, Any]]:
                 "views": views,
                 "rating": "",
                 "published": "",
-                "id": card.get("data-video") or card.get("data-id") or "",
+                "id": _attr_id(card.get("data-video") or card.get("data-id"))
             }
         )
     return rows
@@ -735,7 +808,7 @@ def _parse_xnxx(soup: BeautifulSoup) -> List[Dict[str, Any]]:
                 "views": right,
                 "rating": right,
                 "published": "",
-                "id": card.get("data-video") or card.get("data-id") or "",
+                "id": _attr_id(card.get("data-video") or card.get("data-id"))
             }
         )
     return rows
@@ -1327,7 +1400,8 @@ def link(raw_url: Any) -> Dict[str, Any]:
     page_url = _manual_page_url(text, provider_key)
     provider_id = _provider_id(provider_key, "", page_url)
     title = _title_from_path(urlsplit(page_url).path)
-    if not title:
+    placeholder = not title
+    if placeholder:
         title = f"{spec['label']} · {_query_token(page_url) or provider_id}"
     return {
         "ok": True,
@@ -1352,6 +1426,7 @@ def link(raw_url: Any) -> Dict[str, Any]:
             "tags": [],
             "site_label": spec["label"],
             "source_kind": "manual",
+            "title_is_placeholder": placeholder,
         },
         "note": "TorBox WebDL mengambil halaman ini; metadata terisi setelah unduhan.",
     }

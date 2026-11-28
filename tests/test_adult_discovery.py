@@ -5,6 +5,7 @@ repository never carries provider content. No test touches the network.
 """
 
 import json
+import time
 import unittest
 from unittest.mock import patch
 
@@ -14,12 +15,14 @@ import app as app_module
 
 
 class FakeResponse:
-    def __init__(self, status=200, payload=None, text=None, content_type="application/json"):
+    def __init__(self, status=200, payload=None, text=None, content_type="application/json", url=""):
         self.status_code = status
         self._payload = payload if payload is not None else {}
         self._text = text if text is not None else json.dumps(self._payload)
+        self.content = self._text.encode("utf-8") if self._payload else b""
         self.headers = {"Content-Type": content_type}
         self.encoding = "utf-8"
+        self.url = url
         self.closed = False
 
     def iter_content(self, chunk_size=65536):
@@ -82,6 +85,12 @@ class AdultDiscoveryTestBase(unittest.TestCase):
     def tearDown(self):
         adult_disc.MIN_REQUEST_INTERVAL_SECONDS = self._original_interval
         adult_disc.reset_state_for_tests()
+
+    def feed_html(self, provider, html, mode="popular", page=1):
+        with patch.object(
+            adult_disc.HTTP_SESSION, "get", return_value=FakeResponse(status=200, text=html, content_type="text/html")
+        ):
+            return adult_disc.feed(provider, mode, page)
 
 
 class EpornerTests(AdultDiscoveryTestBase):
@@ -456,12 +465,6 @@ class HtmlProviderTests(AdultDiscoveryTestBase):
     </div>
     """
 
-    def feed_html(self, provider, html, mode="popular", page=1):
-        with patch.object(
-            adult_disc.HTTP_SESSION, "get", return_value=FakeResponse(status=200, text=html, content_type="text/html")
-        ):
-            return adult_disc.feed(provider, mode, page)
-
     def test_xhamster_card(self):
         result = self.feed_html("xhamster", self.XHAMSTER)
         self.assertTrue(result["ok"])
@@ -695,6 +698,237 @@ class ManualLinkTests(AdultDiscoveryTestBase):
         statuses = {row["id"]: row["status"] for row in payload["providers"]}
         self.assertEqual(statuses["spankbang"], "blocked")
         self.assertEqual(statuses["sunporno"], "search_only")
+
+
+class JsonAttributeTests(AdultDiscoveryTestBase):
+    def test_json_data_video_attribute_yields_clean_id(self):
+        self.assertEqual(
+            adult_disc._attr_id('{"id":"1j1fu4db","isChannel":true}'), "1j1fu4db"
+        )
+        self.assertEqual(adult_disc._attr_id("35433055"), "35433055")
+        self.assertEqual(adult_disc._attr_id("{not json"), "")
+        self.assertEqual(adult_disc._attr_id(None), "")
+
+    def test_xvideos_json_attribute_becomes_provider_id(self):
+        html = """
+        <div class="thumb-block" data-video='{"id":"uahevkkcc9f","isChannel":true}'>
+          <a class="thumb-link" href="/video.uahevkkcc9f/sample-item"><img src="https://cdn77-pic.xvideos-cdn.com/a.jpg"></a>
+          <div class="title"><a href="/video.uahevkkcc9f/sample-item" title="Sample Item">Sample Item</a></div>
+          <span class="duration">5 min</span>
+        </div>
+        """
+        result = self.feed_html("xvideos", html)
+        self.assertEqual(result["items"][0]["provider_id"], "uahevkkcc9f")
+
+    def test_xnxx_json_attribute_becomes_provider_id(self):
+        html = """
+        <div class="thumb-block" data-video='{"id":"1j1fu4db"}'>
+          <a class="thumb-link" href="/video-1j1fu4db/sample-item"><img src="https://cdn.xnxx-cdn.com/a.jpg"></a>
+          <a class="title" href="/video-1j1fu4db/sample-item" title="Sample Item">Sample Item</a>
+          <p class="metadata"><span class="right">1.2M 90%</span> 12min - 720p</p>
+        </div>
+        """
+        result = self.feed_html("xnxx", html)
+        self.assertEqual(result["items"][0]["provider_id"], "1j1fu4db")
+
+    def test_login_wall_is_reported_as_blocked(self):
+        wall = FakeResponse(
+            status=200,
+            text="<html><head><title>YouPorn - Login</title></head><body>log in</body></html>",
+            content_type="text/html",
+            url="https://www.youporn.com/login/",
+        )
+        with patch.object(adult_disc.HTTP_SESSION, "get", return_value=wall):
+            payload = adult_disc.feed("youporn", "popular", 1)
+        self.assertEqual(payload["items"], [])
+        self.assertEqual(payload["providers"][0]["status"], "blocked")
+        self.assertEqual(payload["warnings"][0]["code"], "blocked")
+
+    def test_embedded_login_form_in_normal_page_is_not_a_wall(self):
+        page = FakeResponse(
+            status=200,
+            text=(
+                "<html><head><title>Sample Tube</title></head><body>"
+                "<form id=\"loginform\"><input name=\"username\"><input name=\"password\"></form>"
+                "<article class=\"video-box\"></article></body></html>"
+            ),
+            content_type="text/html",
+            url="https://www.youporn.com/most_viewed/",
+        )
+        self.assertFalse(
+            adult_disc._is_login_wall(page.url, page._text)
+        )
+
+
+class CachedItemTests(AdultDiscoveryTestBase):
+    def test_cached_item_found_by_id_and_url(self):
+        payload = eporner_payload([eporner_item()])
+        with patch.object(adult_disc.HTTP_SESSION, "get", return_value=FakeResponse(payload=payload)):
+            adult_disc.feed("eporner", "popular", 1)
+        by_id = adult_disc.cached_item("eporner", "SampleId0001")
+        self.assertIsNotNone(by_id)
+        self.assertEqual(by_id["title"], "Sample Eporner Item")
+        by_url = adult_disc.cached_item("eporner", "", by_id["page_url"])
+        self.assertEqual(by_url["provider_id"], "SampleId0001")
+        self.assertIsNone(adult_disc.cached_item("eporner", "other-id"))
+        self.assertIsNone(adult_disc.cached_item("pornhub", "SampleId0001"))
+        self.assertIsNone(adult_disc.cached_item("", "SampleId0001"))
+
+    def test_expired_cache_entry_is_ignored(self):
+        payload = eporner_payload([eporner_item()])
+        with patch.object(adult_disc.HTTP_SESSION, "get", return_value=FakeResponse(payload=payload)):
+            adult_disc.feed("eporner", "popular", 1)
+        for key, (_stamp, value) in list(adult_disc._CACHE.items()):
+            adult_disc._CACHE[key] = (0.0, value)
+        self.assertIsNone(adult_disc.cached_item("eporner", "SampleId0001"))
+
+
+class AdultDetailTests(AdultDiscoveryTestBase):
+    def setUp(self):
+        super().setUp()
+        app_module._ADULT_DETAIL_CACHE.clear()
+
+    def test_manual_url_detail_reports_tpdb_not_configured(self):
+        with patch.object(app_module.db, "get_settings", return_value={}), patch.object(
+            app_module.db, "query_media_items", return_value=[]
+        ):
+            response = self.client.get(
+                "/api/adult/detail",
+                query_string={"url": "https://spankbang.com/8a2b9c/video/sample-two-title"},
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["item"]["provider"], "spankbang")
+        self.assertEqual(body["tpdb"]["status"], "not_configured")
+        self.assertEqual(body["in_library"], [])
+
+    def test_cached_detail_uses_tpdb_once(self):
+        payload = eporner_payload([eporner_item()])
+        with patch.object(adult_disc.HTTP_SESSION, "get", return_value=FakeResponse(payload=payload)):
+            adult_disc.feed("eporner", "popular", 1)
+        tpdb_meta = {
+            "title": "Sample Eporner Item",
+            "year": 2026,
+            "studio": "Sample Studio",
+            "poster_url": "https://cdn.example.com/p.jpg",
+            "plot": "Sample plot",
+            "actresses": ["Sample Performer"],
+            "genres": ["Sample Tag"],
+            "rating": 8.1,
+            "release_date": "2026-11-27",
+            "runtime": 20,
+        }
+        with patch.object(app_module.db, "get_settings", return_value={"tpdb_api_key": "tpdb-test"}), patch.object(
+            app_module.db, "query_media_items", return_value=[]
+        ), patch.object(
+            app_module.meta_eng, "_fetch_tpdb_metadata", return_value=tpdb_meta
+        ) as mocked_tpdb:
+            first = self.client.get("/api/adult/detail", query_string={"provider": "eporner", "id": "SampleId0001"})
+            second = self.client.get("/api/adult/detail", query_string={"provider": "eporner", "id": "SampleId0001"})
+
+        self.assertEqual(first.status_code, 200)
+        body = first.get_json()
+        self.assertEqual(body["tpdb"]["status"], "found")
+        self.assertEqual(body["tpdb"]["studio"], "Sample Studio")
+        self.assertEqual(body["item"]["title"], "Sample Eporner Item")
+        self.assertTrue(second.get_json()["tpdb"]["cached"])
+        self.assertEqual(mocked_tpdb.call_count, 1)
+
+    def test_placeholder_title_skips_tpdb(self):
+        with patch.object(app_module.db, "get_settings", return_value={"tpdb_api_key": "tpdb-test"}), patch.object(
+            app_module.db, "query_media_items", return_value=[]
+        ), patch.object(app_module.meta_eng, "_fetch_tpdb_metadata") as mocked_tpdb:
+            response = self.client.get(
+                "/api/adult/detail",
+                query_string={"url": "https://www.youjizz.com/videos/123456.html"},
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["tpdb"]["status"], "skipped")
+        mocked_tpdb.assert_not_called()
+
+    def test_unknown_cached_item_is_404(self):
+        response = self.client.get(
+            "/api/adult/detail", query_string={"provider": "eporner", "id": "missing"}
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(response.get_json()["ok"])
+
+
+class AdultWebdlTests(AdultDiscoveryTestBase):
+    def setUp(self):
+        super().setUp()
+        app_module._WEB_DL_SUBMIT_TIMES.clear()
+        app_module._WEB_DL_RECENT_LINKS.clear()
+
+    def tearDown(self):
+        super().tearDown()
+        app_module._WEB_DL_SUBMIT_TIMES.clear()
+        app_module._WEB_DL_RECENT_LINKS.clear()
+
+    def test_adult_submit_uses_page_url_and_english_adult_category(self):
+        posted = {}
+
+        def fake_post(url, headers=None, files=None, timeout=None):
+            posted["files"] = files
+            return FakeResponse(
+                payload={"success": True, "data": {"webdownload_id": 4242}}
+            )
+
+        with patch.object(
+            app_module.db, "get_settings", return_value={"torbox_api_key": "test-key"}
+        ), patch.object(
+            app_module.meta_eng.HTTP_SESSION, "post", side_effect=fake_post
+        ), patch.object(app_module.TORBOX_MONITOR, "track") as track:
+            response = self.client.post(
+                "/api/adult/webdl",
+                json={
+                    "url": "https://spankbang.com/8a2b9c/video/sample-two-title",
+                    "title": "Sample Two Title",
+                    "poster_url": "https://cdn.example.com/p.jpg",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["tracked_id"], "4242")
+        self.assertEqual(body["provider"], "spankbang")
+        self.assertEqual(
+            posted["files"]["link"][1],
+            "https://spankbang.com/8a2b9c/video/sample-two-title",
+        )
+        self.assertEqual(posted["files"]["name"][1], "Sample Two Title")
+        self.assertEqual(track.call_args.kwargs["category"], "english_adult")
+        self.assertEqual(track.call_args.kwargs["poster_url"], "https://cdn.example.com/p.jpg")
+        self.assertEqual(track.call_args.kwargs["metadata"]["name"], "Sample Two Title")
+        self.assertEqual(track.call_args.kwargs["metadata"]["poster"], "https://cdn.example.com/p.jpg")
+
+    def test_adult_submit_rejects_listing_or_foreign_url(self):
+        with patch.object(
+            app_module.db, "get_settings", return_value={"torbox_api_key": "test-key"}
+        ), patch.object(app_module.meta_eng.HTTP_SESSION, "post") as mocked_post:
+            for url in (
+                "https://xhamster.com/best",
+                "https://example.com/video/1",
+                "",
+            ):
+                with self.subTest(url=url):
+                    response = self.client.post("/api/adult/webdl", json={"url": url})
+                    self.assertEqual(response.status_code, 400)
+                    self.assertFalse(response.get_json()["ok"])
+        mocked_post.assert_not_called()
+
+    def test_adult_submit_keeps_duplicate_guard(self):
+        url = "https://spankbang.com/8a2b9c/video/sample-two-title"
+        app_module._WEB_DL_RECENT_LINKS[url] = time.time()
+        with patch.object(
+            app_module.db, "get_settings", return_value={"torbox_api_key": "test-key"}
+        ), patch.object(app_module.meta_eng.HTTP_SESSION, "post") as mocked_post:
+            response = self.client.post("/api/adult/webdl", json={"url": url})
+        self.assertEqual(response.status_code, 429)
+        self.assertIn("baru saja dikirim", response.get_json()["error"])
+        mocked_post.assert_not_called()
 
 
 if __name__ == "__main__":

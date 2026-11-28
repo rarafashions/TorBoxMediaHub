@@ -4392,7 +4392,16 @@ def api_torbox_webdl_info():
 @app.route("/api/torbox/webdl/add", methods=["POST"])
 def api_torbox_webdl_add():
     """Submit a public page/hoster link to TorBox WebDL and auto-monitor it."""
-    payload = request.get_json(silent=True) or {}
+    body, status = _webdl_submit(request.get_json(silent=True) or {})
+    return jsonify(body), status
+
+
+def _webdl_submit(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], int]:
+    """Submit one WebDL link and start monitoring.
+
+    Shared by the generic hoster route and the English Adult route so both use
+    the same dedupe, hourly limit and error translation.
+    """
     provider = str(payload.get("provider") or "").strip()
     provider_id = str(payload.get("provider_id") or payload.get("id") or "").strip()
     raw_url = str(payload.get("url") or "").strip()
@@ -4419,21 +4428,19 @@ def api_torbox_webdl_add():
         url = raw_url
     if provider and not url and not raw_url:
         return (
-            jsonify(
-                {
-                    "ok": False,
-                    "error": (
-                        f"Provider '{provider}' belum punya pola URL WebDL yang terverifikasi. "
-                        "Tempel link halaman secara manual."
-                    ),
-                }
-            ),
+            {
+                "ok": False,
+                "error": (
+                    f"Provider '{provider}' belum punya pola URL WebDL yang terverifikasi. "
+                    "Tempel link halaman secara manual."
+                ),
+            },
             400,
         )
 
     safe, url_error = webdl.validate_webdl_url(url)
     if not safe:
-        return jsonify({"ok": False, "error": url_error}), 400
+        return {"ok": False, "error": url_error}, 400
 
     if not title:
         title = str(hint_metadata.get("name") or "").strip()[:200]
@@ -4453,11 +4460,11 @@ def api_torbox_webdl_add():
     settings = db.get_settings()
     api_key = (settings.get("torbox_api_key") or "").strip()
     if not api_key:
-        return jsonify({"ok": False, "error": "TorBox API Key is not configured."}), 400
+        return {"ok": False, "error": "TorBox API Key is not configured."}, 400
 
     guard_error = _webdl_submit_guard(url)
     if guard_error:
-        return jsonify({"ok": False, "error": guard_error}), 429
+        return {"ok": False, "error": guard_error}, 429
 
     try:
         resp = meta_eng.HTTP_SESSION.post(
@@ -4502,21 +4509,161 @@ def api_torbox_webdl_add():
                 _record_webdl_submit(url)
 
             detail_msg = str(body.get("detail") or "").strip() or "Link dikirim ke TorBox WebDL."
-            return jsonify(
-                {
-                    "ok": True,
-                    "tracked_id": created_id,
-                    "message": f"{detail_msg} — Auto-monitoring aktif.",
-                }
-            )
+            return {
+                "ok": True,
+                "tracked_id": created_id,
+                "message": f"{detail_msg} — Auto-monitoring aktif.",
+            }, 200
 
         err_detail = body.get("detail") or body.get("error")
-        return (
-            jsonify({"ok": False, "error": _webdl_api_error(err_detail, resp.status_code)}),
-            400,
-        )
+        return {"ok": False, "error": _webdl_api_error(err_detail, resp.status_code)}, 400
     except Exception as exc:
-        return jsonify({"ok": False, "error": f"Failed to add WebDL to TorBox: {exc}"}), 500
+        return {"ok": False, "error": f"Failed to add WebDL to TorBox: {exc}"}, 500
+
+
+@app.route("/api/adult/webdl", methods=["POST"])
+def api_adult_webdl():
+    """Submit an English Adult page URL to TorBox WebDL.
+
+    The catalogue already carries the real page URL; a URL pasted by hand is
+    accepted through the same validation as ``/api/adult/link``. Only the page
+    URL is sent, never a media/stream URL.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        item = adult_disc.link(str(payload.get("url") or "").strip())["item"]
+    except adult_disc.AdultDiscoveryError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), exc.status
+
+    title = str(payload.get("title") or "").strip()[:200] or item["title"]
+    metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    metadata = dict(metadata)
+    metadata.setdefault("name", title)
+    poster_url = str(payload.get("poster_url") or "").strip()[:2048]
+    if poster_url:
+        metadata["poster"] = poster_url
+    body, status = _webdl_submit(
+        {
+            "url": item["page_url"],
+            "title": title,
+            "series_title": str(payload.get("series_title") or "").strip()[:200],
+            "category": "english_adult",
+            "metadata": metadata,
+            "poster_url": poster_url,
+        }
+    )
+    body.update({"provider": item["provider"], "page_url": item["page_url"]})
+    return jsonify(body), status
+
+
+_ADULT_DETAIL_TTL_SECONDS = 24 * 3600
+_ADULT_DETAIL_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_ADULT_DETAIL_LOCK = threading.Lock()
+
+
+def _adult_tpdb_metadata(title: str) -> Dict[str, Any]:
+    """TPDB lookup for one adult title, cached for a day; never raises."""
+    cleaned = " ".join(str(title or "").split())[:200]
+    if not cleaned:
+        return {"status": "skipped", "reason": "Judul kosong."}
+    cache_key = cleaned.casefold()
+    now = time.time()
+    with _ADULT_DETAIL_LOCK:
+        cached = _ADULT_DETAIL_CACHE.get(cache_key)
+        if cached and now - cached[0] < _ADULT_DETAIL_TTL_SECONDS:
+            return {**cached[1], "cached": True}
+    api_key = (db.get_settings().get("tpdb_api_key") or "").strip()
+    if not api_key:
+        return {"status": "not_configured", "reason": "TPDB API key belum diisi."}
+    try:
+        meta = meta_eng._fetch_tpdb_metadata(cleaned, api_key)
+    except Exception:
+        meta = None
+    if not meta:
+        result: Dict[str, Any] = {"status": "not_found"}
+    else:
+        result = {
+            "status": "found",
+            "title": meta.get("title") or cleaned,
+            "year": meta.get("year") or 0,
+            "studio": meta.get("studio") or "",
+            "poster_url": meta.get("poster_url") or "",
+            "plot": str(meta.get("plot") or "")[:600],
+            "performers": (meta.get("actresses") or [])[:8],
+            "tags": (meta.get("genres") or [])[:8],
+            "rating": meta.get("rating") or 0.0,
+            "release_date": meta.get("release_date") or "",
+            "runtime": meta.get("runtime") or 0,
+        }
+    with _ADULT_DETAIL_LOCK:
+        _ADULT_DETAIL_CACHE[cache_key] = (now, result)
+        while len(_ADULT_DETAIL_CACHE) > 200:
+            _ADULT_DETAIL_CACHE.pop(next(iter(_ADULT_DETAIL_CACHE)))
+    return result
+
+
+def _adult_library_matches(title: str) -> List[Dict[str, Any]]:
+    """Items in Library that already carry the same adult title (a hint, not a key)."""
+    wanted = " ".join(str(title or "").split()).casefold()
+    if len(wanted) < 4:
+        return []
+    rows = db.query_media_items(search=str(title or "").strip()[:120], category="english_adult")
+    matches: List[Dict[str, Any]] = []
+    for row in rows or []:
+        candidate = " ".join(
+            str(row.get("title") or row.get("file_name") or "").split()
+        ).casefold()
+        if not candidate:
+            continue
+        if candidate == wanted or wanted in candidate:
+            matches.append(
+                {
+                    "id": row.get("id"),
+                    "title": row.get("title") or row.get("file_name"),
+                    "file_name": row.get("file_name") or "",
+                }
+            )
+        if len(matches) >= 5:
+            break
+    return matches
+
+
+@app.route("/api/adult/detail", methods=["GET"])
+def api_adult_detail():
+    """Card detail plus optional TPDB metadata and an in-library hint."""
+    provider = request.args.get("provider") or ""
+    provider_id = request.args.get("id") or request.args.get("provider_id") or ""
+    raw_url = (request.args.get("url") or "").strip()
+    try:
+        if raw_url:
+            item = adult_disc.link(raw_url)["item"]
+        else:
+            item = adult_disc.cached_item(provider, provider_id)
+    except adult_disc.AdultDiscoveryError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), exc.status
+    if not item:
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": "Item tidak ada di cache katalog. Buka ulang katalog atau tempel URL halaman.",
+                }
+            ),
+            404,
+        )
+    metadata = (
+        {"status": "skipped", "reason": "Judul masih berupa id."}
+        if item.get("title_is_placeholder")
+        else _adult_tpdb_metadata(item.get("title") or "")
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "item": item,
+            "tpdb": metadata,
+            "in_library": _adult_library_matches(item.get("title") or ""),
+        }
+    )
 
 
 @app.route("/api/torbox/watch-status", methods=["GET"])

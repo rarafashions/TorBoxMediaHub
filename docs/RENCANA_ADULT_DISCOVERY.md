@@ -1,20 +1,20 @@
 # Rencana Fase A — English Adult Discovery di Discovery Hub
 
-**Status:** Fase **A1-A2 selesai** (adapter + tes + verifikasi live); A3-A5 masih rencana
+**Status:** Fase **A1-A4 selesai** (backend + tes + verifikasi live); A5 masih rencana
 **Tanggal:** 28 November 2026
 **Versi acuan:** `v1.3DH`
 **Baseline tes:** `474 passed, 73 subtests passed`
 
 ---
 
-## 0a. Status implementasi (diperbarui setelah A1-A3)
+## 0a. Status implementasi (diperbarui setelah A1-A4)
 
 | Fase | Isi | Status |
 |---|---|---|
 | A1 | Registry provider + mesin (cache, breaker, normalisasi) + Eporner & Pornhub (JSON) + `/api/adult/providers,feed,search` | **selesai**, 22 tes |
 | A2 | Adapter HTML: XHamster, XVideos, XNXX, YouPorn, YouJizz, XXXYMovies, SunPorno | **selesai**, 18 tes |
 | A3 | SpankBang: validasi tempel URL (`POST /api/adult/link`) + penanda `manual` di `/providers` | **selesai** (backend), 8 tes |
-| A4 | `/api/adult/detail` (TPDB) + `/api/adult/webdl` + pola halaman WebDL baru | belum |
+| A4 | `/api/adult/detail` (TPDB + in-library) + `/api/adult/webdl` + deteksi login wall | **selesai** (backend), 14 tes |
 | A5 | Tab English Adult di `/` lalu `/v2` | belum |
 
 Hasil uji live (instance sementara port 5052, data dir terpisah, tidak mengganggu app di port 5000):
@@ -47,6 +47,14 @@ Aturan jalur manual (A3), sengaja **tanpa request keluar**:
 - Halaman daftar/pencarian ditolak: segmen pertama `best`, `newest`, `search`, `tags`, `pornstar`, `top-rated`, `latest-updates`, dan sejenisnya, serta query `page`, `q`, `k`, `query`, `search`, `view`.
 - Judul diambil dari slug terakhir (`/video/<slug>`); bila slug hanya id atau kata generik (`videos`, `watch`, `sample`), judul menjadi `Label · id`. Metadata lain dikosongkan karena halaman tidak diambil.
 - `GET /api/adult/providers` kini memuat `manual` per sumber dan daftar `manual_providers`; SpankBang tetap `status: blocked` dan `enabled: false`, jadi tidak pernah dihubungi otomatis.
+
+Aturan A4 (detail + submit):
+
+- **Login wall**: YouPorn mulai mengalihkan listing tanpa login ke `/login/` dengan HTTP 200 dan halaman berjudul "Login". Deteksi memakai path final (`/login`, `/signin`, `/register`, `/age-verification`) atau judul halaman; form login yang tertanam di halaman normal tidak dianggap dinding. Hasilnya `code: blocked`, bukan `parse_error`, dan breaker tetap aktif.
+- **`provider_id` bersih**: XVideos dan XNXX menaruh JSON (`{"id":"...","isChannel":true,...}`) di atribut `data-video`. Atribut itu sekarang di-parse; sebelumnya seluruh JSON tersimpan sebagai kunci dedupe.
+- **`GET /api/adult/detail`** menerima `url` (lewat validasi tempel yang sama dengan `/api/adult/link`) atau `provider` + `id` dari cache katalog 10 menit. Judul dari slug/id dipakai untuk TPDB (cache 24 jam, hanya bila `tpdb_api_key` diisi). `in_library` adalah petunjuk dari Library berkategori `english_adult` dengan judul yang sama, bukan kunci unik.
+- **`POST /api/adult/webdl`** hanya mengirim **URL halaman** yang sudah lolos validasi tempel; kategori dipaksa `english_adult`, judul/poster/TPDB diteruskan sebagai hint impor, dan dedupe 900 detik + batas 60/jam dari rute WebDL lama tetap berlaku karena keduanya memakai satu fungsi submit.
+- **Pola halaman id-only untuk 5 situs dibatalkan setelah diuji**: `xnxx.com/video-{id}` 404, `xxxymovies.com/videos/{id}/` dialihkan ke `404.php` (tetap HTTP 200), `sunporno.com/v/{id}/` 404, SpankBang tidak bisa diuji (Cloudflare), dan YouPorn sedang login-walled. Katalog selalu membawa URL halaman asli, jadi `webdl_resolver.PROVIDER_PAGE_PATTERNS` tidak ditambah pola yang belum terbukti.
 
 ---
 
@@ -283,7 +291,7 @@ Aturan:
 | GET | `/api/adult/search` | Pencarian lintas situs | 400 query kosong |
 | POST | `/api/adult/link` | Validasi URL halaman hasil tempel manual (SpankBang) | 400 host/skema/halaman daftar |
 | GET | `/api/adult/detail` | Metadata + TPDB + IN LIBRARY | 404 item tidak ditemukan |
-| POST | `/api/adult/webdl` | Kirim halaman ke TorBox WebDL | 400 URL/ provider, 409 duplikat, 429 batas, 502 TorBox |
+| POST | `/api/adult/webdl` | Kirim halaman adult ke TorBox WebDL (kategori `english_adult`) | 400 URL/ provider, 429 duplikat/batas, 502 TorBox |
 | GET | `/api/adult/thumb` | Proxy thumbnail (opsional) | 400 host tidak diizinkan |
 
 Bentuk respons selalu `{"ok": bool, ...}` seperti API lain, ditambah:
@@ -497,6 +505,8 @@ Status: **backend selesai**. Yang terpasang: `POST /api/adult/link`, aturan vali
 - `/api/adult/webdl`: preflight hoster, kategori `english_adult`, hint metadata/poster, dedupe, 429.
 - Tambah pola halaman di `webdl_resolver.py` untuk 5 situs yang belum ada (spankbang, sunporno, xnxx, youporn, xxxymovies) sebagai fallback.
 - **Kriteria terima:** submit nyata berhasil, monitor mengimpor, item muncul di Library dengan kategori `english_adult`.
+
+Status: **backend selesai**. Terpasang: `/api/adult/detail` (cache TPDB 24 jam + `in_library` sebagai petunjuk), `/api/adult/webdl` (satu jalur submit dengan `/api/torbox/webdl/add`, kategori `english_adult`, dedupe 900 s, batas 60/jam), deteksi login wall YouPorn, dan `provider_id` bersih dari atribut JSON XVideos/XNXX. **Pola id-only untuk lima situs tidak ditambahkan** karena diuji dan gagal: `xnxx.com/video-{id}` 404, `xxxymovies.com/videos/{id}/` → `404.php` (HTTP 200), `sunporno.com/v/{id}/` 404, SpankBang tidak bisa diuji, YouPorn sedang login-walled. Submit adult selalu memakai URL halaman asli dari katalog. Submit nyata ke TorBox belum dijalankan agar kuota tidak terpakai tanpa izin; yang diverifikasi live adalah penolakan tanpa API key, validasi URL, dan detail. Kriteria "submit nyata + impor" tetap terbuka sampai ada submit uji yang disetujui.
 
 ### A5 — UI
 
