@@ -19,7 +19,7 @@ from urllib.parse import quote, quote_plus, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask, Response, abort, jsonify, render_template, request, send_file
+from flask import Flask, Response, abort, jsonify, redirect, render_template, request, send_file, url_for
 from requests.exceptions import RequestException, Timeout
 from werkzeug.exceptions import HTTPException
 
@@ -41,7 +41,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DQ"  # single source of truth; templates render this
+APP_VERSION = "v1.3DR"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -3350,13 +3350,22 @@ def _check_torbox_cached_hashes(api_key: str, kind: str, hashes: List[str]) -> s
 
 @app.route("/")
 def index():
-    return render_template("index.html", app_version=APP_VERSION)
+    """Wajah utama: UI v2. Deep link lama /?discover=1 tetap diarahkan ke UI lama."""
+    if request.args.get("discover"):
+        return redirect(url_for("index_legacy", **request.args))
+    return render_template("home_v2.html", app_version=APP_VERSION)
 
 
 @app.route("/v2")
 def index_v2():
-    """Netflix/Prime-style UI preview. Tidak menggantikan index.html."""
+    """Alias /v2 dipertahankan untuk bookmark dan tautan lama."""
     return render_template("home_v2.html", app_version=APP_VERSION)
+
+
+@app.route("/legacy")
+def index_legacy():
+    """UI lama: Discovery Hub, kurasi massal, dan antrean Needs Review."""
+    return render_template("index.html", app_version=APP_VERSION)
 
 
 @app.route("/api/bootstrap", methods=["GET"])

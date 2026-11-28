@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DQ`
+**Versi saat ini:** `v1.3DR`
 **Tanggal status:** 28 November 2026
-**Baseline tes:** `python -m pytest tests -q --no-header` → **537 passed, 219 subtests passed** (0 gagal)
+**Baseline tes:** `python -m pytest tests -q --no-header` → **543 passed, 219 subtests passed** (0 gagal)
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -63,6 +63,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DO` | 28 Nov 2026 | Detail English Adult memulihkan daftar sumber unduhan: analisis provider + rute Cached TorBox, Torrent ke TorBox, NZB ke TorBox, dan unduh lokal yt-dlp/aria2c |
 | `v1.3DP` | 28 Nov 2026 | Kartu Discovery (Film, Serial TV, Anime, Donghua, English Adult) menampilkan badge centang **IN LIBRARY**; sheet detail juga menampilkan tag yang sama |
 | `v1.3DQ` | 28 Nov 2026 | Tahap 2: filter kualitas + scope playlist di Library, audit subtitle per item, dan tautan M3U LAN di detail |
+| `v1.3DR` | 28 Nov 2026 | Tahap 3: `/` menampilkan UI v2, UI lama dipindah ke `/legacy`, deep link `/?discover=1` dialihkan ke `/legacy?discover=1` |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -246,6 +247,15 @@ Restart app live port 5050 dilakukan setelah antrean TorBox/lokal 0 dan task idl
 - **Tes**: `test_library_scope_quality_and_item_actions` (12 marker JS + 3 marker CSS); suite **537 passed, 219 subtests**.
 - **Verifikasi live** (port 5050, `v1.3DQ`, antrean TorBox/lokal 0, task idle): chip scope **Semua 611 / Belum 539 / Sudah 72**; filter 1080p memuat **53 judul** dan subjudul kartu memuat `1080p`; detail film menampilkan meta `2026 · 1j 49m · 1080p · Film · 1.6 GB`, tautan `M3U LAN` → `/api/media/300/remote-m3u` (HTTP 200, `audio/x-mpegurl`), dan audit `Embedded · 2 track`; tanpa error konsol.
 
+
+### 4.19 `v1.3DR` — Tahap 3: `/` menjadi UI v2, UI lama pindah ke `/legacy`
+
+- **Route split**: `GET /` merender `home_v2.html`; `GET /v2` tetap ada sebagai alias untuk bookmark lama; `GET /legacy` merender `index.html`. Deep link lama `/?discover=1` dialihkan `302` ke `/legacy?discover=1` dengan query utuh, sehingga Discovery Hub tetap bisa dibuka langsung.
+- **Navigasi**: footer v2 menautkan **UI lama** → `/legacy` dan **Discovery** → `/legacy?discover=1`; kartu **UI lama** di Pengaturan v2 juga → `/legacy`. Header UI lama mendapat tombol **UI v2** → `/`.
+- **Yang tidak berubah**: `/roxxy`, seluruh `/api/*`, nama endpoint (`index`, `index_v2`, `index_legacy`), modul, dan perilaku Discovery. Hanya `redirect`/`url_for` yang ditambahkan ke impor Flask.
+- **Tes**: `tests/test_ui_routes.py` (6 tes) menjaga `/` = v2, `/v2` = alias, `/legacy` = UI lama, tautan silang, dan redirect deep link; suite **543 passed, 219 subtests**.
+- **Verifikasi live** (port 5050, `v1.3DR`, antrean 0, task idle): `/` 200 dengan `#v2-main`, 8 tab, versi `v1.3DR`; `/v2#/library` 60 kartu; `/legacy` 200 dengan `#view-library` + `#tab-discover` dan tombol **UI v2** → `/`; `/?discover=1` → `302 /legacy?discover=1` dengan modal Discovery terbuka (5 chip kategori); `/roxxy` dan `/api/bootstrap` 200; Pengaturan v2 6 panel; tanpa `pageerror`.
+
 ---
 
 ## 5. Keputusan yang mengikat
@@ -262,7 +272,7 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 8. **Monitor progres memakai peek** agar view Unduhan dan panel Serial tidak saling merebut event.
 9. **Series hint hanya untuk single-video.** Season pack tidak boleh dipaku ke satu episode.
 10. **v2 tanpa framework/bundler/npm/Tailwind.** Hanya `static/ui/*` + `templates/home_v2.html`.
-11. **Route lama tidak diubah.** `/`, `/v2`, `/roxxy`, `/api/*` dipertahankan; endpoint baru ditambahkan.
+11. **Route split sejak `v1.3DR`.** `/` menyajikan UI v2, `/legacy` menyajikan UI lama, `/v2` tetap alias; `/?discover=1` dialihkan ke `/legacy?discover=1`. `/roxxy` dan `/api/*` tidak berubah.
 12. **Label UI berbahasa Indonesia** dan mengutamakan fungsi di atas estetika.
 13. **Secret tidak pernah tampil mentah.** API key, token manifest, dan signed stream URL tidak dikirim ke browser.
 14. **Restart hanya saat antrean 0 dan task idle.** Jangan mengganggu unduhan/antrean aktif.
@@ -300,9 +310,9 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 | `adult_streams.py` | Ekstraksi URL stream langsung dari halaman provider |
 | `platform_support.py` | Deteksi OS, executable, direktori data |
 | `static/ui/*` | UI v2 tanpa framework |
-| `templates/index.html` | UI lama |
+| `templates/index.html` | UI lama (`/legacy`) |
 | `templates/roxxy.html` | Video Feeds |
-| `templates/home_v2.html` | Shell UI v2 |
+| `templates/home_v2.html` | Shell UI v2 (wajah utama `/` dan alias `/v2`) |
 
 ---
 

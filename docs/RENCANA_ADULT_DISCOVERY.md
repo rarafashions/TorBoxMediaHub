@@ -1,9 +1,9 @@
 # Rencana Fase A — English Adult Discovery di Discovery Hub
 
-**Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; Tahap 1 dan Tahap 2 selesai di `/v2`
+**Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy; Tahap 1, Tahap 2, dan Tahap 3 selesai (`/` sekarang UI v2, UI lama di `/legacy`)
 **Tanggal:** 28 November 2026
-**Versi acuan:** `v1.3DQ`
-**Baseline tes:** `537 passed, 219 subtests passed`
+**Versi acuan:** `v1.3DR`
+**Baseline tes:** `543 passed, 219 subtests passed`
 
 ---
 
@@ -585,6 +585,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | Playwright port 5056 (`/v2#/discover`, `v1.3DP`) | Badge `IN LIBRARY`: Film 8, Serial TV 2 (`(29)`, `(8)`), Anime 1, Donghua 1 pada pencarian "Swallowed Star" (2 item), English Adult 5; tag badge tampil di sheet detail; tanpa overflow di 390 px |
 | Live port 5050 (`v1.3DP`, salinan DB asli) | Delapan view v2 tanpa galat; Discovery 50 kartu/feed, badge Film 7/Serial 2/Anime 2/Adult 5, poster proxy 0 panggilan; legacy dua kolom + 4 baris health; `/roxxy` 341 hasil search-all dan MissAV Uncensored 100 judul; panel Serial 425 rilis (122 CACHED); token manifest tersamarkan; CloseWait stabil 10 |
 | Live port 5050 (`v1.3DQ`, Tahap 2) | Chip scope 611/539/72; filter 1080p 53 judul dengan label kualitas di subjudul; detail: meta kualitas, `M3U LAN` 200 `audio/x-mpegurl`, audit `Embedded · 2 track`; tanpa error konsol |
+| Live port 5050 (`v1.3DR`, Tahap 3) | `/` 200 UI v2 (8 tab), `/v2` alias 60 kartu, `/legacy` 200 dengan `#view-library`, `/?discover=1` 302 ke `/legacy?discover=1` dan modal Discovery terbuka; `/roxxy` + `/api/bootstrap` 200; tanpa error konsol |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 
@@ -596,7 +597,7 @@ Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app liv
 |---|---|---|
 | **1** | Discovery di v2 (mainstream + adult), hapus fisik, edit manual + klasifikasi, poster manual — **selesai `v1.3DM`** | A1–A4 menyuplai API adult |
 | **2** | Audit subtitle + filter kualitas, remote M3U per item, scope playlist — **selesai `v1.3DQ`** | Tidak bergantung adult |
-| **3** | `/` diarahkan ke v2, UI lama di `/legacy` | Semua di atas |
+| **3** | `/` diarahkan ke v2, UI lama di `/legacy` — **selesai `v1.3DR`** | Semua di atas |
 
 **Status Tahap 1 (`v1.3DM`, dipoles di `v1.3DN`):** view `/v2#/discover` memuat film/serial/anime/donghua dari `/api/discover` dan tab English Adult bergate dari `/api/adult/*`; sheet rilis memakai `search-cache` + `add-cached`, sedangkan WebDL adult memakai `/api/adult/webdl`. Panel detail v2 sekarang punya aksi **Edit metadata**, **Klasifikasi**, **Poster**, dan **Hapus fisik** lewat route media lama. Tidak ada endpoint baru dan discovery legacy di `/` tetap utuh. Verifikasi Playwright di port 5056 (salinan DB): 50 kartu Film, 60 item adult, sheet rilis dengan dua baris mock, keempat aksi kurasi terbuka.
 
@@ -607,6 +608,8 @@ Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app liv
 **Penanda `v1.3DP`:** kartu Discovery memakai indeks Library per kategori (`state.items`) dan menampilkan badge centang **IN LIBRARY** bila `tmdb_id`/`anilist_id` cocok, atau judul ternormalisasi + tahun cocok. Adult memakai pencocokan judul seperti server.
 
 **Penanda `v1.3DQ` (Tahap 2):** Library punya select **Kualitas** (4K/1440/1080/720/SD/tanpa info) dan chip scope playlist (Semua/Belum/Sudah) yang dihitung dari `in_playlist`. Detail item mendapat tombol **Audit subtitle** (`/api/subtitle-quality/audit`, satu ID, read-only) dan tautan **M3U LAN** per item (`/api/media/<id>/remote-m3u`).
+
+**Penanda `v1.3DR` (Tahap 3):** `/` kini merender UI v2; `/v2` dipertahankan sebagai alias dan UI lama pindah ke `/legacy`. Deep link `/?discover=1` dialihkan `302` ke `/legacy?discover=1`. `/roxxy` dan `/api/*` tidak berubah; tautan silang disediakan di footer/Pengaturan v2 dan header UI lama.
 
 Urutan yang disarankan: **A1 → A2 → A3 → A4 → A5(legacy) → Tahap 1 (v2 Discovery + kurasi) → Tahap 2 → Tahap 3.** Dengan begitu Discovery adult sudah bisa dipakai sebelum wajah v2 diubah.
 

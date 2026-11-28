@@ -1,8 +1,8 @@
 # Dokumentasi Lengkap — TorBox Media Hub
 
-**Versi aplikasi:** `v1.3DQ`  
+**Versi aplikasi:** `v1.3DR`  
 **Status dokumen:** 28 November 2026  
-**Baseline tes:** `python -m pytest tests -q --no-header` → **537 passed, 219 subtests passed**
+**Baseline tes:** `python -m pytest tests -q --no-header` → **543 passed, 219 subtests passed**
 
 Dokumen ini menjelaskan aplikasi secara menyeluruh: fitur, cara menjalankan untuk pengguna baru, konfigurasi, mesin internal, keamanan, batasan, dan pemecahan masalah. Untuk catatan rilis dan keputusan pengembangan, lihat [`CATATAN_VERSI_PENGEMBANGAN.md`](CATATAN_VERSI_PENGEMBANGAN.md). Untuk draf README GitHub, lihat [`README_GITHUB_DRAFT.md`](README_GITHUB_DRAFT.md).
 
@@ -14,7 +14,7 @@ Dokumen ini menjelaskan aplikasi secara menyeluruh: fitur, cara menjalankan untu
 2. [Persyaratan sistem](#2-persyaratan-sistem)
 3. [Mulai cepat untuk pengguna baru](#3-mulai-cepat-untuk-pengguna-baru)
 4. [Konfigurasi pertama](#4-konfigurasi-pertama)
-5. [Dua antarmuka: UI lama dan UI v2](#5-dua-antarmuka-ui-lama-dan-ui-v2)
+5. [UI v2 (utama) dan UI lama](#5-dua-antarmuka-ui-v2-utama-dan-ui-lama)
 6. [Fitur per tampilan](#6-fitur-per-tampilan)
 7. [Video Feeds (Roxxy)](#7-video-feeds-roxxy)
 8. [Mesin internal dan pipeline](#8-mesin-internal-dan-pipeline)
@@ -244,18 +244,20 @@ Konfigurasi Video Feeds terpisah: buka `/roxxy` → **Pengaturan** → tempel ma
 
 ---
 
-## 5. Dua antarmuka: UI lama dan UI v2
+## 5. Dua antarmuka: UI v2 (utama) dan UI lama
 
-| | UI lama `/` | UI v2 `/v2` |
+Sejak `v1.3DR`, alamat utama `/` menampilkan UI v2. UI lama tetap tersedia di `/legacy`, sedangkan `/v2` dipertahankan sebagai alias supaya bookmark dan tautan lama tetap bekerja.
+
+| | UI v2 `/` dan `/v2` | UI lama `/legacy` |
 |---|---|---|
-| Gaya | Tailwind single-page, padat | Netflix/Prime-style, `static/ui/*` tanpa framework |
-| Navigasi | Library, Discovery, Settings & DB | Beranda, Discovery, Library, Serial, Playlist, Unduhan, Statistik, Pengaturan |
-| Discovery | Modal penuh 4 kategori | View Discovery: 4 kategori + tab English Adult 18+ |
-| Detail | Modal lengkap: edit manual, preview/apply klasifikasi, riwayat, hapus fisik, poster manual, audit subtitle | Panel detail: putar, tonton, rating, subtitle EN/ID, enrich, poster retry, playlist, **kurasi (edit metadata, klasifikasi, poster, hapus fisik)** |
-| Serial | Kartu/grup + flat episode | Kartu serial + panel season dengan pencarian episode dan progres unduhan |
-| Status | Fitur terlengkap untuk kurasi data | Fitur harian dan pemantauan |
+| Gaya | Netflix/Prime-style, `static/ui/*` tanpa framework | Tailwind single-page, padat |
+| Navigasi | Beranda, Discovery, Library, Serial, Playlist, Unduhan, Statistik, Pengaturan | Library, Discovery, Settings & DB |
+| Discovery | View Discovery: 4 kategori + tab English Adult 18+ | Modal penuh 4 kategori |
+| Detail | Panel detail: putar, tonton, rating, subtitle EN/ID, enrich, poster retry, playlist, **kurasi (edit metadata, klasifikasi, poster, hapus fisik)**, audit subtitle, M3U LAN | Modal lengkap: edit manual, preview/apply klasifikasi, riwayat, hapus fisik, poster manual, audit subtitle |
+| Serial | Kartu serial + panel season dengan pencarian episode dan progres unduhan | Kartu/grup + flat episode |
+| Status | Fitur harian dan pemantauan | Fitur terlengkap untuk kurasi data |
 
-Keduanya memakai API, database, dan mesin yang sama. Route lama tidak diubah; v2 hanya menambah tampilan.
+Keduanya memakai API, database, dan mesin yang sama. Deep link lama `/?discover=1` dialihkan otomatis ke `/legacy?discover=1`; `/roxxy` dan `/api/*` tidak berubah.
 
 ---
 
@@ -632,7 +634,7 @@ Folder `database/`, `cache/`, `playlists/`, `backups/`, `logs/`, `*.db`, `*.m3u`
 3. `git pull` (atau timpa source baru).
 4. `pip install -r requirements.txt` bila dependensi berubah.
 5. Jalankan `python app.py`; migrasi DB berjalan otomatis.
-6. Buka `/v2`, cek versi di header.
+6. Buka `/` (UI v2), cek versi di header.
 
 Jangan menyalin folder `database/`, `cache/`, `playlists/`, atau `backups/` dari instalasi lain kecuali memang ingin memindahkan data.
 
@@ -646,8 +648,9 @@ API tidak memakai autentikasi; lindungi port dengan loopback atau reverse proxy.
 
 | Route | Isi |
 |---|---|
-| `GET /` | UI lama (Discovery, Library, Settings & DB) |
-| `GET /v2` | UI v2 |
+| `GET /` | UI v2 (wajah utama) |
+| `GET /v2` | Alias UI v2 |
+| `GET /legacy` | UI lama (Discovery, Library, Settings & DB) |
 | `GET /roxxy` | Video Feeds |
 
 ### Katalog & Discovery
@@ -835,7 +838,7 @@ python -m pytest tests -q --no-header
 9. **WebDL bergantung pada dukungan TorBox** dan extractor yt-dlp; provider/hoster tertentu ditolak.
 10. **Usenet butuh TorBox Pro**; fitur NZBIndex/NZBGeek dan cache Usenet tidak berfungsi penuh di paket gratis.
 11. **`indo_movie` tidak di-enrich otomatis** dan tidak masuk pencarian subtitle otomatis.
-12. **Audit subtitle dan riwayat klasifikasi** masih di UI lama. Kurasi inti (edit metadata, klasifikasi, poster, hapus fisik) sudah tersedia di panel detail v2.
+12. **Riwayat klasifikasi** masih hanya di UI lama (`/legacy`); audit subtitle sudah tersedia di kedua UI. Kurasi inti (edit metadata, klasifikasi, poster, hapus fisik) ada di panel detail v2.
 13. **Manifest Roxxy bergantung pihak ketiga.** Bila addon berubah/mati, katalog dan stream ikut terpengaruh.
 14. **Kualitas klasifikasi bergantung nama file/folder.** Penamaan yang buruk dapat menghasilkan `needs_review`.
 
@@ -845,8 +848,9 @@ python -m pytest tests -q --no-header
 
 Ringkasan uji yang disarankan setelah instalasi/restart (antrean unduhan harus kosong):
 
-- Buka `/v2`: delapan tab tampil; pada layar sempit daftar tab digeser di dalam nav (tanpa scrollbar halaman), navbar tidak menutupi judul.
-- Library: chip kategori, enam filter, sort, mode pilih, bulk tonton/putar.
+- Buka `/` (UI v2): delapan tab tampil; pada layar sempit daftar tab digeser di dalam nav (tanpa scrollbar halaman), navbar tidak menutupi judul.
+- Buka `/legacy`: UI lama tampil penuh dan tombol **UI v2** kembali ke `/`; `/?discover=1` membuka Discovery lama lewat redirect.
+- Library: chip kategori + chip scope playlist, tujuh filter (termasuk **Kualitas**), sort, mode pilih, bulk tonton/putar.
 - Detail film dan serial: rating, subtitle ID/EN, tambah/hapus playlist, Escape, tombol Back, deep link `#media-<id>`.
 - Serial: tab season, episode hilang, **Cari episode**, hasil dengan seed/leech/ukuran, **+ TorBox**, tray progres, toast impor, baris berubah **Putar**, completeness naik.
 - Paket season: season/episode tidak dipaku ke satu nomor.
@@ -858,7 +862,7 @@ Ringkasan uji yang disarankan setelah instalasi/restart (antrean unduhan harus k
 - Discovery lama: hanya empat tab; `category=jav/english_adult/indo` → `400`.
 - Pengaturan: simpan tanpa perubahan, ganti folder, ganti manifest; tidak ada token di pesan.
 - Backup DB, restore, maintenance, reset metadata, hapus semua media (di lingkungan uji).
-- Restart saat idle: `/v2` 200, log tidak memuat traceback, `download-status` 400 tanpa judul dan 200 dengan judul.
+- Restart saat idle: `/`, `/v2`, dan `/legacy` 200, log tidak memuat traceback, `download-status` 400 tanpa judul dan 200 dengan judul.
 
 ---
 

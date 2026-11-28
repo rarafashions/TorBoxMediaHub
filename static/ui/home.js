@@ -3650,7 +3650,7 @@
       }),
       el("a", {
         class: "btn btn--ghost btn--sm",
-        href: "/",
+        href: "/legacy",
         html: `${ICON.external}<span>UI lama</span>`,
       }),
     ];

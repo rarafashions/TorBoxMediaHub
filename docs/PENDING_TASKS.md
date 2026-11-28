@@ -1,6 +1,6 @@
 # Pending Tasks
 
-Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **537 passed, 219 subtests passed** (0 gagal).
+Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **543 passed, 219 subtests passed** (0 gagal).
 
 ---
 
@@ -73,6 +73,7 @@ Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-h
 
 | 50 | Discovery v2: badge IN LIBRARY untuk semua kategori | `static/ui/home.js`, `static/ui/app.css`, `tests/test_v2_ui.py` | Indeks Library per kategori dari `state.items`; pencocokan `tmdb_id`/`anilist_id`, lalu judul ternormalisasi + tahun (containment untuk judul khas, adult tanpa penjaga tahun). Badge hijau `card__lib-badge` berikon centang di kartu Film/Serial TV/Anime/Donghua/English Adult dan tag `.tag--lib` di sheet detail. Suite **536 passed, 204 subtests**; verifikasi Playwright 5056: 8/2/1/5 badge per tab dan 1 badge pada pencarian Donghua "Swallowed Star". |
 | 51 | Tahap 2 v2: filter kualitas, scope playlist, audit subtitle, M3U per item | `static/ui/home.js`, `static/ui/app.css`, `app.py` (versi), `tests/test_v2_ui.py` | Library punya select **Kualitas** (4K/1440/1080/720/SD/tanpa info) dan chip **Scope playlist** (Semua/Belum/Sudah; hitungan mengikuti filter lain). Detail item punya **Audit subtitle** (`POST /api/subtitle-quality/audit`, hasil per track) dan tautan **M3U LAN** ke `/api/media/<id>/remote-m3u`. Verifikasi live: 611 item (539 belum / 72 sudah), filter 1080p = 53 judul, M3U 200 `audio/x-mpegurl`, audit embedded 2 track; suite **537 passed, 219 subtests**. |
+| 52 | Tahap 3 v2: `/` menjadi UI v2, UI lama di `/legacy` | `app.py`, `templates/home_v2.html`, `templates/index.html`, `static/ui/home.js`, `tests/test_ui_routes.py` | `/` merender `home_v2.html`; `/v2` tetap alias; `/legacy` merender `index.html`; `/?discover=1` → `302 /legacy?discover=1` dengan query utuh. Tautan silang: footer/Pengaturan v2 ke `/legacy`, header UI lama ke `/`. `/roxxy` dan `/api/*` tidak berubah. Verifikasi live 200/200/200, modal Discovery tetap terbuka; suite **543 passed, 219 subtests**. |
 
 ---
 
@@ -110,9 +111,21 @@ Sisa perbaikan data yang belum dikerjakan (bukan blocker):
 | Log + koneksi | `logs/app.log` 3,36 MB; CloseWait stabil di 10 setelah 45 detik |
 | Konsol | Tanpa `pageerror` di semua halaman yang diuji |
 
+**Hasil verifikasi live `v1.3DR` (Tahap 3, 28 November 2026, port 5050, antrean 0):**
+
+| Area | Hasil |
+|---|---|
+| `GET /` | 200, `#v2-main`, 8 tab, versi `v1.3DR`; footer **UI lama** -> `/legacy` |
+| `GET /v2` | 200, alias tetap; `#/library` memuat 60 kartu |
+| `GET /legacy` | 200, `#view-library` + `#tab-discover`, tombol **UI v2** -> `/` |
+| `/?discover=1` | `302` -> `/legacy?discover=1`; modal Discovery terbuka, 5 chip kategori |
+| `/roxxy`, `/api/bootstrap` | 200 tanpa perubahan |
+| Konsol + tata letak | Tanpa `pageerror`; Pengaturan v2 6 panel; tanpa overflow |
+
 Sisa item checklist yang **belum** dijalankan karena memerlukan aksi tulis/kuota: simpan Pengaturan, probe stream gagal, cache magnet batch, impor manifest, NZB forwarder, job gagal, reklasifikasi, auto-add Indo, riwayat lebih dari 50 job, konfirmasi unduhan IN LIBRARY, badge setelah impor, watcher TorBox, impor Donghua, unduhan IndonesiaMovies, dan pengiriman `+ TorBox` dari panel Serial.
-- Buka `/v2` dan periksa tujuh tab: **Beranda** (hero + 4 stat + 6 pintasan + rail), **Library** (chip kategori + chip scope playlist, 7 filter termasuk **Kualitas** dan **Status klasifikasi / Needs Review**, sort, mode pilih), **Serial** (kartu progres + panel season), **Playlist** (kartu, kelola, picker, M3U), **Unduhan** (4 panel, tombol task, retry, poll 5 s), **Statistik** (bar kategori, kelengkapan, lingkungan, backup), **Pengaturan** (API key tersamarkan, media player + Auto-Detect/Browse, folder lokal, subtitle, runtime, database/backup). Pastikan tidak ada scrollbar horizontal di 1024 px dan di jendela sempit navbar menjadi dua baris tanpa menutupi judul. Detail: buka satu film dan satu serial, coba rating, subtitle ID/EN, tambah/hapus playlist, Escape, tombol Back browser, dan deep link `#media-<id>`. Unduhan: pastikan antrean lokal kosong saat uji, lalu mulai satu task dari panel dan hentikan bila perlu.
-- Buka Discovery Hub dan pastikan hanya ada empat tab (Movies, TV Shows, Anime, Donghua); feed Trending/Popular/Top Rated dan Search harus memuat untuk keempatnya.
+- Buka `/` (UI v2) dan periksa delapan tab: **Beranda** (hero + 4 stat + 6 pintasan + rail), **Library** (chip kategori + chip scope playlist, 7 filter termasuk **Kualitas** dan **Status klasifikasi / Needs Review**, sort, mode pilih), **Serial** (kartu progres + panel season), **Playlist** (kartu, kelola, picker, M3U), **Unduhan** (4 panel, tombol task, retry, poll 5 s), **Statistik** (bar kategori, kelengkapan, lingkungan, backup), **Pengaturan** (API key tersamarkan, media player + Auto-Detect/Browse, folder lokal, subtitle, runtime, database/backup). Pastikan tidak ada scrollbar horizontal di 1024 px dan di jendela sempit navbar menjadi dua baris tanpa menutupi judul. Detail: buka satu film dan satu serial, coba rating, subtitle ID/EN, tambah/hapus playlist, Escape, tombol Back browser, dan deep link `#media-<id>`. Unduhan: pastikan antrean lokal kosong saat uji, lalu mulai satu task dari panel dan hentikan bila perlu.
+- Buka `/legacy` dan pastikan UI lama tampil penuh (Library, Discovery, Settings & DB); tombol **UI v2** kembali ke `/`.
+- Buka Discovery Hub (dari UI lama) dan pastikan hanya ada empat tab (Movies, TV Shows, Anime, Donghua); feed Trending/Popular/Top Rated dan Search harus memuat untuk keempatnya.
 - Pastikan `GET /api/discover?category=jav` (juga `english_adult`, `indo`) mengembalikan 400 dan tidak ada request keluar.
 - Uji API English Adult sebelum tab UI dibuat (Fase A1-A2): `GET /api/adult/providers` harus memuat 10 sumber (9 `ok`/`search_only`, SpankBang `blocked`); `GET /api/adult/feed?provider=all&mode=popular` harus mengembalikan item dengan `page_url` HTTPS di host provider dan `warnings` hanya untuk sumber yang benar-benar gagal; `GET /api/adult/search?q=<kata>` minimal 2 karakter dan `q=a` harus 400. Bila XHamster hanya mengembalikan 7 kartu, itu normal (lazy-load), bukan kegagalan parser.
 - Uji modal kartu adult (A6) setelah restart: buka satu kartu Eporner → modal menampilkan badge **NOT IN LIBRARY**, kotak **Status TorBox Cloud** IDLE, **sinopsis + cover dari halaman Eporner** (bukan hanya thumbnail katalog), dan daftar **Pilihan Sumber Stream** dengan tombol `yt-dlp`/`aria2c`; klik **Analisis ulang** dan pastikan engine berubah sesuai hasil analisis. Buka kartu XVideos → judul/poster kartu harus dari halaman XVideos, bukan "Xvideos.com embed video". Buka kartu XHamster → panel sumber hanya berisi pesan "stream tidak dapat diambil", tombol WebDL tetap aktif. Kirim satu WebDL saat task idle, lalu **tutup modal** → panel **Monitor Unduhan** di atas katalog harus tetap memperlihatkan progres dan berubah **LIBRARY** setelah impor (baris impor bertahan ±10 menit), tanpa perlu membuka ulang kartu. Pastikan tidak ada URL media bertanda tangan yang terlihat di DOM atau di log browser.
