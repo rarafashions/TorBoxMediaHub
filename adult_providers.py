@@ -17,6 +17,8 @@ Rules that keep the surface safe:
 - ``feed`` and ``search`` hold URL pairs: ``(first_page_url, paged_url)``.
   ``{query}`` is replaced with a URL-encoded query, ``{page}`` with the page
   number. ``None`` for the second value means the provider has no pagination.
+- ``manual`` marks a provider whose catalogue cannot be fetched automatically
+  but whose page URLs may still be pasted by hand (SpankBang).
 """
 
 from typing import Any, Dict, Optional, Tuple
@@ -49,6 +51,7 @@ _BASE: Dict[str, Any] = {
     "availability": "disabled",
     "search": True,
     "paged": False,
+    "manual": False,
     "modes": (),
     "hosts": (),
     "page_size": 24,
@@ -268,8 +271,9 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "enabled": False,
         "availability": "blocked",
         "search": False,
+        "manual": True,
         "modes": (),
-        "note": "Cloudflare menolak permintaan otomatis; pakai tempel URL manual.",
+        "note": "Cloudflare menolak permintaan otomatis; tempel URL halaman dari browser.",
     },
 }
 

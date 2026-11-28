@@ -27,7 +27,16 @@ import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import (
+    parse_qsl,
+    quote,
+    unquote,
+    urlencode,
+    urljoin,
+    urlparse,
+    urlsplit,
+    urlunsplit,
+)
 
 import requests
 from bs4 import BeautifulSoup
@@ -1178,6 +1187,176 @@ def _assemble(
     }
 
 
+# --------------------------------------------------------------------------- #
+# Manual page links
+#
+# SpankBang answers automated requests with a Cloudflare challenge, so its
+# catalogue stays disabled. A URL pasted by hand is still usable: it is
+# validated against the provider allowlist and passed through unchanged. The
+# page itself is never fetched here; TorBox WebDL resolves it at submit time.
+# --------------------------------------------------------------------------- #
+
+_LISTING_SEGMENTS = frozenset(
+    {
+        "account", "amateur", "best", "cams", "categories", "category", "channel",
+        "channels", "favorites", "gay", "latest-updates", "lesbian", "live", "login",
+        "model", "models", "most-popular", "newest", "newest-clips", "playlists",
+        "popular", "porn", "pornstar", "pornstars", "premium", "register", "search",
+        "searches", "settings", "shemale", "signup", "subscriptions", "tag", "tags",
+        "top", "top-rated", "top-rated-month", "top_rated", "trending", "upload", "vr",
+    }
+)
+
+_QUERY_LISTING_KEYS = frozenset({"page", "q", "k", "query", "search", "view"})
+_TRACKING_KEYS = frozenset(
+    {"fbclid", "gclid", "msclkid", "igshid", "ref_src", "ref_url", "_ga", "_gl", "mc_cid", "mc_eid"}
+)
+_GENERIC_SEGMENTS = frozenset(
+    {"video", "videos", "watch", "view", "v", "p", "play", "sample", "embed", "embedplayer", "movie", "movies"}
+)
+_ID_LIKE = re.compile(r"^(?:[0-9a-f]{8,}|[0-9]{3,})$", re.IGNORECASE)
+_EXTENSION = re.compile(r"\.(?:html?|php|aspx?)$", re.IGNORECASE)
+
+
+def _looks_like_id(text: str) -> bool:
+    compact = re.sub(r"[-_\s]+", "", str(text or ""))
+    if not compact:
+        return True
+    return bool(_ID_LIKE.fullmatch(compact)) and any(ch.isdigit() for ch in compact)
+
+
+def _title_from_path(path: str) -> str:
+    """Best-effort title from a page slug: ``/video-abc/sample-two`` -> ``Sample two``."""
+    segments = [segment for segment in str(path or "").split("/") if segment]
+    if not segments:
+        return ""
+    stem = _EXTENSION.sub("", unquote(segments[-1]))
+    if _looks_like_id(stem):
+        if len(segments) < 2:
+            return ""
+        stem = _EXTENSION.sub("", unquote(segments[-2]))
+    words = " ".join(re.sub(r"[-_+]+", " ", stem).split())
+    tokens = words.lower().split(" ")
+    if len(words) < 3 or _looks_like_id(words) or all(token in _GENERIC_SEGMENTS for token in tokens):
+        return ""
+    return (words[:1].upper() + words[1:])[:400]
+
+
+def _query_token(url: str) -> str:
+    for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=False):
+        if key.lower() in {"viewkey", "v", "id", "video_id", "vid"}:
+            token = re.sub(r"[^0-9A-Za-z_-]", "", value)[:32]
+            if len(token) >= 3:
+                return token
+    return ""
+
+
+def _strip_tracking(url: str) -> str:
+    parts = urlsplit(url)
+    if not parts.query:
+        return url
+    kept = []
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        lowered = key.lower()
+        if lowered in _TRACKING_KEYS or lowered.startswith("utm_"):
+            continue
+        kept.append((key, value))
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept, doseq=True), ""))
+
+
+def _manual_page_url(raw: Any, provider: str) -> str:
+    """Validate one pasted page URL and return it without tracking noise."""
+    label = providers.PROVIDERS[provider]["label"]
+    text = str(raw or "").strip()
+    if not text:
+        raise AdultDiscoveryError("Tempel URL halaman video terlebih dahulu.")
+    if len(text) > 2048:
+        raise AdultDiscoveryError("URL terlalu panjang.")
+    if text.startswith("//"):
+        text = "https:" + text
+    if text.lower().startswith("http://"):
+        text = "https://" + text[len("http://"):]
+    if not text.lower().startswith("https://"):
+        raise AdultDiscoveryError("Hanya URL https:// yang diterima.")
+    try:
+        url = _safe_page_url(text, provider)
+    except ValueError:
+        url = ""
+    if not url:
+        raise AdultDiscoveryError(f"URL bukan halaman dari {label}.")
+    url = _strip_tracking(url)
+    parts = urlsplit(url)
+    path = parts.path.strip("/")
+    if not path:
+        raise AdultDiscoveryError("URL mengarah ke halaman daftar, bukan halaman video.")
+    if path.split("/")[0].lower() in _LISTING_SEGMENTS:
+        raise AdultDiscoveryError(
+            "URL ini halaman daftar atau pencarian. Buka halaman videonya lalu tempel URL itu."
+        )
+    query_keys = {key.lower() for key, _ in parse_qsl(parts.query, keep_blank_values=True)}
+    if query_keys & _QUERY_LISTING_KEYS:
+        raise AdultDiscoveryError(
+            "URL ini halaman daftar atau pencarian. Buka halaman videonya lalu tempel URL itu."
+        )
+    return url
+
+
+def link(raw_url: Any) -> Dict[str, Any]:
+    """Turn a page URL pasted by hand into one catalogue item.
+
+    Nothing is fetched: blocked providers (SpankBang) never work automatically,
+    and the submit step needs the page URL rather than site metadata.
+    """
+    text = str(raw_url or "").strip()
+    if not text:
+        raise AdultDiscoveryError("Tempel URL halaman video terlebih dahulu.")
+    if len(text) > 2048:
+        raise AdultDiscoveryError("URL terlalu panjang.")
+    if text.startswith("//"):
+        text = "https:" + text
+    try:
+        host = urlparse(text).hostname or ""
+    except ValueError:
+        host = ""
+    provider_key = providers.provider_for_host(host)
+    if not provider_key:
+        raise AdultDiscoveryError(
+            "Host tidak dikenal. Tempel halaman dari salah satu sumber yang terdaftar."
+        )
+    spec = providers.PROVIDERS[provider_key]
+    page_url = _manual_page_url(text, provider_key)
+    provider_id = _provider_id(provider_key, "", page_url)
+    title = _title_from_path(urlsplit(page_url).path)
+    if not title:
+        title = f"{spec['label']} · {_query_token(page_url) or provider_id}"
+    return {
+        "ok": True,
+        "manual": True,
+        "provider": {
+            "id": provider_key,
+            "label": spec["label"],
+            "enabled": bool(spec.get("enabled")),
+            "availability": spec.get("availability") or "disabled",
+            "manual": bool(spec.get("manual")),
+        },
+        "item": {
+            "provider": provider_key,
+            "provider_id": provider_id,
+            "page_url": page_url,
+            "title": title[:400],
+            "thumb": "",
+            "duration_sec": 0,
+            "views": 0,
+            "rating": 0.0,
+            "published": "",
+            "tags": [],
+            "site_label": spec["label"],
+            "source_kind": "manual",
+        },
+        "note": "TorBox WebDL mengambil halaman ini; metadata terisi setelah unduhan.",
+    }
+
+
 def feed(provider: Any, mode: Any, page: Any = 1) -> Dict[str, Any]:
     """Return a browse page for one provider or for every enabled provider."""
     mode_key = str(mode or "popular").strip().lower()
@@ -1291,6 +1470,7 @@ def providers_payload() -> Dict[str, Any]:
                 "transport": spec.get("transport") or "",
                 "enabled": bool(spec.get("enabled")),
                 "search": bool(spec.get("search")),
+                "manual": bool(spec.get("manual")),
                 "modes": list(spec.get("modes") or ()),
                 "status": status,
                 "cooldown_seconds": remaining,
@@ -1304,6 +1484,9 @@ def providers_payload() -> Dict[str, Any]:
             {"id": mode, "label": providers.MODE_LABELS[mode]} for mode in providers.MODES
         ],
         "providers": rows,
+        "manual_providers": [
+            key for key in providers.PROVIDER_ORDER if providers.PROVIDERS[key].get("manual")
+        ],
         "page_limit": MAX_PAGE,
         "aggregate_limit": MAX_AGGREGATE_ITEMS,
         "cache_ttl_seconds": CACHE_TTL_SECONDS,

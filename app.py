@@ -4359,6 +4359,16 @@ def api_adult_search():
     return jsonify(payload)
 
 
+@app.route("/api/adult/link", methods=["POST"])
+def api_adult_link():
+    """Validate a page URL pasted by hand (SpankBang and other blocked sources)."""
+    payload = request.get_json(silent=True) or {}
+    try:
+        return jsonify(adult_disc.link(payload.get("url") or ""))
+    except adult_disc.AdultDiscoveryError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), exc.status
+
+
 @app.route("/api/torbox/webdl/info", methods=["GET"])
 def api_torbox_webdl_info():
     """Expose cached hoster coverage and the provider types Roxxy can submit."""

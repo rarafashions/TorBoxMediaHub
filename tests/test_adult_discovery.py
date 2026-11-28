@@ -616,5 +616,86 @@ class HtmlProviderTests(AdultDiscoveryTestBase):
         self.assertEqual(adult_disc._search_url("xxxymovies", "sample", 2), "https://xxxymovies.com/search/sample/")
 
 
+class ManualLinkTests(AdultDiscoveryTestBase):
+    def test_spankbang_link_becomes_one_item(self):
+        result = adult_disc.link(
+            "https://spankbang.com/8a2b9c/video/sample-two-title"
+        )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["manual"])
+        self.assertEqual(result["provider"]["id"], "spankbang")
+        self.assertTrue(result["provider"]["manual"])
+        item = result["item"]
+        self.assertEqual(item["provider"], "spankbang")
+        self.assertEqual(item["page_url"], "https://spankbang.com/8a2b9c/video/sample-two-title")
+        self.assertEqual(item["title"], "Sample two title")
+        self.assertEqual(item["source_kind"], "manual")
+        self.assertEqual(item["thumb"], "")
+
+    def test_http_is_upgraded_and_tracking_removed(self):
+        result = adult_disc.link(
+            "http://www.eporner.com/video-abc123/sample-item/?utm_source=feed&fbclid=abc#frag"
+        )
+        self.assertEqual(
+            result["item"]["page_url"],
+            "https://www.eporner.com/video-abc123/sample-item/",
+        )
+
+    def test_non_video_paths_are_rejected(self):
+        for url in (
+            "https://xhamster.com/best",
+            "https://www.xnxx.com/search/sample",
+            "https://www.xvideos.com/?k=sample",
+            "https://xhamster.com/best/2?page=2",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(adult_disc.AdultDiscoveryError):
+                    adult_disc.link(url)
+
+    def test_unknown_host_and_bad_shape_are_rejected(self):
+        for url in (
+            "https://example.com/video/1",
+            "javascript:alert(1)",
+            "ftp://spankbang.com/1/video/sample",
+            "https://user:pass@spankbang.com/1/video/sample",
+            "https://spankbang.com:8443/1/video/sample",
+            "https://spankbang.com/",
+        ):
+            with self.subTest(url=url):
+                with self.assertRaises(adult_disc.AdultDiscoveryError):
+                    adult_disc.link(url)
+
+    def test_id_only_path_falls_back_to_provider_label(self):
+        result = adult_disc.link("https://www.youjizz.com/videos/123456.html")
+        self.assertEqual(result["item"]["title"], "YouJizz · 123456")
+
+    def test_query_style_page_uses_viewkey_as_title_hint(self):
+        result = adult_disc.link("https://www.pornhub.com/view_video.php?viewkey=sample0000001")
+        self.assertEqual(result["item"]["provider"], "pornhub")
+        self.assertEqual(result["item"]["title"], "Pornhub · sample0000001")
+
+    def test_route_returns_item_then_error(self):
+        ok = self.client.post("/api/adult/link", json={
+            "url": "https://spankbang.com/8a2b9c/video/sample-two-title",
+        })
+        self.assertEqual(ok.status_code, 200)
+        body = ok.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["item"]["provider"], "spankbang")
+
+        bad = self.client.post("/api/adult/link", json={"url": "https://example.com/video/1"})
+        self.assertEqual(bad.status_code, 400)
+        self.assertFalse(bad.get_json()["ok"])
+
+    def test_providers_payload_marks_manual_source(self):
+        payload = adult_disc.providers_payload()
+        manual = {row["id"] for row in payload["providers"] if row["manual"]}
+        self.assertEqual(manual, {"spankbang"})
+        self.assertEqual(payload["manual_providers"], ["spankbang"])
+        statuses = {row["id"]: row["status"] for row in payload["providers"]}
+        self.assertEqual(statuses["spankbang"], "blocked")
+        self.assertEqual(statuses["sunporno"], "search_only")
+
+
 if __name__ == "__main__":
     unittest.main()

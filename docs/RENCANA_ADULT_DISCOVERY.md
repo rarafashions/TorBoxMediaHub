@@ -3,17 +3,17 @@
 **Status:** Fase **A1-A2 selesai** (adapter + tes + verifikasi live); A3-A5 masih rencana
 **Tanggal:** 28 November 2026
 **Versi acuan:** `v1.3DH`
-**Baseline tes:** `466 passed, 63 subtests passed`
+**Baseline tes:** `474 passed, 73 subtests passed`
 
 ---
 
-## 0a. Status implementasi (diperbarui setelah A1-A2)
+## 0a. Status implementasi (diperbarui setelah A1-A3)
 
 | Fase | Isi | Status |
 |---|---|---|
 | A1 | Registry provider + mesin (cache, breaker, normalisasi) + Eporner & Pornhub (JSON) + `/api/adult/providers,feed,search` | **selesai**, 22 tes |
 | A2 | Adapter HTML: XHamster, XVideos, XNXX, YouPorn, YouJizz, XXXYMovies, SunPorno | **selesai**, 18 tes |
-| A3 | SpankBang mode tempel URL + status `blocked` di UI | belum |
+| A3 | SpankBang: validasi tempel URL (`POST /api/adult/link`) + penanda `manual` di `/providers` | **selesai** (backend), 8 tes |
 | A4 | `/api/adult/detail` (TPDB) + `/api/adult/webdl` + pola halaman WebDL baru | belum |
 | A5 | Tab English Adult di `/` lalu `/v2` | belum |
 
@@ -39,6 +39,14 @@ Perbaikan yang lahir dari uji live (bukan dari asumsi):
 3. **Thumbnail `//cdn...`** (YouJizz) di-upgrade ke `https:` sebelum validasi.
 4. **Tanggal relatif** (`15 hours ago`) tidak diubah menjadi tanggal palsu; field `published` dibiarkan kosong.
 5. **Sumber tanpa paginasi** tidak lagi mengulang halaman 1 saat UI meminta halaman 2; hasilnya kosong dan `has_more=false`.
+
+Aturan jalur manual (A3), sengaja **tanpa request keluar**:
+
+- Hanya `https://` (input `http://` dan `//host/...` dinaikkan ke HTTPS), host harus ada di allowlist provider, tanpa kredensial, port hanya 443.
+- Fragmen dibuang dan parameter pelacak (`utm_*`, `fbclid`, `gclid`, `msclkid`, `igshid`, `_ga`, `_gl`, `mc_cid`, `mc_eid`) dihapus supaya dedupe dan URL yang dikirim ke TorBox stabil.
+- Halaman daftar/pencarian ditolak: segmen pertama `best`, `newest`, `search`, `tags`, `pornstar`, `top-rated`, `latest-updates`, dan sejenisnya, serta query `page`, `q`, `k`, `query`, `search`, `view`.
+- Judul diambil dari slug terakhir (`/video/<slug>`); bila slug hanya id atau kata generik (`videos`, `watch`, `sample`), judul menjadi `Label · id`. Metadata lain dikosongkan karena halaman tidak diambil.
+- `GET /api/adult/providers` kini memuat `manual` per sumber dan daftar `manual_providers`; SpankBang tetap `status: blocked` dan `enabled: false`, jadi tidak pernah dihubungi otomatis.
 
 ---
 
@@ -228,6 +236,9 @@ GET /api/adult/search?q=...&providers=eporner,pornhub,xhamster&page=1
 GET /api/adult/detail?provider=...&id=...
   -> metadata kartu + TPDB (opsional) + status IN LIBRARY
 
+POST /api/adult/link        (A3)
+  -> validasi URL tempel -> item katalog tanpa request keluar (SpankBang)
+
 POST /api/adult/webdl
   -> validasi URL halaman -> /api/torbox/webdl/add (internal)
   -> monitor -> impor -> enrich -> Library (english_adult)
@@ -270,6 +281,7 @@ Aturan:
 | GET | `/api/adult/providers` | Daftar situs, mode katalog, status, batas TorBox | 200 |
 | GET | `/api/adult/feed` | Browse per situs atau gabungan | 400 provider/mode tidak dikenal |
 | GET | `/api/adult/search` | Pencarian lintas situs | 400 query kosong |
+| POST | `/api/adult/link` | Validasi URL halaman hasil tempel manual (SpankBang) | 400 host/skema/halaman daftar |
 | GET | `/api/adult/detail` | Metadata + TPDB + IN LIBRARY | 404 item tidak ditemukan |
 | POST | `/api/adult/webdl` | Kirim halaman ke TorBox WebDL | 400 URL/ provider, 409 duplikat, 429 batas, 502 TorBox |
 | GET | `/api/adult/thumb` | Proxy thumbnail (opsional) | 400 host tidak diizinkan |
@@ -476,6 +488,8 @@ Aturan: fixture tidak boleh memuat judul/konten eksplisit asli, dan tidak ada te
 - SunPorno: pencarian saja, `search_only` di UI.
 - SpankBang: status `blocked`, mode manual (tempel URL) yang tervalidasi.
 - **Kriteria terima:** UI jujur soal keterbatasan; tidak ada error berulang ke Cloudflare.
+
+Status: **backend selesai**. Yang terpasang: `POST /api/adult/link`, aturan validasi jalur manual (HTTPS, allowlist host, tanpa kredensial, tanpa halaman daftar, pelacak dibuang), judul dari slug, penanda `manual` + `manual_providers` di `/api/adult/providers`. Tidak ada request keluar ke SpankBang. SunPorno sudah `search_only` sejak A2. Tombol tempel di UI menyusul pada A5.
 
 ### A4 — WebDL + metadata + notifikasi
 
