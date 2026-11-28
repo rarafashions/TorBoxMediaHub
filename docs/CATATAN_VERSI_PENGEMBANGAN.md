@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DI`  
+**Versi saat ini:** `v1.3DJ`  
 **Tanggal status:** 28 November 2026  
-**Baseline tes:** `python -m pytest tests -q --no-header` → **516 passed, 114 subtests passed** (0 gagal)  
+**Baseline tes:** `python -m pytest tests -q --no-header` → **527 passed, 123 subtests passed** (0 gagal)  
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -55,6 +55,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DG` | 28 Nov 2026 | Pencarian episode berlapis (TVMaze, TPB/EZTV/Torrentio/Nyaa/NZBIndex/NZBGeek/Roxxy), seed/leech, cache batch |
 | `v1.3DH` | 28 Nov 2026 | Progres unduhan di panel Serial, endpoint peek `download-status`, auto-add + refresh status episode, series hint |
 | `v1.3DI` | 28 Nov 2026 | Modal kartu English Adult ala Roxxy: sumber stream langsung, analisis otomatis, unduhan lokal, monitoring unduhan + badge Library |
+| `v1.3DJ` | 28 Nov 2026 | Koreksi A6: monitor unduhan di atas katalog, tata letak dua kolom, cover/sinopsis/durasi dari halaman provider |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -144,6 +145,14 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 - Poster katalog ikut dikirim saat submit agar impor tidak tanpa poster.
 - Tes baru 23: 5 parser + normalisasi URL/file + cache/breaker + rute streams + filter monitor + kontrak UI statis.
 
+### 4.10 `v1.3DJ` — koreksi tata letak + metadata halaman provider
+
+- **Monitor unduhan** dipindah ke atas seluruh panel adult: selalu tampil (empty state, bukan `hidden`), progres/impor terlihat saat modal ditutup, dan baris hasil impor bertahan 10 menit setelah toast.
+- Katalog dipecah dua kolom (`xl:grid-cols-[minmax(0,1fr)_320px]`); cooldown/terblokir + tombol **Perbarui** pindah ke panel **Status Sumber** di kanan, bukan strip panjang di bawah katalog.
+- **Cover, sinopsis, durasi diambil dari halaman provider** (OpenGraph + JSON-LD `VideoObject`); TPDB hanya mengisi kekosongan. XVideos/XNXX membaca halaman asli karena `embedframe` hanya memberi kartu generik; Eporner sebaliknya (embed memuat kartu, halaman asli berupa shell). Judul generik (age wall/embed/bot check) dibuang, thumbnail JSON-LD terbesar menang atas `og:image`, poster privat ditolak.
+- Metadata provider yang sama ikut dikirim saat **WebDL** dan **unduhan lokal** (`description`, `poster`, `runtime`).
+- Tes tambahan 11: page metadata (OG/JSON-LD, judul age-wall, guard poster privat, thumbnail terbesar), merge halaman asli XVideos + fallback saat gagal, kontrak UI statis. Suite **527 passed, 123 subtests**; verifikasi live ulang di port 5052 (Eporner kartu 360p + 770 s, XVideos kartu halaman asli 417 s).
+
 ---
 
 ## 5. Keputusan yang mengikat
@@ -168,6 +177,7 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 16. **Tes konservatif.** Jangan mengubah ekspektasi tes lama hanya agar suite hijau; baseline wajib tetap hijau.
 17. **Stream lokal English Adult diambil dari halaman provider**, bukan ekstraksi generik yt-dlp (diuji gagal untuk Eporner/XVideos), dan tidak mengubah `roxxy_module.py` maupun perilaku `/roxxy`.
 18. **Sumber adult memakai `_roxxySource = "english_adult"` dan tidak mengisi `_roxxyType`**, agar `_refresh_stream_url` tidak memanggil manifest Roxxy dengan id provider kita.
+19. **Metadata kartu adult berasal dari halaman provider** (judul, cover, sinopsis, durasi). TPDB hanya mengisi kekosongan; jangan menimpa cover/sinopsis provider dengan tebakan TPDB.
 
 ---
 
@@ -207,7 +217,7 @@ python -m py_compile app.py roxxy_module.py database_manager.py
 python -m pytest tests -q --no-header
 ```
 
-Hasil acuan: **516 passed, 114 subtests passed**.
+Hasil acuan: **527 passed, 123 subtests passed**.
 
 ### Cakupan tes (folder `tests/`)
 

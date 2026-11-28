@@ -2,8 +2,8 @@
 
 **Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
 **Tanggal:** 28 November 2026
-**Versi acuan:** `v1.3DH`
-**Baseline tes:** `516 passed, 114 subtests passed`
+**Versi acuan:** `v1.3DJ`
+**Baseline tes:** `527 passed, 123 subtests passed`
 
 ---
 
@@ -16,7 +16,7 @@
 | A3 | SpankBang: validasi tempel URL (`POST /api/adult/link`) + penanda `manual` di `/providers` | **selesai** (backend), 8 tes |
 | A4 | `/api/adult/detail` (TPDB + in-library) + `/api/adult/webdl` + deteksi login wall | **selesai** (backend), 14 tes |
 | A5 | Tab English Adult di `/` lalu `/v2` | **selesai** untuk `/` (legacy), 5 tes statis; port `/v2` menyusul bersama Tahap 1 |
-| A6 | Modal kartu ala Roxxy: sumber stream langsung + analisis + unduhan lokal + monitoring unduhan | **selesai** untuk `/` (legacy), 23 tes baru |
+| A6 | Modal kartu ala Roxxy: sumber stream langsung + analisis + unduhan lokal + monitoring unduhan | **selesai** untuk `/` (legacy), 23 tes baru; koreksi `v1.3DJ` (monitor di atas katalog, dua kolom, metadata halaman provider) +11 tes |
 
 Hasil uji live (instance sementara port 5052, data dir terpisah, tidak mengganggu app di port 5000):
 
@@ -533,7 +533,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 
 | Rute | Masukan | Hasil |
 |---|---|---|
-| `POST /api/adult/streams` | `{url}` **atau** `{provider, id}` (+`force`) | `streams[]` siap pakai Roxxy (`name`, `url`, `quality`, `behaviorHints.filename`, `route_hint`), `warnings[]`, `cached` |
+| `POST /api/adult/streams` | `{url}` **atau** `{provider, id}` (+`force`) | `streams[]` siap pakai Roxxy (`name`, `url`, `quality`, `behaviorHints.filename`, `route_hint`), `warnings[]`, `page_meta` (cover/sinopsis/durasi milik halaman provider), `cached` |
 | `GET /api/adult/download-status` | `?title=` (opsional) | baris monitor TorBox (`active`, `syncing`, `imported`) yang ber-kategori `english_adult` atau cocok judul; dibaca dengan `consume_imported=False` supaya tampilan Downloads tidak kehilangan event |
 | `GET /api/adult/local-status` | — | hanya job engine lokal dengan `meta._roxxySource == "english_adult"`; field tampilan saja (URL, path, PID tidak pernah keluar) |
 
@@ -556,8 +556,10 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 
 - Kartu katalog dapat diklik / Enter / Space untuk membuka modal overlay (Esc dan klik latar menutup).
 - Modal: badge **NOT IN LIBRARY / ✓ IN LIBRARY**, chip metadata, tombol **Simpan ke TorBox Cloud (WebDL)** + catatan dukungan per sumber, kotak **Status TorBox Cloud** (IDLE/DOWNLOADING/IMPORTING/LOCAL/IMPORTED dengan bar progres), dan daftar **Pilihan Sumber Stream** dengan tombol `⬇ yt-dlp (lokal)` / `⬇ aria2c (lokal)` serta **Analisis ulang**.
-- Panel **Download Center · TorBox Cloud** di tab adult memantau `GET /api/adult/download-status` + `/api/adult/local-status` setiap 4 detik; saat monitor melaporkan impor baru, badge berubah **IN LIBRARY** dan muncul toast sekali per item.
-- Poster dikirim saat submit memakai thumbnail katalog bila TPDB tidak punya poster, sehingga item hasil impor tidak lagi tanpa poster.
+- Panel **Monitor Unduhan · TorBox Cloud** kini **selalu tampil di atas panel adult** (bukan di bawah katalog) sehingga progres dan impor Library terlihat saat modal ditutup; saat kosong ia menampilkan kalimat petunjuk, bukan disembunyikan. Pemantauan `GET /api/adult/download-status` + `/api/adult/local-status` berjalan tiap 4 detik selama tab adult aktif, dan baris hasil impor tetap terlihat 10 menit setelah toast sebagai bukti auto-add.
+- Panel katalog dan panel **Status Sumber** dipisah dua kolom (`xl:grid-cols-[minmax(0,1fr)_320px]`): peringatan cooldown/terblokir dan tombol **Perbarui** tinggal di kolom kanan, tidak lagi menjadi strip panjang di bawah katalog.
+- **Cover, sinopsis, dan durasi diambil dari halaman provider itu sendiri** (OpenGraph + JSON-LD `VideoObject`) karena video kustom hampir tidak pernah ada di TPDB. Untuk XVideos/XNXX halaman `embedframe` hanya memberi kartu generik, jadi halaman asli ikut dibaca dan kartunya yang dipakai; kegagalan di sana hanya mengurangi isi kartu, tidak menggagalkan stream. Judul generik (age wall, "embed video", bot check) dibuang, thumbnail JSON-LD terbesar menang atas `og:image` kecil, dan hanya URL publik yang lolos guard. TPDB tetap dipakai sebagai pelengkap (studio, tahun, rating, bintang) bila ada kecocokan.
+- Metadata provider yang sama dikirim sebagai `metadata.description`/`poster`/`runtime` saat **WebDL** dan **unduhan lokal**, sehingga item hasil impor tidak lagi hanya bermodal judul.
 
 **Verifikasi live (instance sementara port 5052, data dir terpisah):**
 
@@ -569,6 +571,9 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | `GET /api/adult/local-status` | `ok`, 0 job (tidak ada unduhan aktif) |
 | `GET /api/adult/download-status` | `ok`, 0 aktif, 0 impor |
 | `POST /api/roxxy/analyze` pada stream XVideos | `engine: yt-dlp`, `resolved: true`, 2 opsi unduhan |
+| `POST /api/adult/streams` URL Eporner (koreksi A6) | 1 stream; `page_meta`: judul asli, sinopsis tag dari halaman, poster `8_360.jpg` (JSON-LD terbesar), durasi **770 s** |
+| `POST /api/adult/streams` URL XVideos (koreksi A6) | 2 stream; kartu generik `embedframe` tergantikan oleh halaman asli (`title`, poster, durasi **417 s**) |
+| `GET /` instance verifikasi | marka `Monitor Unduhan`, `Auto-add Library`, `adult-provider-health`, `adult-detail-synopsis`, `adult-download-empty` semua ada |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 

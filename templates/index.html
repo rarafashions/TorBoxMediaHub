@@ -750,6 +750,21 @@
 
         <!-- ENGLISH ADULT (18+) PANEL -->
         <div id="adult-panel" class="hidden space-y-4">
+          <!-- MONITOR UNDUHAN: tetap di atas agar progres + auto-add Library terlihat saat modal ditutup -->
+          <div id="adult-downloads" class="bg-slate-950 border border-emerald-500/30 rounded-xl p-3 space-y-2">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="text-[11px] font-bold text-white">Monitor Unduhan &middot; TorBox Cloud</span>
+                <span class="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[9px] font-bold uppercase tracking-wider">Auto-add Library</span>
+              </div>
+              <span id="adult-downloads-count" class="text-[10px] text-slate-500"></span>
+            </div>
+            <p id="adult-download-empty" class="text-[11px] text-slate-500">Belum ada unduhan aktif. Kirim kartu ke TorBox WebDL atau mulai unduhan lokal; progres dan impor Library muncul di sini.</p>
+            <div id="adult-download-list" class="grid gap-2 sm:grid-cols-2"></div>
+          </div>
+
+          <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4 items-start">
+            <div class="space-y-4 min-w-0">
           <div class="bg-slate-950 border border-rose-500/40 rounded-xl p-4 space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="flex items-center gap-2">
@@ -792,8 +807,6 @@
             </p>
           </div>
 
-          <div id="adult-warnings" class="space-y-1"></div>
-
           <div class="flex flex-wrap items-center justify-between gap-2">
             <span id="adult-status" class="text-[10px] text-slate-400">Pilih sumber lalu muat katalog.</span>
             <span id="adult-visible-count" class="text-[10px] text-slate-500"></span>
@@ -804,15 +817,22 @@
           <div id="adult-load-more-wrap" class="hidden text-center py-4">
             <button onclick="loadMoreAdultFeed()" class="px-6 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold">Muat 20 Lagi</button>
           </div>
+            </div><!-- /kolom katalog -->
 
-          <!-- ADULT DOWNLOAD CENTER (TorBox Cloud) -->
-          <div id="adult-downloads" class="hidden bg-slate-950 border border-emerald-500/30 rounded-xl p-3 space-y-2">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <span class="text-[11px] font-bold text-white">Download Center &middot; TorBox Cloud</span>
-              <span id="adult-downloads-count" class="text-[10px] text-slate-500"></span>
-            </div>
-            <div id="adult-download-list" class="space-y-2"></div>
-          </div>
+            <aside class="space-y-3">
+              <div class="bg-slate-950 border border-white/10 rounded-xl p-3 space-y-2">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[11px] font-bold text-white">Status Sumber</span>
+                  <button type="button" onclick="refreshAdultProviderHealth()" class="rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2 py-1 text-[10px] font-semibold text-slate-200">Perbarui</button>
+                </div>
+                <div id="adult-provider-health" class="space-y-1"></div>
+                <div id="adult-warnings" class="space-y-1"></div>
+              </div>
+              <p class="px-1 text-[10px] leading-relaxed text-slate-500">
+                Sumber yang sedang dibatasi tampil di sini, bukan di bawah katalog. Sumber lain tetap jalan; SpankBang hanya lewat tempel URL.
+              </p>
+            </aside>
+          </div><!-- /bagi dua katalog & status -->
 
           <!-- ADULT DETAIL MODAL -->
           <div id="adult-detail" class="hidden fixed inset-0 z-[85] overflow-y-auto bg-slate-950/85 backdrop-blur-sm p-3 sm:p-6" onclick="if (event.target === this) closeAdultDetail()">
@@ -833,6 +853,7 @@
                   <img id="adult-detail-poster" class="hidden w-44 aspect-video object-cover rounded-lg border border-slate-800 bg-slate-900" referrerpolicy="no-referrer" alt="" />
                   <div class="flex-1 min-w-[220px] space-y-2 text-[11px] text-slate-300">
                     <div id="adult-detail-meta" class="grid grid-cols-2 sm:grid-cols-4 gap-1.5"></div>
+                    <p id="adult-detail-synopsis" class="text-[11px] text-slate-300 leading-relaxed"></p>
                     <p id="adult-detail-tpdb"></p>
                     <p id="adult-detail-cast"></p>
                     <p id="adult-detail-tags"></p>
@@ -948,7 +969,14 @@
     let adultStreamAnalyses = {};
     let adultStreamsGeneration = 0;
     let adultMonitorTimer = null;
+    // Cover/synopsis/duration taken from the provider page itself; TPDB only
+    // fills the gaps because custom videos are usually unknown there.
+    let adultPageMeta = {};
     const adultImportNotified = new Set();
+    // Imports stay visible in the top monitor for a short while after the
+    // toast fires, so auto-add is observable even with the modal closed.
+    const adultRecentImports = new Map();
+    const ADULT_IMPORT_VISIBLE_MS = 10 * 60 * 1000;
 
     const TASK_LABELS = {
       subtitle_quality_audit: "SUBTITLE QUALITY AUDIT",
@@ -1468,6 +1496,7 @@
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
         adultProviders = Array.isArray(data.providers) ? data.providers : [];
         adultProvidersLoaded = true;
+        renderAdultProviderHealth();
         if (select) {
           const current = select.value || "all";
           const options = adultProviders.map(p => {
@@ -1609,6 +1638,7 @@
             : `Mode: ${adultMode === "new" ? "Terbaru" : adultMode === "popular" ? "Populer" : "Rating Tertinggi"}`;
         }
         if (loadWrap) loadWrap.classList.toggle("hidden", !adultHasMore);
+        refreshAdultProviderHealth();
       } catch (e) {
         if (!append) {
           grid.innerHTML = "";
@@ -1616,6 +1646,7 @@
         }
         if (status) status.textContent = `Gagal memuat: ${e.message || e}`;
         showToast(`Gagal memuat katalog adult: ${e.message || e}`, true);
+        refreshAdultProviderHealth();
       }
     }
 
@@ -1636,6 +1667,45 @@
         <div class="text-[10px] text-amber-200 bg-amber-950/40 border border-amber-500/30 rounded px-2 py-1">
           <span class="font-semibold">${escapeHtml(w.provider || "")}</span> &mdash; ${escapeHtml(w.message || w.code || "")}
         </div>`).join("");
+    }
+
+    // Ringkasan kesehatan sumber: cooldown/terblokir tampil di panel kanan,
+    // bukan sebagai strip panjang di bawah katalog.
+    function renderAdultProviderHealth() {
+      const box = document.getElementById("adult-provider-health");
+      if (!box) return;
+      const rows = (adultProviders || []).filter(p => p.status !== "ok");
+      if (!rows.length) {
+        box.innerHTML = `<div class="text-[10px] text-emerald-300">Semua sumber otomatis aktif.</div>`;
+        return;
+      }
+      box.innerHTML = rows.map(p => {
+        const label = ADULT_STATUS_LABELS[p.status] || p.status;
+        const wait = p.status === "cooldown" && Number(p.cooldown_seconds || 0) > 0
+          ? ` · ${Math.ceil(Number(p.cooldown_seconds) / 60)} mnt`
+          : "";
+        const cls = p.status === "cooldown"
+          ? "text-amber-300"
+          : p.status === "blocked"
+            ? "text-rose-300"
+            : "text-slate-400";
+        const detail = p.manual ? "tempel URL" : p.status === "search_only" ? "cari saja" : "";
+        return `<div class="flex items-start justify-between gap-2 rounded bg-white/[0.03] px-2 py-1 text-[10px]">
+          <span class="font-semibold text-slate-200">${escapeHtml(p.label || p.id)}</span>
+          <span class="${cls} text-right">${escapeHtml(label + wait)}${detail ? ` · ${escapeHtml(detail)}` : ""}</span>
+        </div>`;
+      }).join("");
+    }
+
+    async function refreshAdultProviderHealth() {
+      try {
+        const res = await fetch("/api/adult/providers");
+        const data = await res.json();
+        if (res.ok && data.ok && Array.isArray(data.providers)) {
+          adultProviders = data.providers;
+          renderAdultProviderHealth();
+        }
+      } catch (e) {}
     }
 
     function renderAdultGrid() {
@@ -1737,8 +1807,13 @@ function adultStreamEsc(value) {
       const tpdbEl = document.getElementById("adult-detail-tpdb");
       if (tpdbEl) {
         tpdbEl.textContent = item.title_is_placeholder
-          ? "Judul masih berupa id; metadata akan terisi setelah unduhan."
-          : "Mengambil metadata TPDB...";
+          ? "Judul masih berupa id; cover dan sinopsis menyusul dari halaman provider."
+          : "Membaca cover dan sinopsis dari halaman provider (TPDB hanya pelengkap)...";
+      }
+      const synopsisEl = document.getElementById("adult-detail-synopsis");
+      if (synopsisEl) {
+        synopsisEl.textContent = "";
+        synopsisEl.classList.add("hidden");
       }
       const castEl = document.getElementById("adult-detail-cast");
       if (castEl) castEl.textContent = "";
@@ -1782,6 +1857,75 @@ function adultStreamEsc(value) {
       return [...new Set(tags)];
     }
 
+    // Cover dan sinopsis diambil dari halaman provider lebih dulu; TPDB hanya
+    // pelengkap karena video kustom biasanya tidak ada di database itu.
+    function applyAdultVisualMeta() {
+      if (!adultSelected) return;
+      const meta = adultDetailMeta || {};
+      const found = meta.status === "found";
+      const page = adultPageMeta || {};
+      const synopsis = String(page.description || (found ? meta.plot : "") || "").trim();
+      const synopsisEl = document.getElementById("adult-detail-synopsis");
+      if (synopsisEl) {
+        synopsisEl.textContent = synopsis
+          ? `Sinopsis: ${synopsis.length > 400 ? `${synopsis.slice(0, 400)}…` : synopsis}`
+          : "";
+        synopsisEl.classList.toggle("hidden", !synopsis);
+      }
+      const poster = String(page.poster || meta.poster_url || adultThumbSrc(adultSelected) || "").trim();
+      const posterEl = document.getElementById("adult-detail-poster");
+      if (posterEl) {
+        if (/^https?:\/\//i.test(poster)) {
+          posterEl.src = poster;
+          posterEl.classList.remove("hidden");
+        } else {
+          posterEl.removeAttribute("src");
+          posterEl.classList.add("hidden");
+        }
+      }
+      const duration = Number((adultSelected && adultSelected.duration_sec) || page.duration_sec || 0);
+      const subEl = document.getElementById("adult-detail-sub");
+      if (subEl && duration > 0) {
+        subEl.textContent = [
+          adultSelected.site_label || adultSelected.provider,
+          formatAdultDuration(duration),
+          formatAdultCount(adultSelected.views) ? `${formatAdultCount(adultSelected.views)} tayangan` : "",
+        ].filter(Boolean).join(" · ");
+      }
+    }
+
+    function renderAdultTpdb() {
+      const tpdbEl = document.getElementById("adult-detail-tpdb");
+      if (!tpdbEl) return;
+      const meta = adultDetailMeta || {};
+      const found = meta.status === "found";
+      const page = adultPageMeta || {};
+      const hasPage = Boolean(page.description || page.poster);
+      if (found) {
+        const bits = [
+          meta.title,
+          meta.year ? `(${meta.year})` : "",
+          meta.studio,
+          Number(meta.rating || 0) > 0 ? `rating ${Number(meta.rating).toFixed(1)}` : "",
+        ].filter(Boolean);
+        tpdbEl.textContent = `TPDB: ${bits.join(" · ")}`;
+      } else if (meta.status === "not_configured") {
+        tpdbEl.textContent = hasPage
+          ? "TPDB: API key belum diisi; cover dan sinopsis memakai halaman provider."
+          : "TPDB: API key belum diisi; cover dan sinopsis menyusul dari halaman provider.";
+      } else if (meta.status === "not_found") {
+        tpdbEl.textContent = hasPage
+          ? "TPDB: tidak ada kecocokan untuk judul ini; cover dan sinopsis memakai halaman provider."
+          : "TPDB: tidak ada kecocokan untuk judul ini; cover katalog dipakai sebagai petunjuk.";
+      } else if (meta.status === "skipped") {
+        tpdbEl.textContent = `TPDB: dilewati (${meta.reason || "judul belum jelas"}).`;
+      } else if (!adultDetailMeta) {
+        tpdbEl.textContent = "Membaca cover dan sinopsis dari halaman provider (TPDB hanya pelengkap)...";
+      } else {
+        tpdbEl.textContent = "";
+      }
+    }
+
     function renderAdultDetail(library) {
       if (!adultSelected) return;
       const item = adultSelected;
@@ -1792,34 +1936,8 @@ function adultStreamEsc(value) {
         inLibrary,
         inLibrary ? `Sudah ada di Library: ${library.map(it => it.title || it.file_name || it.id).join(" · ")}` : ""
       );
-      const tpdbEl = document.getElementById("adult-detail-tpdb");
-      if (tpdbEl) {
-        if (found) {
-          const bits = [
-            meta.title,
-            meta.year ? `(${meta.year})` : "",
-            meta.studio,
-            Number(meta.rating || 0) > 0 ? `rating ${Number(meta.rating).toFixed(1)}` : "",
-          ].filter(Boolean);
-          let text = `TPDB: ${bits.join(" · ")}`;
-          if (meta.plot) text += ` — ${String(meta.plot).slice(0, 220)}`;
-          tpdbEl.textContent = text;
-        } else if (meta.status === "not_configured") {
-          tpdbEl.textContent = "TPDB: API key belum diisi, metadata diambil TorBox setelah unduhan.";
-        } else if (meta.status === "not_found") {
-          tpdbEl.textContent = "TPDB: tidak ada kecocokan untuk judul ini; poster katalog akan dipakai sebagai petunjuk.";
-        } else if (meta.status === "skipped") {
-          tpdbEl.textContent = `TPDB: dilewati (${meta.reason || "judul belum jelas"}).`;
-        } else {
-          tpdbEl.textContent = "";
-        }
-      }
-      const poster = document.getElementById("adult-detail-poster");
-      const posterUrl = String(meta.poster_url || adultThumbSrc(item) || "").trim();
-      if (poster && /^https?:\/\//i.test(posterUrl)) {
-        poster.src = posterUrl;
-        poster.classList.remove("hidden");
-      }
+      renderAdultTpdb();
+      applyAdultVisualMeta();
       const castEl = document.getElementById("adult-detail-cast");
       if (castEl) {
         const cast = Array.isArray(meta.performers) ? meta.performers.slice(0, 8) : [];
@@ -1841,7 +1959,7 @@ function adultStreamEsc(value) {
       const metaEl = document.getElementById("adult-detail-meta");
       if (metaEl) {
         const chips = [];
-        const duration = formatAdultDuration(item.duration_sec);
+        const duration = formatAdultDuration(item.duration_sec || (adultPageMeta || {}).duration_sec);
         if (duration) chips.push(["Durasi", duration]);
         if (found && meta.studio) chips.push(["Studio", meta.studio]);
         if (found && meta.year) chips.push(["Tahun", meta.year]);
@@ -1874,6 +1992,7 @@ function adultStreamEsc(value) {
       if (!item) return;
       adultSelected = item;
       adultDetailMeta = null;
+      adultPageMeta = {};
       adultStreams = [];
       adultStreamAnalyses = {};
       adultStreamsGeneration += 1;
@@ -1913,6 +2032,11 @@ function adultStreamEsc(value) {
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (generation !== adultStreamsGeneration) return;
         adultStreams = Array.isArray(data.streams) ? data.streams : [];
+        // Cover, sinopsis dan durasi resmi dari halaman provider lebih dulu;
+        // TPDB hanya mengisi yang kosong (video kustom biasanya tidak ada).
+        adultPageMeta = data.page_meta && typeof data.page_meta === "object" ? data.page_meta : {};
+        renderAdultTpdb();
+        applyAdultVisualMeta();
         const warnings = Array.isArray(data.warnings) ? data.warnings : [];
         renderAdultStreams();
         if (note) {
@@ -2056,17 +2180,18 @@ function adultStreamEsc(value) {
 
     function adultDownloadMeta(item) {
       const meta = adultDetailMeta || {};
+      const page = adultPageMeta || {};
       const found = meta.status === "found";
       const tags = item ? adultTagsFor(item, meta) : [];
       return {
         id: item ? String(item.provider_id || "") : "",
         name: (found && meta.title) || (item && item.title) || "English Adult",
-        description: (found && meta.plot) || tags.join(", "),
+        description: String(page.description || (found && meta.plot) || tags.join(", ")).trim(),
         studio: (found && meta.studio) || "",
         year: (found && meta.year) || 0,
-        runtime: item && item.duration_sec ? Math.round(Number(item.duration_sec) / 60) : 0,
+        runtime: Math.round(Number((item && item.duration_sec) || page.duration_sec || 0) / 60) || 0,
         imdbRating: (found && Number(meta.rating || 0) > 0) ? Number(meta.rating) : 0,
-        poster: (found && meta.poster_url) || adultThumbSrc(item || {}),
+        poster: String(page.poster || (found && meta.poster_url) || adultThumbSrc(item || {}) || "").trim(),
         genres: tags,
         cast: (found && Array.isArray(meta.performers)) ? meta.performers : [],
         // Marks the job as an English Adult download so the monitor can pick it
@@ -2122,16 +2247,18 @@ function adultStreamEsc(value) {
       try {
         const meta = adultDetailMeta || {};
         const found = meta.status === "found";
+        const page = adultPageMeta || {};
         const tags = adultTagsFor(adultSelected, meta);
-        const posterUrl = String(meta.poster_url || adultThumbSrc(adultSelected) || "").trim();
+        const posterUrl = String(page.poster || meta.poster_url || adultThumbSrc(adultSelected) || "").trim();
+        const description = String(page.description || (found && meta.plot) || "").trim();
         const payload = { url: adultSelected.page_url, title: adultSelected.title };
         if (/^https?:\/\//i.test(posterUrl)) payload.poster_url = posterUrl;
         payload.metadata = {
-          name: (found && meta.title) || adultSelected.title,
-          description: (found && meta.plot) || tags.join(", "),
+          name: (found && meta.title) || (adultSelected.title_is_placeholder && page.title) || adultSelected.title,
+          description: description || tags.join(", "),
           studio: (found && meta.studio) || "",
           year: (found && meta.year) || 0,
-          runtime: adultSelected.duration_sec ? Math.round(Number(adultSelected.duration_sec) / 60) : 0,
+          runtime: Math.round(Number(adultSelected.duration_sec || page.duration_sec || 0) / 60) || 0,
           poster: posterUrl,
           genres: tags,
           cast: (found && Array.isArray(meta.performers)) ? meta.performers : [],
@@ -2261,21 +2388,50 @@ function adultStreamEsc(value) {
       }
     }
 
+    function adultRecentImportRows() {
+      const now = Date.now();
+      const rows = [];
+      for (const [key, entry] of adultRecentImports) {
+        if (now - entry.at > ADULT_IMPORT_VISIBLE_MS) {
+          adultRecentImports.delete(key);
+          continue;
+        }
+        rows.push({
+          id: key,
+          item_id: entry.itemId,
+          title: entry.title,
+          status: "completed",
+          progress: 100,
+          library_status: "ready",
+          library_message: "masuk Library",
+          message: "Selesai diimpor ke Library",
+          _kind: "imported",
+        });
+      }
+      return rows;
+    }
+
     function renderAdultDownloads(torbox, local) {
       const wrap = document.getElementById("adult-downloads");
       const list = document.getElementById("adult-download-list");
       const count = document.getElementById("adult-downloads-count");
+      const empty = document.getElementById("adult-download-empty");
       if (!wrap || !list) return;
       const torboxRows = adultTorboxRows(torbox);
       const localRows = (local.jobs || []).filter(adultJobIsActive);
-      const rows = torboxRows.concat(localRows);
+      const activeIds = new Set(torboxRows.map(row => String(row.id || row.title || "")));
+      const importedRows = adultRecentImportRows().filter(row => !activeIds.has(String(row.id || row.title || "")));
+      const rows = torboxRows.concat(localRows, importedRows);
+      // The monitor stays on screen above the catalogue so progress and the
+      // Library auto-add remain visible after the card modal is closed.
+      wrap.classList.remove("hidden");
       if (!rows.length) {
-        wrap.classList.add("hidden");
         list.innerHTML = "";
         if (count) count.textContent = "";
+        if (empty) empty.classList.remove("hidden");
         return;
       }
-      wrap.classList.remove("hidden");
+      if (empty) empty.classList.add("hidden");
       if (count) count.textContent = `${rows.length} aktif`;
       list.innerHTML = rows.map(row => adultQueueRow(row, row._kind || (row.id ? "local" : "torbox"))).join("");
     }
@@ -2295,9 +2451,19 @@ function adultStreamEsc(value) {
         const data = await res.json();
         if (data && data.ok) local = data;
       } catch (e) {}
+      const imported = torbox.imported || [];
+      for (const row of imported) {
+        const key = String(row.item_id || row.title || "");
+        if (!key) continue;
+        const previous = adultRecentImports.get(key);
+        adultRecentImports.set(key, {
+          at: previous ? previous.at : Date.now(),
+          itemId: row.item_id || "",
+          title: row.title || "",
+        });
+      }
       renderAdultDownloads(torbox, local);
       updateAdultCloudStatus(torbox, local);
-      const imported = torbox.imported || [];
       if (imported.length && adultSelected) {
         const match = imported.find(row => adultMatchesTitle(row, adultSelected.title));
         const key = match ? String(match.item_id || match.title || "") : "";

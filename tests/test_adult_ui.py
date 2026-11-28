@@ -83,6 +83,39 @@ class AdultDiscoveryUiTests(unittest.TestCase):
         self.assertIn('localStorage.getItem("tbh_adult_gate")', self.html)
         self.assertIn('localStorage.setItem("tbh_adult_gate", "1")', self.html)
 
+    def test_download_monitor_stays_visible_above_the_catalogue(self):
+        # The modal closes, so progress + auto-add must live in the panel header
+        # and never start hidden.
+        self.assertIn('<div id="adult-downloads" class="bg-slate-950', self.html)
+        self.assertNotIn('<div id="adult-downloads" class="hidden', self.html)
+        self.assertIn('id="adult-download-empty"', self.html)
+        self.assertIn("Monitor Unduhan", self.html)
+        self.assertIn("Auto-add Library", self.html)
+        self.assertIn("adultRecentImports", self.html)
+
+    def test_catalogue_and_provider_health_are_split(self):
+        for marker in (
+            'id="adult-provider-health"',
+            "refreshAdultProviderHealth",
+            "xl:grid-cols-[minmax(0,1fr)_320px]",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.html)
+
+    def test_provider_page_metadata_fills_cover_and_synopsis(self):
+        # Custom videos are usually unknown to TPDB, so the provider's own
+        # OpenGraph/JSON-LD card is read first and TPDB only fills the gaps.
+        for marker in (
+            "page_meta",
+            "adultPageMeta",
+            "applyAdultVisualMeta",
+            'id="adult-detail-synopsis"',
+            "page.poster || meta.poster_url",
+            "page.description || (found && meta.plot)",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.html)
+
     def test_blocked_providers_are_labelled_honestly(self):
         for label in ("terblokir", "hanya pencarian", "tempel URL"):
             with self.subTest(label=label):
