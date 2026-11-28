@@ -1,8 +1,8 @@
 # Dokumentasi Lengkap — TorBox Media Hub
 
-**Versi aplikasi:** `v1.3DN`  
+**Versi aplikasi:** `v1.3DO`  
 **Status dokumen:** 28 November 2026  
-**Baseline tes:** `python -m pytest tests -q --no-header` → **535 passed, 190 subtests passed**
+**Baseline tes:** `python -m pytest tests -q --no-header` → **535 passed, 196 subtests passed**
 
 Dokumen ini menjelaskan aplikasi secara menyeluruh: fitur, cara menjalankan untuk pengguna baru, konfigurasi, mesin internal, keamanan, batasan, dan pemecahan masalah. Untuk catatan rilis dan keputusan pengembangan, lihat [`CATATAN_VERSI_PENGEMBANGAN.md`](CATATAN_VERSI_PENGEMBANGAN.md). Untuk draf README GitHub, lihat [`README_GITHUB_DRAFT.md`](README_GITHUB_DRAFT.md).
 
@@ -392,7 +392,8 @@ Route `#/discover`, tombol nav **Discovery**. Dua tab:
 - **Film & Serial** — empat kategori: **Film**, **Serial TV**, **Anime**, **Donghua** (kategori adult/Indo tetap ditolak `400`). Urutan **Trending/Populer/Rating** memakai `GET /api/discover`; kotak pencarian memakai `feed=search`.
 - Kartu membuka sheet detail (poster, sinopsis, tahun/rating, jumlah episode). Tombol **Cari rilis** memanggil `POST /api/discover/search-cache` dengan `query`, `category`, `tmdb_id`, `year`, dan `season`/`episode` untuk serial; hasil menampilkan badge **CACHED/UNCACHED**, sumber, dan tombol **Tambahkan** (`POST /api/torbox/add-cached` + `delete_remote_on_replace`). Pencarian tidak dijalankan otomatis karena satu query indexer butuh puluhan detik.
 - **Toolbar tunggal**: tab (Film & Serial / English Adult 18+), chip kategori, chip urutan, dan status (jumlah judul / memuat / galat) berada dalam satu baris; status rata kanan dan chip membungkus sendiri di layar sempit, sehingga grid kartu langsung berada di bawah kolom pencarian.
-- **English Adult 18+** — gate sekali per browser (`tbh_adult_v2_gate`) sebelum katalog tampil. Sumber dan status diambil dari `GET /api/adult/providers`; katalog dari `GET /api/adult/feed`/`GET /api/adult/search` (kata kunci minimal 2 karakter). Detail membaca cover, sinopsis, dan durasi dari halaman provider (`GET /api/adult/detail`, `POST /api/adult/streams`), dengan TPDB sebagai pelengkap. Tombol **Simpan ke TorBox Cloud (WebDL)** memakai `POST /api/adult/webdl` (batas 100 GB per tautan) dan hasilnya masuk Library lewat auto-add.
+- **English Adult 18+** — gate sekali per browser (`tbh_adult_v2_gate`) sebelum katalog tampil.
+- **Sumber unduhan (English Adult)** — detail item menampilkan stream dari `/api/adult/streams`. Setiap stream dianalisis `/api/roxxy/analyze` dan menawarkan **Cached TorBox**, **Torrent ke TorBox**, **NZB ke TorBox** (`/api/torbox/add-cached`), atau **yt-dlp/aria2c** lokal (`/api/roxxy/local/start`). Sumber dan status diambil dari `GET /api/adult/providers`; katalog dari `GET /api/adult/feed`/`GET /api/adult/search` (kata kunci minimal 2 karakter). Detail membaca cover, sinopsis, dan durasi dari halaman provider (`GET /api/adult/detail`, `POST /api/adult/streams`), dengan TPDB sebagai pelengkap. Tombol **Simpan ke TorBox Cloud (WebDL)** memakai `POST /api/adult/webdl` (batas 100 GB per tautan) dan hasilnya masuk Library lewat auto-add.
 
 
 Teks sekunder dan tersier memakai kontras minimum 4,5:1 terhadap kanvas gelap (`--text-2` ≈8,3:1, `--text-3` ≈5,8:1); batas ini dijaga tes otomatis.

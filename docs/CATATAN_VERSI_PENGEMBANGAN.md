@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DN`
+**Versi saat ini:** `v1.3DO`
 **Tanggal status:** 28 November 2026
-**Baseline tes:** `python -m pytest tests -q --no-header` → **535 passed, 190 subtests passed** (0 gagal)
+**Baseline tes:** `python -m pytest tests -q --no-header` → **535 passed, 196 subtests passed** (0 gagal)
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -60,6 +60,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DL` | 28 Nov 2026 | Discovery Hub memakai bahasa visual Roxxy: kanvas #05070B, kartu poster, dan slide-over Download Center untuk monitor + auto-add |
 | `v1.3DM` | 28 Nov 2026 | Discovery pindah ke `/v2` (Film/Serial/Anime/Donghua + English Adult 18+) dan panel detail v2 mendapat kurasi: edit metadata, klasifikasi, poster, hapus fisik |
 | `v1.3DN` | 28 Nov 2026 | Toolbar Discovery satu baris (tab + chip kategori + chip urutan + status di kanan), kartu naik ~275 px, dan kontras teks sekunder/tersier pada kanvas gelap dinaikkan |
+| `v1.3DO` | 28 Nov 2026 | Detail English Adult memulihkan daftar sumber unduhan: analisis provider + rute Cached TorBox, Torrent ke TorBox, NZB ke TorBox, dan unduh lokal yt-dlp/aria2c |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -200,6 +201,18 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 - **Tes**: tambah satu tes statis kontras (menghitung rasio luminansi `--text-2`/`--text-3` terhadap `--surface-0`, ambang 4,5:1) dan marker CSS toolbar. Suite **535 passed, 190 subtests**.
 - **Verifikasi browser** (port 5056, salinan DB): toolbar 1 baris pada 1440/1024 (`h=45`), status `50 judul · Film` di kanan; chip Anime/Rating dan mode adult berpindah tanpa galat; `#/discover` tanpa overflow di 390, 1024, dan 1440 px.
 
+### 4.15 `v1.3DO` — Sumber unduhan English Adult dipulihkan di detail v2
+
+- **Regresi**: `openAdultDiscoverItem` memanggil `/api/adult/streams` tetapi hanya memakai `page_meta`; array `streams` dibuang, sehingga detail v2 hanya menawarkan **WebDL**. Alur lama (`templates/index.html`) menampilkan tiap stream provider beserta analisis rute unduhan.
+- **Section "Sumber unduhan"** baru di sheet adult: setiap stream dirender sebagai kartu (nama, kualitas, nama file, status), lalu dianalisis lewat `POST /api/roxxy/analyze` dengan batas **3 analisis paralel** seperti legacy.
+- **Rute yang kembali tersedia**, diambil dari `analysis.options`:
+  - **Cached TorBox** dan **Torrent ke TorBox** → `POST /api/torbox/add-cached` (`kind: torrent`, `magnet`, `expected_filename`, `metadata`, `category: english_adult`).
+  - **NZB ke TorBox** → `POST /api/torbox/add-cached` (`kind: usenet`, `nzb_url`).
+  - **yt-dlp (lokal)** dan **aria2c (lokal)** → `POST /api/roxxy/local/start` setelah konfirmasi, dengan metadata `_roxxySource: english_adult` dan `id` provider.
+- **Status per sumber**: "Sumber siap diunduh" (hijau), "Pilih sumber secara manual" (kuning), atau "Analisis gagal" (merah). Callback analisis dihentikan saat sheet ditutup (`ctx.alive`) agar tidak menulis ke DOM yang sudah dilepas.
+- **Tes**: marker tambahan (`/api/roxxy/analyze`, `/api/roxxy/local/start`, `analysis.nzb_url`, `Sumber unduhan`, `.disc-stream`, `.disc-stream__actions`); suite **535 passed, 196 subtests**.
+- **Verifikasi browser** (port 5056, endpoint adult direspons tiruan): 4 stream (MP4, HLS, magnet, NZB) menghasilkan 4 analisis dan **7 tombol** (2+2+2+1); Cached mengirim torrent+magnet, NZB mengirim `kind=usenet`, yt-dlp memulai job lokal bertanda `english_adult`; sheet tetap tanpa overflow pada 390 px.
+
 ---
 
 ## 5. Keputusan yang mengikat
@@ -228,6 +241,7 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 20. **Discovery Hub memakai bahasa visual Roxxy** (kanvas #05070B, aksen sky, kartu poster, slide-over Download Center). Perubahan hanya visual/aditif: ID, handler, endpoint, dan rute lama wajib tetap berfungsi; `roxxy.html` tidak diubah.
 21. **Discovery di `/v2` memakai endpoint lama, bukan implementasi kedua.** Mainstream memakai `/api/discover*` + `/api/torbox/add-cached`; adult memakai `/api/adult/*`. Gate 18+ disimpan per browser (`tbh_adult_v2_gate`). Pencarian rilis tidak dijalankan otomatis saat sheet dibuka. Aksi kurasi v2 (`manual`, `classification`, `poster`, `delete-physical`) tetap memakai route media yang sudah ada.
 22. **Teks di kanvas gelap wajib terbaca.** Rasio kontras minimum 4,5:1 terhadap `--surface-0` untuk `--text-2`/`--text-3` dijaga tes; toolbar Discovery harus satu baris pada lebar desktop dan tidak boleh memakai basis flex yang berubah menjadi tinggi di dalam kolom flex.
+23. **Detail English Adult wajib menampilkan seluruh rute unduhan.** Stream provider harus dianalisis (`/api/roxxy/analyze`) dan menawarkan Cached TorBox, Torrent ke TorBox, NZB ke TorBox, serta yt-dlp/aria2c lokal; WebDL saja tidak cukup.
 
 ---
 

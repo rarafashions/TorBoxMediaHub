@@ -4610,23 +4610,33 @@
   function openAdultDiscoverItem(item) {
     const host = el("div", { class: "disc-detail" });
     const metaLine = [item.site_label || item.provider, durationLabel(item.duration_sec)].filter(Boolean).join(" · ");
+    // Stream analysis keeps running after the sheet closes; the flag stops
+    // pending callbacks from writing into a detached sheet.
+    const ctx = { alive: true };
     const modal = openModal({
       title: item.title || "English Adult",
       subtitle: metaLine,
       wide: true,
       body: host,
+      onClose: () => {
+        ctx.alive = false;
+      },
     });
     host.append(
       el(
         "div",
         { class: "search-panel" },
-        el("p", { class: "search-panel__note", text: "Membaca cover, sinopsis, dan durasi dari halaman provider..." })
+        el("p", {
+          class: "search-panel__note",
+          text: "Membaca cover, sinopsis, durasi, dan sumber unduhan dari halaman provider...",
+        })
       )
     );
 
     (async () => {
       let detail = null;
-      let page = {};
+      let streamData = null;
+      let streamError = "";
       try {
         detail = await api(
           `/api/adult/detail?provider=${encodeURIComponent(item.provider)}&id=${encodeURIComponent(item.provider_id)}`
@@ -4635,20 +4645,22 @@
         detail = null;
       }
       try {
-        const streams = await api(
+        streamData = await api(
           "/api/adult/streams",
           jsonBody({ provider: item.provider, id: item.provider_id })
         );
-        page = streams.page_meta || {};
-      } catch (_) {
-        page = {};
+      } catch (err) {
+        streamData = null;
+        streamError = err.message || "Gagal membaca halaman provider.";
       }
-      paintAdultDiscoverDetail(host, modal, item, detail, page);
+      if (!ctx.alive) return;
+      paintAdultDiscoverDetail(host, modal, item, detail, streamData, streamError, ctx);
     })();
   }
 
-  function paintAdultDiscoverDetail(host, modal, item, detail, page) {
+  function paintAdultDiscoverDetail(host, modal, item, detail, streamData, streamError, ctx) {
     const merged = Object.assign({}, item, (detail && detail.item) || {});
+    const page = (streamData && streamData.page_meta) || {};
     const tpdb = detail && detail.tpdb && detail.tpdb.status === "found" ? detail.tpdb : {};
     const inLibrary = detail && Array.isArray(detail.in_library) ? detail.in_library : [];
     const tags = [...(Array.isArray(merged.tags) ? merged.tags : []), ...(Array.isArray(tpdb.tags) ? tpdb.tags : [])]
@@ -4735,8 +4747,253 @@
         el("h3", { class: "sheet__label", text: "Simpan ke Library" }),
         el("div", { class: "disc-detail__actions" }, submit),
         note
+      ),
+      adultStreamSection(
+        (streamData && Array.isArray(streamData.streams) ? streamData.streams : []),
+        (streamData && Array.isArray(streamData.warnings) ? streamData.warnings : []),
+        streamError,
+        adultDownloadMeta(merged, tpdb, page),
+        ctx
       )
     );
+  }
+
+  function adultStreamSection(streams, warnings, streamError, downloadMeta, ctx) {
+    const list = el("div", { class: "disc-streams" });
+    const queue = [];
+    const head = el(
+      "div",
+      { class: "disc-streams__head" },
+      el("h3", { class: "sheet__label", text: "Sumber unduhan" }),
+      el("span", {
+        class: "disc-streams__count",
+        text: streams.length ? `${numberLabel(streams.length)} sumber` : "",
+      })
+    );
+
+    if (!streams.length) {
+      list.append(
+        el("p", {
+          class: "search-panel__note",
+          text: streamError
+            ? `Sumber stream tidak tersedia: ${streamError}. WebDL di atas tetap bisa dipakai.`
+            : "Tidak ada sumber stream langsung dari halaman provider. WebDL di atas tetap bisa dipakai.",
+        })
+      );
+    } else {
+      list.append(
+        el("p", {
+          class: "search-panel__note",
+          text: "Setiap sumber dianalisis otomatis: Cached TorBox, Torrent ke TorBox, NZB ke TorBox, atau unduh lokal dengan yt-dlp/aria2c.",
+        })
+      );
+      streams.forEach((stream, index) => {
+        const entry = adultStreamCard(stream, index, downloadMeta, ctx);
+        list.append(entry.card);
+        queue.push(entry.analyze);
+      });
+      runAdultStreamAnalyses(queue, ctx);
+    }
+
+    for (const warn of warnings.slice(0, 3)) {
+      list.append(
+        el("p", {
+          class: "search-panel__note disc-stream__note",
+          text: warn && warn.message ? warn.message : String(warn),
+        })
+      );
+    }
+
+    return el("div", { class: "sheet__section" }, head, list);
+  }
+
+  function adultStreamCard(stream, index, downloadMeta, ctx) {
+    const routeTag = el("span", {
+      class: "tag",
+      text:
+        stream.route_hint === "yt_dlp_candidate"
+          ? "yt-dlp"
+          : stream.route_hint === "torbox" || stream.route_hint === "torbox_usenet"
+          ? "TorBox"
+          : "aria2c",
+    });
+    const filename =
+      (stream.behaviorHints && stream.behaviorHints.filename) || stream.filename || "Nama file mengikuti server";
+    const status = el("p", { class: "disc-stream__status", text: "Menunggu analisis..." });
+    const analysisHost = el("div", { class: "disc-stream__analysis" });
+
+    const card = el(
+      "div",
+      { class: "disc-stream" },
+      el(
+        "div",
+        { class: "disc-stream__head" },
+        el("p", { class: "disc-stream__name", text: stream.name || `Sumber ${index + 1}` }),
+        el(
+          "div",
+          { class: "tagrow" },
+          stream.quality ? el("span", { class: "tag", text: String(stream.quality) }) : null,
+          routeTag
+        )
+      ),
+      el("p", { class: "disc-stream__file", text: filename }),
+      status,
+      analysisHost
+    );
+
+    return { card, analyze: () => analyzeAdultStream(stream, analysisHost, status, routeTag, downloadMeta, ctx) };
+  }
+
+  function runAdultStreamAnalyses(queue, ctx) {
+    const jobs = queue.slice();
+    const workers = [];
+    // At most three provider inspections at once, matching the legacy flow.
+    for (let i = 0; i < Math.min(3, jobs.length); i += 1) {
+      workers.push(
+        (async () => {
+          while (jobs.length && ctx.alive) {
+            const job = jobs.shift();
+            if (!job) return;
+            await job();
+          }
+        })()
+      );
+    }
+    return Promise.allSettled(workers);
+  }
+
+  async function analyzeAdultStream(stream, host, status, routeTag, downloadMeta, ctx) {
+    host.replaceChildren(el("p", { class: "search-panel__note", text: "Menganalisis URL dan tipe stream..." }));
+    let analysis = null;
+    try {
+      const data = await api("/api/roxxy/analyze", jsonBody({ stream }));
+      analysis = data.analysis || {};
+    } catch (err) {
+      if (!ctx.alive) return;
+      status.className = "disc-stream__status is-error";
+      status.textContent = "Analisis gagal";
+      host.replaceChildren(el("p", { class: "search-panel__note", text: `Analisis gagal: ${err.message}` }));
+      return;
+    }
+    if (!ctx.alive) return;
+
+    const size = analysis.content_length ? bytesLabel(analysis.content_length) : "";
+    const metaBits = [analysis.quality, size].filter(Boolean).join(" · ");
+    const engine = String(analysis.engine || "manual").replace("pending_http_inspection", "HTTP");
+    if (engine) routeTag.textContent = engine;
+
+    const resolved = Boolean(analysis.resolved);
+    status.className = "disc-stream__status " + (resolved ? "is-ok" : "is-warn");
+    status.textContent = resolved ? "Sumber siap diunduh" : "Pilih sumber secara manual";
+
+    const nodes = [el("p", { class: "disc-stream__engine", text: `Rute: ${engine}${metaBits ? ` · ${metaBits}` : ""}` })];
+    if (analysis.reason) nodes.push(el("p", { class: "disc-stream__reason", text: analysis.reason }));
+    if (analysis.inspect_error) {
+      nodes.push(el("p", { class: "search-panel__note", text: analysis.inspect_error }));
+    }
+
+    const options = Array.isArray(analysis.options) ? analysis.options : [];
+    if (options.length) {
+      const actions = el("div", { class: "disc-stream__actions" });
+      for (const option of options) {
+        const disabled = Boolean(option.disabled);
+        const button = el("button", {
+          class: "btn btn--sm " + (disabled ? "btn--ghost" : option.recommended ? "btn--primary" : "btn--ghost"),
+          type: "button",
+          text: option.label || option.engine || "Unduh",
+        });
+        if (disabled) {
+          button.disabled = true;
+          button.title = option.disabled_reason || "Rute ini belum tersedia.";
+        } else {
+          button.addEventListener("click", () => {
+            if (option.engine === "torbox") {
+              sendAdultStreamToTorbox(stream, analysis, option, button, downloadMeta, ctx);
+            } else {
+              startAdultStreamLocal(stream, option.engine, button, downloadMeta, ctx);
+            }
+          });
+        }
+        actions.append(button);
+      }
+      nodes.push(actions);
+    } else {
+      nodes.push(el("p", { class: "search-panel__note", text: "Tidak ada rute unduhan otomatis untuk sumber ini." }));
+    }
+    host.replaceChildren(...nodes);
+  }
+
+  async function sendAdultStreamToTorbox(stream, analysis, option, button, downloadMeta, ctx) {
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = "Mengirim...";
+    const kind = option.kind === "usenet" ? "usenet" : "torrent";
+    const payload = {
+      kind,
+      magnet: kind === "torrent" ? analysis.magnet || "" : "",
+      nzb_url: kind === "usenet" ? analysis.nzb_url || stream.url || "" : "",
+      title: downloadMeta.name || "English Adult",
+      expected_filename:
+        analysis.suggested_filename || (stream.behaviorHints && stream.behaviorHints.filename) || "",
+      poster_url: /^https?:\/\//i.test(downloadMeta.poster || "") ? downloadMeta.poster : "",
+      metadata: downloadMeta,
+      category: "english_adult",
+      delete_remote_on_replace: true,
+    };
+    try {
+      const data = await api("/api/torbox/add-cached", jsonBody(payload));
+      if (!ctx.alive) return;
+      toast(data.message || `Dikirim ke TorBox (${option.label || kind}).`, "ok");
+    } catch (err) {
+      if (!ctx.alive) return;
+      toast(`Gagal mengirim ke TorBox: ${err.message}`, "error");
+    } finally {
+      if (ctx.alive) {
+        button.disabled = false;
+        button.textContent = label;
+      }
+    }
+  }
+
+  async function startAdultStreamLocal(stream, engine, button, downloadMeta, ctx) {
+    const label = engine === "aria2c" ? "aria2c" : "yt-dlp";
+    const ok = await confirmDialog({
+      title: `Unduh dengan ${label}`,
+      message: `Mulai unduhan lokal "${downloadMeta.name || "English Adult"}" memakai ${label}? File disimpan ke folder unduhan di Pengaturan.`,
+      confirmLabel: `Mulai ${label}`,
+      danger: false,
+    });
+    if (!ok || !ctx.alive) return;
+    const original = button.textContent;
+    button.disabled = true;
+    button.textContent = "Memulai...";
+    try {
+      const data = await api(
+        "/api/roxxy/local/start",
+        jsonBody({
+          stream,
+          meta: downloadMeta,
+          subtitles: [],
+          download_path: "",
+          engine: label,
+        })
+      );
+      if (!ctx.alive) return;
+      toast(`Unduhan lokal dimulai: ${(data.job && data.job.title) || downloadMeta.name || "English Adult"}.`, "ok");
+    } catch (err) {
+      if (!ctx.alive) return;
+      toast(`Gagal memulai unduhan lokal: ${err.message}`, "error");
+    } finally {
+      if (ctx.alive) {
+        button.disabled = false;
+        button.textContent = original;
+      }
+    }
+  }
+
+  function adultDownloadMeta(merged, tpdb, page) {
+    const metadata = adultWebdlPayload(merged, tpdb, page).metadata;
+    return Object.assign({ id: String(merged.provider_id || "") }, metadata);
   }
 
   function adultWebdlPayload(merged, tpdb, page) {

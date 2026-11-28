@@ -62,6 +62,10 @@ class V2DiscoveryUiTests(unittest.TestCase):
             "/api/adult/detail",
             "/api/adult/streams",
             "/api/adult/webdl",
+            "/api/roxxy/analyze",
+            "/api/roxxy/local/start",
+            "analysis.nzb_url",
+            "Sumber unduhan",
             '_roxxySource: "english_adult"',
             "100 GB per tautan",
         ):
@@ -94,6 +98,8 @@ class V2DiscoveryUiTests(unittest.TestCase):
             ".discover-status",
             ".disc-detail__head",
             ".disc-video-card .card__frame",
+            ".disc-stream",
+            ".disc-stream__actions",
             ".curate-grid",
             ".detail__extra--curation",
         ):

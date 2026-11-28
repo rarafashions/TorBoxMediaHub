@@ -1,6 +1,6 @@
 # Pending Tasks
 
-Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **535 passed, 190 subtests passed** (0 gagal).
+Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **535 passed, 196 subtests passed** (0 gagal).
 
 ---
 
@@ -67,7 +67,9 @@ Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-h
 
 | 47 | Discovery di `/v2` + kurasi panel detail (Tahap 1) | `templates/home_v2.html`, `static/ui/home.js`, `static/ui/app.css`, `tests/test_v2_ui.py` | View **Discovery** baru di `/v2#/discover`: feed Film/Serial TV/Anime/Donghua dari `/api/discover` (chip Trending/Populer/Rating + pencarian), sheet rilis dengan `search-cache` → `add-cached`, serta tab **English Adult 18+** bergate (`tbh_adult_v2_gate`) yang memakai `/api/adult/providers|feed|search|detail|streams|webdl`. Panel detail v2 mendapat empat aksi kurasi: **Edit metadata** (`/manual`), **Klasifikasi** (`/classification/preview|apply`), **Poster** (`/poster/manual|automatic|retry`), dan **Hapus fisik** (`/delete-physical` dengan konfirmasi). Tidak ada endpoint baru; `/`, `/roxxy`, `roxxy_module.py`, dan discovery legacy tidak berubah. Tes statis baru 5 (suite **534 passed, 185 subtests**); verifikasi Playwright di port 5056 dengan salinan DB: 50 kartu Film, 60 item adult, sheet rilis 2 baris (mock indexer), 4 tombol kurasi aktif. |
 
-| 48 | Discovery v2: toolbar satu baris + kontras kanvas gelap | `static/ui/home.js`, `static/ui/app.css`, `static/ui/tokens.css`, `tests/test_v2_ui.py` | Tab, chip kategori, chip urutan, dan status menyatu di `.discover-toolbar` (status rata kanan; chip membungkus di bawah 900 px). Baris pencarian tidak lagi mewarisi tinggi 320 px dari basis flex di kolom (`.discovery > .discover-search { flex: 0 0 auto; }`), sehingga kartu naik ~277 px pada 1440. `--text-3` dinaikkan ke `#8a8a94` (≈5,8:1) dan `.view__sub` memakai `--text-2` (≈8,3:1); tes baru menghitung rasio kontras dengan ambang 4,5:1. Suite **535 passed, 190 subtests**. |
+| 48 | Discovery v2: toolbar satu baris + kontras kanvas gelap | `static/ui/home.js`, `static/ui/app.css`, `static/ui/tokens.css`, `tests/test_v2_ui.py` | Tab, chip kategori, chip urutan, dan status menyatu di `.discover-toolbar` (status rata kanan; chip membungkus di bawah 900 px). Baris pencarian tidak lagi mewarisi tinggi 320 px dari basis flex di kolom (`.discovery > .discover-search { flex: 0 0 auto; }`), sehingga kartu naik ~277 px pada 1440. `--text-3` dinaikkan ke `#8a8a94` (≈5,8:1) dan `.view__sub` memakai `--text-2` (≈8,3:1); tes baru menghitung rasio kontras dengan ambang 4,5:1. Suite **535 passed, 196 subtests**. |
+
+| 49 | English Adult v2: pulihkan sumber unduhan langsung | `static/ui/home.js`, `static/ui/app.css`, `tests/test_v2_ui.py` | Detail adult kembali menampilkan section **Sumber unduhan**: tiap stream provider dianalisis `/api/roxxy/analyze` (3 paralel) dan menawarkan **Cached TorBox**, **Torrent ke TorBox**, **NZB ke TorBox** (`/api/torbox/add-cached`), serta **yt-dlp/aria2c** lokal (`/api/roxxy/local/start`). Status per sumber siap/manual/gagal; analisis berhenti saat sheet ditutup. Suite **535 passed, 196 subtests**; verifikasi Playwright 5056 dengan 4 stream tiruan (7 tombol) dan tanpa overflow di 390 px. |
 
 ---
 
