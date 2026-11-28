@@ -31,6 +31,7 @@ import dual_subtitle_engine as dual_subs
 import subtitle_quality_audit as subtitle_audit
 import platform_support as platform_env
 import webdl_resolver as webdl
+import adult_discovery as adult_disc
 from roxxy_module import (
     ROXXY_ALL_SOURCES,
     ROXXY_SOURCE_CATEGORIES,
@@ -4316,6 +4317,46 @@ def _webdl_api_error(detail: Any, status_code: int) -> str:
     if "limit" in lower and "download" in lower:
         return "Batas download TorBox tercapai. Coba lagi nanti atau hapus item lama."
     return text or f"TorBox API HTTP {status_code}"
+
+
+# --------------------------------------------------------------------------- #
+# English Adult Discovery
+#
+# Deliberately separate from /api/discover: the mainstream guard stays at four
+# categories, and these routes serve provider catalogs that TorBox WebDL can
+# resolve from a public page URL. Nothing here touches roxxy_module.
+# --------------------------------------------------------------------------- #
+
+
+@app.route("/api/adult/providers", methods=["GET"])
+def api_adult_providers():
+    return jsonify(adult_disc.providers_payload())
+
+
+@app.route("/api/adult/feed", methods=["GET"])
+def api_adult_feed():
+    try:
+        payload = adult_disc.feed(
+            provider=request.args.get("provider") or "all",
+            mode=request.args.get("mode") or "popular",
+            page=request.args.get("page") or 1,
+        )
+    except adult_disc.AdultDiscoveryError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), exc.status
+    return jsonify(payload)
+
+
+@app.route("/api/adult/search", methods=["GET"])
+def api_adult_search():
+    try:
+        payload = adult_disc.search(
+            query=request.args.get("q") or "",
+            provider_filter=request.args.get("providers") or "",
+            page=request.args.get("page") or 1,
+        )
+    except adult_disc.AdultDiscoveryError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), exc.status
+    return jsonify(payload)
 
 
 @app.route("/api/torbox/webdl/info", methods=["GET"])
