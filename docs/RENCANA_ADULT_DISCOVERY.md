@@ -1,13 +1,13 @@
 # Rencana Fase A — English Adult Discovery di Discovery Hub
 
-**Status:** Fase **A1-A4 selesai** (backend + tes + verifikasi live); A5 masih rencana
+**Status:** Fase **A1-A5 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
 **Tanggal:** 28 November 2026
 **Versi acuan:** `v1.3DH`
-**Baseline tes:** `474 passed, 73 subtests passed`
+**Baseline tes:** `493 passed, 91 subtests passed`
 
 ---
 
-## 0a. Status implementasi (diperbarui setelah A1-A4)
+## 0a. Status implementasi (diperbarui setelah A1-A5)
 
 | Fase | Isi | Status |
 |---|---|---|
@@ -15,7 +15,7 @@
 | A2 | Adapter HTML: XHamster, XVideos, XNXX, YouPorn, YouJizz, XXXYMovies, SunPorno | **selesai**, 18 tes |
 | A3 | SpankBang: validasi tempel URL (`POST /api/adult/link`) + penanda `manual` di `/providers` | **selesai** (backend), 8 tes |
 | A4 | `/api/adult/detail` (TPDB + in-library) + `/api/adult/webdl` + deteksi login wall | **selesai** (backend), 14 tes |
-| A5 | Tab English Adult di `/` lalu `/v2` | belum |
+| A5 | Tab English Adult di `/` lalu `/v2` | **selesai** untuk `/` (legacy), 5 tes statis; port `/v2` menyusul bersama Tahap 1 |
 
 Hasil uji live (instance sementara port 5052, data dir terpisah, tidak mengganggu app di port 5000):
 
@@ -512,6 +512,15 @@ Status: **backend selesai**. Terpasang: `/api/adult/detail` (cache TPDB 24 jam +
 
 - Tab di `/` (legacy) lebih dulu, karena Discovery hidup di sana.
 - Lalu port ke `/v2` bersama Tahap 1.
+
+Status: **selesai untuk `/`**. Pill **English Adult 18+** di deretan kategori Discovery membuka panel khusus tanpa mengubah alur kategori mainstream:
+
+- Gerbang 18+ sekali per browser (`localStorage.tbh_adult_gate`), bukan setiap membuka tab.
+- Pilihan sumber dari `/api/adult/providers`; sumber `blocked` tampil `disabled` dengan label **terblokir**, SpankBang **tempel URL**, SunPorno **cari saja**.
+- Mode **Terbaru / Populer / Rating**, pencarian per sumber atau semua sumber, dan tombol **Muat lagi** memakai `/api/adult/feed` + `/api/adult/search`.
+- Kotak **Tempel URL** memanggil `/api/adult/link`; detail memakai `/api/adult/detail` (TPDB + petunjuk `in_library`); tombol **Kirim ke TorBox WebDL** memakai `/api/adult/webdl` dengan URL halaman asli.
+- Semua teks dari provider di-escape sebelum masuk `innerHTML`; thumbnail hanya diterima bila `http(s)`.
+- Panel mainstream (cache drawer, filter, grid) disembunyikan saat tab adult aktif, sehingga `/api/discover` tidak pernah diminta dengan `english_adult`. Port `/v2` tetap menunggu Tahap 1.
 
 ---
 

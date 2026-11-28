@@ -625,6 +625,7 @@
             <button onclick="setDiscoveryCategory('tv_show')" id="disc-cat-tv_show" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">TV Shows</button>
             <button onclick="setDiscoveryCategory('anime')" id="disc-cat-anime" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">Anime</button>
             <button onclick="setDiscoveryCategory('donghua')" id="disc-cat-donghua" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">Donghua</button>
+            <button onclick="setDiscoveryCategory('english_adult')" id="disc-cat-english_adult" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-rose-300 hover:text-white" title="English Adult (18+) — katalog 10 situs">English Adult <span class="align-top text-[9px] font-bold text-rose-400">18+</span></button>
           </div>
 
           <!-- Sub-Tabs: Trending / Popular / Top Rated / Search -->
@@ -637,7 +638,7 @@
         </div>
 
         <!-- Search Input Row -->
-        <div class="flex flex-wrap items-center gap-2">
+        <div id="disc-search-row" class="flex flex-wrap items-center gap-2">
           <div class="relative flex-1 min-w-[220px]">
             <input
               id="disc-search-input"
@@ -677,6 +678,7 @@
 
       <!-- Modal Body: Cache/Upgrade Inspector Drawer + Catalog Grid -->
       <div id="discovery-scroll-area" onscroll="updateDiscoveryBackToTop()" class="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
+        <div id="disc-mainstream-body" class="space-y-4">
         
         <!-- Active Cache & Upgrade Panel -->
         <div id="disc-cache-drawer" class="hidden bg-slate-950 border border-indigo-500/50 rounded-xl p-4 space-y-3 shadow-lg">
@@ -744,6 +746,94 @@
         <div id="disc-empty" class="hidden text-center py-14 text-xs text-slate-400">
           No catalog items found. Try switching tabs or entering a search keyword above.
         </div>
+        </div>
+
+        <!-- ENGLISH ADULT (18+) PANEL -->
+        <div id="adult-panel" class="hidden space-y-4">
+          <div class="bg-slate-950 border border-rose-500/40 rounded-xl p-4 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex items-center gap-2">
+                <span class="px-2 py-0.5 rounded bg-rose-600/20 border border-rose-500/40 text-rose-300 text-[10px] font-bold uppercase tracking-wider">English Adult · 18+</span>
+                <h4 class="text-sm font-bold text-white">Katalog Situs Adult</h4>
+              </div>
+              <span class="text-[10px] text-slate-500">URL halaman asli dikirim ke TorBox WebDL</span>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <label for="adult-provider" class="text-[11px] font-semibold text-slate-400">Sumber</label>
+              <select id="adult-provider" onchange="onAdultProviderChange()" class="bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-rose-500 min-w-[190px]">
+                <option value="all">Semua sumber otomatis</option>
+              </select>
+
+              <div class="inline-flex bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs" id="adult-mode-btns">
+                <button onclick="setAdultMode('new')" id="adult-mode-new" class="adult-mode-btn px-3 py-1 rounded-md font-semibold bg-rose-600 text-white">Terbaru</button>
+                <button onclick="setAdultMode('popular')" id="adult-mode-popular" class="adult-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white">Populer</button>
+                <button onclick="setAdultMode('top_rated')" id="adult-mode-top_rated" class="adult-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white">Rating</button>
+              </div>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="relative flex-1 min-w-[220px]">
+                <input id="adult-search-input" type="text" onkeydown="if(event.key==='Enter') executeAdultSearch()" placeholder="Cari judul atau bintang di sumber terpilih..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-rose-500" />
+              </div>
+              <button onclick="executeAdultSearch()" class="px-4 py-2 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white">Cari</button>
+              <button onclick="resetAdultCatalog()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200">Reset</button>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+              <div class="relative flex-1 min-w-[220px]">
+                <input id="adult-paste-input" type="text" onkeydown="if(event.key==='Enter') pasteAdultLink()" placeholder="Tempel URL halaman (mis. SpankBang yang terblokir)..." class="w-full bg-slate-900 border border-amber-500/40 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-400" />
+              </div>
+              <button onclick="pasteAdultLink()" id="adult-paste-btn" class="px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs font-semibold text-white">Tempel URL</button>
+            </div>
+
+            <p class="text-[10px] text-slate-500 leading-relaxed">
+              Katalog otomatis: 9 situs. <span class="text-amber-300">SpankBang terblokir Cloudflare</span>, jadi halaman hanya bisa ditempel manual. SunPorno hanya mendukung pencarian.
+            </p>
+          </div>
+
+          <div id="adult-warnings" class="space-y-1"></div>
+
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span id="adult-status" class="text-[10px] text-slate-400">Pilih sumber lalu muat katalog.</span>
+            <span id="adult-visible-count" class="text-[10px] text-slate-500"></span>
+          </div>
+
+          <div id="adult-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5"></div>
+
+          <div id="adult-load-more-wrap" class="hidden text-center py-4">
+            <button onclick="loadMoreAdultFeed()" class="px-6 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold">Muat 20 Lagi</button>
+          </div>
+
+          <!-- ADULT DETAIL DRAWER -->
+          <div id="adult-detail" class="hidden bg-slate-950 border border-rose-500/50 rounded-xl p-4 space-y-3 shadow-lg">
+            <div class="flex items-start justify-between gap-3 border-b border-slate-800 pb-2.5">
+              <div class="min-w-0">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="px-2 py-0.5 rounded bg-rose-600/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold uppercase tracking-wider">Detail Item</span>
+                  <h4 id="adult-detail-title" class="text-sm font-bold text-white"></h4>
+                </div>
+                <p id="adult-detail-sub" class="text-[11px] text-slate-400 mt-0.5"></p>
+              </div>
+              <button onclick="closeAdultDetail()" class="shrink-0 text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-900 border border-slate-700">Tutup</button>
+            </div>
+            <div class="flex flex-wrap gap-3">
+              <img id="adult-detail-poster" class="hidden w-40 aspect-video object-cover rounded-lg border border-slate-800 bg-slate-900" referrerpolicy="no-referrer" alt="" />
+              <div class="flex-1 min-w-[220px] space-y-1.5 text-[11px] text-slate-300">
+                <p id="adult-detail-tpdb"></p>
+                <p id="adult-detail-cast"></p>
+                <p id="adult-detail-tags"></p>
+                <p id="adult-detail-library"></p>
+                <p id="adult-detail-url" class="font-mono text-[10px] text-slate-500 break-all"></p>
+              </div>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+              <button id="adult-detail-submit" onclick="submitAdultWebdl()" class="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-xs font-semibold text-white">Kirim ke TorBox WebDL</button>
+              <button onclick="openAdultPageLink()" class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200">Buka Halaman Asli</button>
+              <span id="adult-detail-note" class="text-[10px] text-slate-500"></span>
+            </div>
+          </div>
+        </div>
       </div>
 
     </div>
@@ -803,6 +893,18 @@
     let discCacheResults = [];
     let discExistingMatches = [];
 
+    // English Adult (18+) discovery state
+    let adultProviders = [];
+    let adultProvidersLoaded = false;
+    let adultProvider = "all";
+    let adultMode = "new"; // 'new' | 'popular' | 'top_rated'
+    let adultItems = [];
+    let adultPage = 1;
+    let adultHasMore = false;
+    let adultQuery = "";
+    let adultSelected = null;
+    let adultDetailMeta = null;
+
     const TASK_LABELS = {
       subtitle_quality_audit: "SUBTITLE QUALITY AUDIT",
       sync_torbox: "SYNC CLOUD",
@@ -839,6 +941,11 @@
       if (scrollArea) scrollArea.scrollTop = 0;
       updateDiscoveryBackToTop();
       updateDiscoveryClearButtons();
+      if (discCategory === "english_adult") {
+        if (!adultProvidersLoaded) loadAdultProviders();
+        if (!adultItems.length) loadAdultFeed();
+        return;
+      }
       if (!discItems.length) {
         loadDiscoveryFeed();
       }
@@ -895,6 +1002,9 @@
 
     function setDiscoveryCategory(cat) {
       discRequestedCount = DISC_PAGE_SIZE;
+      if (cat === "english_adult" && !ensureAdultGate()) {
+        cat = "general_movie";
+      }
       discCategory = cat;
       document.querySelectorAll(".disc-cat-btn").forEach(btn => {
         const isAct = btn.id === `disc-cat-${cat}`;
@@ -902,6 +1012,22 @@
           ? "disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white"
           : "disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white";
       });
+
+      const isAdult = cat === "english_adult";
+      const mainstreamBody = document.getElementById("disc-mainstream-body");
+      const searchRow = document.getElementById("disc-search-row");
+      const adultPanel = document.getElementById("adult-panel");
+      if (mainstreamBody) mainstreamBody.classList.toggle("hidden", isAdult);
+      if (searchRow) searchRow.classList.toggle("hidden", isAdult);
+      if (adultPanel) adultPanel.classList.toggle("hidden", !isAdult);
+
+      if (isAdult) {
+        closeDiscoveryCacheDrawer();
+        closeAdultDetail();
+        if (!adultProvidersLoaded) loadAdultProviders();
+        if (!adultItems.length) loadAdultFeed();
+        return;
+      }
 
       // Bersihkan pencarian sebelumnya & reset mode ke Trending agar tidak terpengaruh kategori lama
       const inp = document.getElementById("disc-search-input");
@@ -1247,6 +1373,472 @@
       discSelectedItem = null;
       discCacheResults = [];
       discExistingMatches = [];
+    }
+
+    // ==================== ENGLISH ADULT (18+) DISCOVERY ====================
+    const ADULT_STATUS_LABELS = {
+      blocked: "terblokir",
+      search_only: "hanya pencarian",
+      cooldown: "jeda sementara",
+      disabled: "nonaktif",
+      ok: "aktif",
+    };
+
+    function ensureAdultGate() {
+      try {
+        if (localStorage.getItem("tbh_adult_gate") === "1") return true;
+        const ok = window.confirm(
+          "Konten English Adult hanya untuk pengguna 18+.\n\nLanjutkan membuka katalog adult?"
+        );
+        if (!ok) return false;
+        localStorage.setItem("tbh_adult_gate", "1");
+        return true;
+      } catch (e) {
+        return true;
+      }
+    }
+
+    function setAdultModeStyle(mode) {
+      document.querySelectorAll(".adult-mode-btn").forEach(btn => {
+        const isAct = btn.id === `adult-mode-${mode}`;
+        btn.className = isAct
+          ? "adult-mode-btn px-3 py-1 rounded-md font-semibold bg-rose-600 text-white"
+          : "adult-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white";
+      });
+    }
+
+    async function loadAdultProviders() {
+      const select = document.getElementById("adult-provider");
+      try {
+        const res = await fetch("/api/adult/providers");
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        adultProviders = Array.isArray(data.providers) ? data.providers : [];
+        adultProvidersLoaded = true;
+        if (select) {
+          const current = select.value || "all";
+          const options = adultProviders.map(p => {
+            const unavailable = !p.enabled;
+            let suffix = "";
+            if (p.manual) suffix = " (tempel URL)";
+            else if (p.status === "search_only") suffix = " (cari saja)";
+            else if (unavailable) suffix = ` (${ADULT_STATUS_LABELS[p.status] || p.status})`;
+            return `<option value="${escapeHtml(p.id)}"${unavailable ? " disabled" : ""}>${escapeHtml(p.label)}${suffix}</option>`;
+          });
+          select.innerHTML = `<option value="all">Semua sumber otomatis</option>` + options.join("");
+          const stillValid = adultProviders.some(p => p.id === current && p.enabled);
+          select.value = stillValid ? current : "all";
+          adultProvider = select.value;
+        }
+      } catch (e) {
+        adultProvidersLoaded = false;
+        showToast(`Gagal memuat daftar sumber: ${e.message || e}`, true);
+      }
+    }
+
+    function onAdultProviderChange() {
+      const select = document.getElementById("adult-provider");
+      adultProvider = select ? select.value : "all";
+      adultPage = 1;
+      loadAdultFeed();
+    }
+
+    function setAdultMode(mode) {
+      adultMode = mode;
+      adultPage = 1;
+      adultQuery = "";
+      const inp = document.getElementById("adult-search-input");
+      if (inp) inp.value = "";
+      setAdultModeStyle(mode);
+      loadAdultFeed();
+    }
+
+    function executeAdultSearch() {
+      const inp = document.getElementById("adult-search-input");
+      const q = (inp ? inp.value : "").trim();
+      if (q.length < 2) {
+        showToast("Kata kunci minimal 2 karakter.", true);
+        return;
+      }
+      adultQuery = q;
+      adultPage = 1;
+      loadAdultFeed();
+    }
+
+    function resetAdultCatalog() {
+      adultQuery = "";
+      const inp = document.getElementById("adult-search-input");
+      if (inp) inp.value = "";
+      setAdultMode("new");
+    }
+
+    function formatAdultCount(value) {
+      const n = Number(value || 0);
+      if (!isFinite(n) || n <= 0) return "";
+      if (n >= 1000000) return `${(n / 1000000).toFixed(1)} jt`;
+      if (n >= 1000) return `${(n / 1000).toFixed(1)} rb`;
+      return String(Math.round(n));
+    }
+
+    function formatAdultDuration(sec) {
+      const n = Number(sec || 0);
+      if (!isFinite(n) || n <= 0) return "";
+      const m = Math.floor(n / 60);
+      const s = n % 60;
+      return m > 0 ? `${m}:${String(s).padStart(2, "0")}` : `${s} dtk`;
+    }
+
+    function adultThumbSrc(item) {
+      const raw = String((item && item.thumb) || "").trim();
+      return /^https?:\/\//i.test(raw) ? raw : "";
+    }
+
+    async function loadAdultFeed(append = false) {
+      const grid = document.getElementById("adult-grid");
+      const status = document.getElementById("adult-status");
+      const countEl = document.getElementById("adult-visible-count");
+      const loadWrap = document.getElementById("adult-load-more-wrap");
+      const warningsBox = document.getElementById("adult-warnings");
+      if (!grid) return;
+
+      if (!append) {
+        adultPage = 1;
+        adultItems = [];
+        adultHasMore = false;
+        if (warningsBox) warningsBox.innerHTML = "";
+        if (loadWrap) loadWrap.classList.add("hidden");
+        grid.innerHTML = `
+          <div class="col-span-full py-12 text-center text-xs text-slate-300 space-y-2">
+            <div class="inline-block w-5 h-5 border-2 border-rose-400 border-t-transparent rounded-full animate-spin"></div>
+            <div>Memuat katalog ${escapeHtml(adultProvider === "all" ? "semua sumber" : adultProvider)}...</div>
+          </div>`;
+      }
+
+      const params = new URLSearchParams();
+      let url;
+      if (adultQuery) {
+        params.set("q", adultQuery);
+        if (adultProvider !== "all") params.set("providers", adultProvider);
+        params.set("page", String(adultPage));
+        url = `/api/adult/search?${params.toString()}`;
+      } else {
+        params.set("provider", adultProvider);
+        params.set("mode", adultMode);
+        params.set("page", String(adultPage));
+        url = `/api/adult/feed?${params.toString()}`;
+      }
+      if (status) status.textContent = adultQuery ? `Mencari "${adultQuery}"...` : "Memuat katalog...";
+
+      try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const incoming = Array.isArray(data.items) ? data.items : [];
+        if (append) {
+          const existing = new Set(adultItems.map(it => `${it.provider}|${it.provider_id}`));
+          for (const item of incoming) {
+            const key = `${item.provider}|${item.provider_id}`;
+            if (!existing.has(key)) { adultItems.push(item); existing.add(key); }
+          }
+        } else {
+          adultItems = incoming;
+        }
+        adultHasMore = Boolean(data.has_more) && incoming.length > 0;
+        renderAdultGrid();
+        renderAdultWarnings(data.warnings || []);
+        const sourceCount = (data.providers || []).reduce((acc, p) => acc + (p.count || 0), 0);
+        if (status) {
+          status.textContent = `${adultItems.length} item dimuat dari ${sourceCount} hasil sumber${adultHasMore ? " (masih ada halaman berikutnya)" : ""}.`;
+        }
+        if (countEl) {
+          countEl.textContent = adultQuery
+            ? `Pencarian: ${adultQuery}`
+            : `Mode: ${adultMode === "new" ? "Terbaru" : adultMode === "popular" ? "Populer" : "Rating Tertinggi"}`;
+        }
+        if (loadWrap) loadWrap.classList.toggle("hidden", !adultHasMore);
+      } catch (e) {
+        if (!append) {
+          grid.innerHTML = "";
+          adultItems = [];
+        }
+        if (status) status.textContent = `Gagal memuat: ${e.message || e}`;
+        showToast(`Gagal memuat katalog adult: ${e.message || e}`, true);
+      }
+    }
+
+    async function loadMoreAdultFeed() {
+      if (!adultHasMore) return;
+      adultPage += 1;
+      await loadAdultFeed(true);
+    }
+
+    function renderAdultWarnings(warnings) {
+      const box = document.getElementById("adult-warnings");
+      if (!box) return;
+      if (!warnings.length) {
+        box.innerHTML = "";
+        return;
+      }
+      box.innerHTML = warnings.slice(0, 12).map(w => `
+        <div class="text-[10px] text-amber-200 bg-amber-950/40 border border-amber-500/30 rounded px-2 py-1">
+          <span class="font-semibold">${escapeHtml(w.provider || "")}</span> &mdash; ${escapeHtml(w.message || w.code || "")}
+        </div>`).join("");
+    }
+
+    function renderAdultGrid() {
+      const grid = document.getElementById("adult-grid");
+      const countEl = document.getElementById("adult-visible-count");
+      if (!grid) return;
+      if (!adultItems.length) {
+        grid.innerHTML = `<div class="col-span-full py-12 text-center text-xs text-slate-400">Tidak ada item. Coba sumber lain, mode lain, atau tempel URL halaman.</div>`;
+        if (countEl) countEl.textContent = "0 item";
+        return;
+      }
+      grid.innerHTML = adultItems.map((item, idx) => {
+        const thumb = adultThumbSrc(item);
+        const preview = thumb
+          ? `<img src="${escapeHtml(thumb)}" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'; this.nextElementSibling.classList.remove('hidden');" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
+             <div class="hidden w-full h-full flex items-center justify-center bg-slate-950 text-slate-500 text-[10px]">Tanpa pratinjau</div>`
+          : `<div class="w-full h-full flex items-center justify-center bg-slate-950 text-slate-500 text-[10px]">Tanpa pratinjau</div>`;
+        const duration = formatAdultDuration(item.duration_sec);
+        const views = formatAdultCount(item.views);
+        const rating = Number(item.rating || 0);
+        return `
+          <div class="group bg-slate-950 border border-slate-800 hover:border-rose-500/70 rounded-xl overflow-hidden flex flex-col transition shadow-md">
+            <div class="relative aspect-video bg-slate-900 overflow-hidden">
+              ${preview}
+              <div class="absolute top-2 left-2 flex flex-wrap gap-1">
+                <span class="px-1.5 py-0.5 rounded bg-slate-950/90 text-rose-200 text-[10px] font-bold">${escapeHtml(item.site_label || item.provider)}</span>
+                ${duration ? `<span class="px-1.5 py-0.5 rounded bg-slate-950/90 text-slate-200 text-[10px] font-bold">${escapeHtml(duration)}</span>` : ""}
+                ${rating > 0 ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/90 text-slate-950 text-[10px] font-bold">&#9733; ${rating.toFixed(1)}</span>` : ""}
+              </div>
+              ${views ? `<div class="absolute bottom-2 left-2 right-2"><span class="px-1.5 py-0.5 rounded bg-slate-950/90 text-slate-300 text-[10px]">${escapeHtml(views)} tayangan</span></div>` : ""}
+            </div>
+            <div class="p-2 flex-1 flex flex-col justify-between gap-1.5 min-h-[104px]">
+              <h4 class="text-[11px] font-bold text-white line-clamp-2 leading-snug" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h4>
+              <button onclick="openAdultDetail(${idx})" class="w-full py-1.5 px-2 rounded-lg bg-rose-700 hover:bg-rose-600 text-[11px] font-semibold text-white transition">Detail &amp; Kirim WebDL</button>
+            </div>
+          </div>`;
+      }).join("");
+      if (countEl) countEl.textContent = `${adultItems.length} item dimuat`;
+    }
+
+    function closeAdultDetail() {
+      const box = document.getElementById("adult-detail");
+      if (box) box.classList.add("hidden");
+      const note = document.getElementById("adult-detail-note");
+      if (note) note.textContent = "";
+    }
+
+    function showAdultDetailSkeleton(item) {
+      const box = document.getElementById("adult-detail");
+      if (!box) return;
+      box.classList.remove("hidden");
+      const titleEl = document.getElementById("adult-detail-title");
+      if (titleEl) titleEl.textContent = item.title || "";
+      const subEl = document.getElementById("adult-detail-sub");
+      if (subEl) {
+        subEl.textContent = [
+          item.site_label || item.provider,
+          formatAdultDuration(item.duration_sec),
+          formatAdultCount(item.views) ? `${formatAdultCount(item.views)} tayangan` : "",
+        ].filter(Boolean).join(" · ");
+      }
+      const poster = document.getElementById("adult-detail-poster");
+      const thumb = adultThumbSrc(item);
+      if (poster) {
+        if (thumb) {
+          poster.src = thumb;
+          poster.classList.remove("hidden");
+        } else {
+          poster.removeAttribute("src");
+          poster.classList.add("hidden");
+        }
+      }
+      const tpdbEl = document.getElementById("adult-detail-tpdb");
+      if (tpdbEl) tpdbEl.textContent = "Mengambil metadata TPDB...";
+      const castEl = document.getElementById("adult-detail-cast");
+      if (castEl) castEl.textContent = "";
+      const tagEl = document.getElementById("adult-detail-tags");
+      if (tagEl) tagEl.textContent = (item.tags || []).length ? `Tag: ${(item.tags || []).slice(0, 14).join(", ")}` : "";
+      const libEl = document.getElementById("adult-detail-library");
+      if (libEl) {
+        libEl.className = "text-[11px] text-slate-400";
+        libEl.textContent = "";
+      }
+      const urlEl = document.getElementById("adult-detail-url");
+      if (urlEl) urlEl.textContent = item.page_url || "";
+      const noteEl = document.getElementById("adult-detail-note");
+      if (noteEl) {
+        noteEl.textContent = item.title_is_placeholder
+          ? "Judul masih berupa id; metadata akan terisi setelah unduhan."
+          : "";
+      }
+    }
+
+    function renderAdultDetail(library) {
+      if (!adultSelected) return;
+      showAdultDetailSkeleton(adultSelected);
+      const meta = adultDetailMeta || {};
+      const tpdbEl = document.getElementById("adult-detail-tpdb");
+      if (tpdbEl) {
+        if (meta.status === "found") {
+          const bits = [
+            meta.title,
+            meta.year ? `(${meta.year})` : "",
+            meta.studio,
+            Number(meta.rating || 0) > 0 ? `rating ${Number(meta.rating).toFixed(1)}` : "",
+          ].filter(Boolean);
+          let text = `TPDB: ${bits.join(" · ")}`;
+          if (meta.plot) text += ` — ${String(meta.plot).slice(0, 220)}`;
+          tpdbEl.textContent = text;
+        } else if (meta.status === "not_configured") {
+          tpdbEl.textContent = "TPDB: API key belum diisi, metadata diambil TorBox setelah unduhan.";
+        } else if (meta.status === "not_found") {
+          tpdbEl.textContent = "TPDB: tidak ada kecocokan untuk judul ini.";
+        } else if (meta.status === "skipped") {
+          tpdbEl.textContent = `TPDB: dilewati (${meta.reason || "judul belum jelas"}).`;
+        } else {
+          tpdbEl.textContent = "";
+        }
+      }
+      const poster = document.getElementById("adult-detail-poster");
+      const posterUrl = String(meta.poster_url || "").trim();
+      if (poster && /^https?:\/\//i.test(posterUrl)) {
+        poster.src = posterUrl;
+        poster.classList.remove("hidden");
+      }
+      const castEl = document.getElementById("adult-detail-cast");
+      if (castEl) {
+        const cast = Array.isArray(meta.performers) ? meta.performers.slice(0, 8) : [];
+        castEl.textContent = cast.length ? `Bintang: ${cast.join(", ")}` : "";
+      }
+      const tagEl = document.getElementById("adult-detail-tags");
+      if (tagEl) {
+        const tags = [...new Set([
+          ...(adultSelected.tags || []),
+          ...(Array.isArray(meta.tags) ? meta.tags : []),
+        ].map(t => String(t).trim()).filter(Boolean))];
+        tagEl.textContent = tags.length ? `Tag: ${tags.slice(0, 14).join(", ")}` : "";
+      }
+      const libEl = document.getElementById("adult-detail-library");
+      if (libEl) {
+        if (library.length) {
+          libEl.className = "text-[11px] text-emerald-300";
+          libEl.textContent = `Sudah ada di Library (${library.length}): ${library.map(it => it.title || it.file_name || it.id).join(" · ")}`;
+        } else {
+          libEl.className = "text-[11px] text-slate-400";
+          libEl.textContent = "Belum ada judul serupa di Library kategori English Adult.";
+        }
+      }
+    }
+
+    async function fetchAdultDetail(query) {
+      try {
+        const res = await fetch(`/api/adult/detail?${query}`);
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (data.item) adultSelected = { ...adultSelected, ...data.item };
+        adultDetailMeta = data.tpdb || null;
+        renderAdultDetail(Array.isArray(data.in_library) ? data.in_library : []);
+      } catch (e) {
+        renderAdultDetail([]);
+        showToast(`Detail tidak lengkap: ${e.message || e}`, true);
+      }
+    }
+
+    async function openAdultDetail(idx) {
+      const item = adultItems[idx];
+      if (!item) return;
+      adultSelected = item;
+      adultDetailMeta = null;
+      showAdultDetailSkeleton(item);
+      await fetchAdultDetail(
+        `provider=${encodeURIComponent(item.provider)}&id=${encodeURIComponent(item.provider_id)}`
+      );
+    }
+
+    async function pasteAdultLink() {
+      const inp = document.getElementById("adult-paste-input");
+      const btn = document.getElementById("adult-paste-btn");
+      const raw = (inp ? inp.value : "").trim();
+      if (!raw) {
+        showToast("Tempel URL halaman terlebih dahulu.", true);
+        return;
+      }
+      if (btn) { btn.disabled = true; btn.textContent = "Memeriksa..."; }
+      try {
+        const res = await fetch("/api/adult/link", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: raw }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        adultSelected = data.item;
+        adultDetailMeta = null;
+        showAdultDetailSkeleton(adultSelected);
+        const detailBox = document.getElementById("adult-detail");
+        if (detailBox) detailBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        showToast(data.note || "URL halaman diterima.");
+        if (!adultSelected.title_is_placeholder) {
+          await fetchAdultDetail(`url=${encodeURIComponent(adultSelected.page_url)}`);
+        }
+      } catch (e) {
+        showToast(`URL ditolak: ${e.message || e}`, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = "Tempel URL"; }
+      }
+    }
+
+    async function submitAdultWebdl() {
+      if (!adultSelected) return;
+      const btn = document.getElementById("adult-detail-submit");
+      const note = document.getElementById("adult-detail-note");
+      const oldLabel = btn ? btn.textContent : "";
+      if (btn) { btn.disabled = true; btn.textContent = "Mengirim..."; }
+      if (note) note.textContent = "";
+      try {
+        const meta = adultDetailMeta || {};
+        const payload = { url: adultSelected.page_url, title: adultSelected.title };
+        const posterUrl = String(meta.poster_url || "").trim();
+        if (/^https?:\/\//i.test(posterUrl)) payload.poster_url = posterUrl;
+        if (meta.status === "found") {
+          payload.metadata = {
+            name: meta.title || adultSelected.title,
+            description: meta.plot || "",
+            studio: meta.studio || "",
+            year: meta.year || 0,
+            poster: posterUrl,
+            genres: meta.tags || [],
+            cast: meta.performers || [],
+          };
+        }
+        const res = await fetch("/api/adult/webdl", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (note) note.textContent = `${data.message || "Terkirim ke TorBox WebDL."} (monitor #${data.tracked_id})`;
+        showToast(data.message || "Link dikirim ke TorBox WebDL.");
+      } catch (e) {
+        if (note) note.textContent = "";
+        showToast(`Gagal mengirim: ${e.message || e}`, true);
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = oldLabel || "Kirim ke TorBox WebDL"; }
+      }
+    }
+
+    function openAdultPageLink() {
+      if (!adultSelected) return;
+      const url = String(adultSelected.page_url || "");
+      if (!/^https:\/\//i.test(url)) {
+        showToast("URL halaman tidak valid.", true);
+        return;
+      }
+      window.open(url, "_blank", "noopener,noreferrer");
     }
 
     function toggleUpgradeTargetSelect() {
