@@ -8,9 +8,9 @@ import app as app_module
 class CategoryChangePolicyTests(unittest.TestCase):
     """Every verdict is recorded; only provable category moves are applied."""
 
-    def _allowed(self, old, status="classified", new="tv_show"):
+    def _allowed(self, old, status="classified", new="tv_show", item=None):
         return app_module._reclassification_category_change_allowed(
-            old, {"classification_status": status, "detected_category": new}
+            old, {"classification_status": status, "detected_category": new}, item
         )
 
     def test_uncategorized_rows_accept_any_classified_verdict(self):
@@ -39,6 +39,28 @@ class CategoryChangePolicyTests(unittest.TestCase):
     def test_adult_rows_accept_adult_refinements(self):
         self.assertTrue(self._allowed("english_adult", new="indo"))
         self.assertTrue(self._allowed("jav", new="jav"))
+
+    def test_provider_backed_rows_keep_their_category(self):
+        tmdb_row = {"metadata_source": "tmdb", "code_id": None}
+        self.assertFalse(self._allowed("tv_show", new="anime", item=tmdb_row))
+        self.assertFalse(self._allowed("general_movie", new="tv_show", item=tmdb_row))
+        self.assertFalse(
+            self._allowed("general_movie", new="tv_show", item={"metadata_source": "anilist"})
+        )
+
+    def test_adult_evidence_promotes_even_a_provider_backed_row(self):
+        tmdb_row = {"metadata_source": "tmdb"}
+        self.assertTrue(self._allowed("general_movie", new="indo", item=tmdb_row))
+        self.assertTrue(self._allowed("general_movie", new="jav", item=tmdb_row))
+
+    def test_validated_code_pins_a_jav_row(self):
+        self.assertFalse(
+            self._allowed("jav", new="english_adult", item={"metadata_source": "javdatabase", "code_id": "SNOS-338"})
+        )
+
+    def test_english_adult_from_manifest_may_be_promoted_to_indo(self):
+        roxxy_row = {"metadata_source": "roxxy"}
+        self.assertTrue(self._allowed("english_adult", new="indo", item=roxxy_row))
 
 
 class ReclassifyWorkerPersistenceTests(unittest.TestCase):
@@ -94,6 +116,44 @@ class ReclassifyWorkerPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["kwargs"]["apply_category"], True)
         self.assertEqual(saved["kwargs"]["apply_title"], True)
         self.assertEqual(saved["result"]["detected_category"], "indo")
+
+    def test_stored_jav_code_wins_over_a_weaker_adult_verdict(self):
+        item = {
+            "id": 504, "file_name": "SNOS-338.mkv", "parent_name": "",
+            "title": "JAV Title", "normalized_title": None,
+            "content_category": "jav", "has_metadata": 1, "title_is_manual": 0,
+            "metadata_source": "javdatabase", "code_id": "SNOS-338",
+            "studio": "", "genres": [], "plot": "", "year": 2024,
+        }
+        verdict = {
+            "classification_status": "classified", "detected_category": "english_adult",
+            "normalized_title": "JAV Title", "classification_method": "explicit_adult_keyword",
+            "category_confidence": 90, "signals": [],
+        }
+        saved, task = self._run(item, verdict)
+        self.assertEqual(saved["result"]["detected_category"], "jav")
+        self.assertEqual(saved["result"]["classification_method"], "stored_jav_code")
+        self.assertEqual(saved["kwargs"]["apply_category"], False)
+        self.assertEqual(saved["result"]["classification_status"], "classified")
+
+    def test_jav_without_code_keeps_category_and_flags_review(self):
+        item = {
+            "id": 505, "file_name": "unknown-release.mkv", "parent_name": "",
+            "title": "Unknown JAV", "normalized_title": None,
+            "content_category": "jav", "has_metadata": 0, "title_is_manual": 0,
+            "metadata_source": "jav_code_parser", "code_id": None,
+            "studio": "", "genres": [], "plot": "", "year": None,
+        }
+        verdict = {
+            "classification_status": "classified", "detected_category": "general_movie",
+            "normalized_title": "Unknown JAV", "classification_method": "title_plus_year",
+            "category_confidence": 82, "signals": [],
+        }
+        saved, task = self._run(item, verdict)
+        self.assertEqual(saved["kwargs"]["apply_category"], False)
+        self.assertEqual(saved["result"]["classification_status"], "needs_review")
+        self.assertIsNone(saved["result"]["detected_category"])
+        self.assertIn("1 needs review", task.finish.call_args.args[0])
 
     def test_manifest_category_is_kept_and_flagged_for_review(self):
         item = {

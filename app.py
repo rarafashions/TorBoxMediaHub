@@ -886,19 +886,33 @@ def _guard_adult_reclassification(
 
 
 _EPISODIC_CATEGORIES = {"tv_show", "anime", "donghua"}
+# Categories that came from a provider, a validated code, or a targeted parser.
+# Only rows whose category is a plain filename guess may be re-filed by the batch.
+_WEAK_CATEGORY_SOURCES = {"", "filename_parser", "uncategorized"}
+
+
+def _row_category_is_evidence_backed(item: Dict[str, Any]) -> bool:
+    """True when the stored category came from provider/parser evidence."""
+    if str(item.get("code_id") or "").strip():
+        return True
+    source = str(item.get("metadata_source") or "").strip().lower()
+    return source not in _WEAK_CATEGORY_SOURCES
 
 
 def _reclassification_category_change_allowed(
     old_category: str,
     result: Dict[str, Any],
+    item: Optional[Dict[str, Any]] = None,
 ) -> bool:
     """Decide whether a batch verdict may move an existing row's category.
 
-    Every candidate gets its verdict recorded, but the category only moves when
-    the previous bucket was provisional (uncategorized), when an adult surface
-    is recovered, or inside the episodic family. Provider/manifest categories
-    (IndonesiaMovies, Donghua) are never rewritten here; a weaker verdict for
-    those rows becomes Needs Review through ``_guard_adult_reclassification``.
+    Every candidate gets its verdict recorded, but a category only moves on
+    provable evidence: stronger adult signals may always re-file a row, and an
+    English Adult download may be promoted to Indo. Rows whose category came
+    from a provider, a validated JAV code, or a targeted parser keep it — a
+    filename-only second opinion must not rewrite provider metadata. For the
+    remaining filename-parsed rows only provisional buckets and the episodic
+    family may move; manifest categories never do.
     """
     if result.get("classification_status") != "classified":
         return False
@@ -908,13 +922,17 @@ def _reclassification_category_change_allowed(
     old_category = str(old_category or "uncategorized")
     if old_category in _STICKY_MANIFEST_CATEGORIES:
         return False
-    if old_category == "uncategorized":
+    if new_category in _ADULT_CATEGORIES and old_category not in _ADULT_CATEGORIES:
         return True
-    if old_category in _ADULT_CATEGORIES:
+    if old_category == "english_adult" and new_category == "indo":
+        return True
+    if _row_category_is_evidence_backed(item or {}):
+        return False
+    if old_category == "uncategorized" or old_category in _ADULT_CATEGORIES:
         # Any adult demotion was already turned into Needs Review by the guard.
         return True
     if old_category == "general_movie":
-        return new_category in _EPISODIC_CATEGORIES or new_category in _ADULT_CATEGORIES
+        return new_category in _EPISODIC_CATEGORIES
     if old_category in _EPISODIC_CATEGORIES:
         return new_category in _EPISODIC_CATEGORIES
     return False
@@ -1471,6 +1489,25 @@ def _classify_pending_worker() -> None:
                     metadata=metadata,
                 )
                 old_category = str(item.get("content_category") or "uncategorized")
+                stored_code = str(item.get("code_id") or "").strip()
+                new_category = result.get("detected_category")
+                if old_category == "jav" and result.get("classification_status") == "classified":
+                    if stored_code and new_category != "jav":
+                        # A validated production code is stronger evidence than a
+                        # second filename read, so keep the JAV surface.
+                        result = dict(result)
+                        result["detected_category"] = "jav"
+                        result["classification_method"] = "stored_jav_code"
+                        result["signals"] = list(result.get("signals") or []) + [
+                            f"stored_jav_code:{stored_code}"
+                        ]
+                    elif not stored_code and new_category != "jav":
+                        result = dict(result)
+                        result["classification_status"] = "needs_review"
+                        result["detected_category"] = None
+                        result["warnings"] = list(result.get("warnings") or []) + [
+                            "JAV tanpa production code terverifikasi; kategori dipertahankan untuk review."
+                        ]
                 result = _guard_adult_reclassification(item, result)
                 # Record a verdict for every candidate. The category only moves
                 # when the bucket was provisional or an adult/episodic verdict is
@@ -1479,7 +1516,9 @@ def _classify_pending_worker() -> None:
                     int(item["id"]), result,
                     changed_by="classifier",
                     note="Batch reclassification",
-                    apply_category=_reclassification_category_change_allowed(old_category, result),
+                    apply_category=_reclassification_category_change_allowed(
+                        old_category, result, item
+                    ),
                     apply_title=not bool(
                         item.get("has_metadata") or item.get("title_is_manual")
                     ),
