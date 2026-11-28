@@ -55,6 +55,30 @@ class MovieTitleNormalizationTests(unittest.TestCase):
         self.assertIn("Spider-Man: Brand New Day", candidates)
         self.assertIn("Spider-Man", candidates)
 
+    @patch.object(meta.HTTP_SESSION, "post")
+    def test_anilist_retries_trimmed_title_when_release_suffix_returns_no_media(self, mock_post):
+        def fake_post(url, json=None, headers=None, timeout=None):
+            term = ((json or {}).get("variables") or {}).get("search")
+            if term == "Swallowed Star":
+                return FakeResponse({"data": {"Media": {
+                    "id": 117012, "countryOfOrigin": "CN", "episodes": 26,
+                    "title": {"romaji": "Tunshi Xingkong", "english": "Swallowed Star", "native": "吞噬星空"},
+                    "seasonYear": 2020, "duration": 24, "description": "desc",
+                    "averageScore": 80, "genres": ["Action"],
+                    "studios": {"nodes": [{"name": "Studio A"}]},
+                    "coverImage": {"extraLarge": "https://cdn.example/swallowed.jpg"},
+                }}})
+            return FakeResponse({"data": {"Media": None}})
+
+        mock_post.side_effect = fake_post
+        result = meta._fetch_anilist_metadata("Swallowed Star NF")
+        self.assertIsNotNone(result)
+        self.assertEqual(result["title"], "Swallowed Star")
+        self.assertEqual(result["anilist_id"], 117012)
+        searched = [call.kwargs["json"]["variables"]["search"] for call in mock_post.call_args_list]
+        self.assertEqual(searched[0], "Swallowed Star NF")
+        self.assertIn("Swallowed Star", searched)
+
     @patch.object(meta.HTTP_SESSION, "get")
     def test_tmdb_retries_clean_variant_when_release_suffix_breaks_exact_query(self, mock_get):
         def fake_get(url, params=None, **kwargs):

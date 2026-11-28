@@ -1304,60 +1304,73 @@ def _fetch_anilist_metadata(title_query: str, force_donghua: bool = False) -> Op
         }
         """
 
-    try:
-        resp = HTTP_SESSION.post(
-            "https://graphql.anilist.co",
-            json={"query": query, "variables": {"search": title_query}},
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            media = (resp.json().get("data") or {}).get("Media")
-            if media:
-                t_obj = media.get("title") or {}
-                candidates = [t_obj.get("english"), t_obj.get("romaji"), t_obj.get("native")]
-                sim = max((_title_similarity(title_query, c) for c in candidates if c), default=0.0)
-                if sim < 0.65:
-                    return None
+    def _lookup(search_term: str) -> Optional[Dict[str, Any]]:
+        try:
+            resp = HTTP_SESSION.post(
+                "https://graphql.anilist.co",
+                json={"query": query, "variables": {"search": search_term}},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                media = (resp.json().get("data") or {}).get("Media")
+                if media:
+                    t_obj = media.get("title") or {}
+                    candidates = [t_obj.get("english"), t_obj.get("romaji"), t_obj.get("native")]
+                    sim = max((_title_similarity(title_query, c) for c in candidates if c), default=0.0)
+                    if sim < 0.65:
+                        return None
 
-                origin = (media.get("countryOfOrigin") or "").upper()
-                if origin in ("CN", "TW") or force_donghua:
-                    cat = "donghua"
-                elif origin == "JP":
-                    cat = "anime"
-                else:
-                    return None
+                    origin = (media.get("countryOfOrigin") or "").upper()
+                    if origin in ("CN", "TW") or force_donghua:
+                        cat = "donghua"
+                    elif origin == "JP":
+                        cat = "anime"
+                    else:
+                        return None
 
-                best_title = t_obj.get("english") or t_obj.get("romaji") or title_query
-                base_series = re.sub(
-                    r"(?i)\s*(?:Season\s*\d+|2nd\s*Season|3rd\s*Season|\d+th\s*Season|Part\s*\d+)\s*$",
-                    "",
-                    best_title,
-                ).strip() or best_title
-                native_title = t_obj.get("native") or t_obj.get("romaji")
-                studios = [s.get("name") for s in ((media.get("studios") or {}).get("nodes") or []) if s.get("name")]
-                cover = (media.get("coverImage") or {}).get("extraLarge") or (media.get("coverImage") or {}).get("large")
-                desc = re.sub(r"<[^>]+>", "", media.get("description") or "").strip()
-                score = round((media.get("averageScore") or 0) / 10.0, 1)
-                return {
-                    "title": best_title,
-                    "series_title": base_series,
-                    "original_title": native_title,
-                    "year": media.get("seasonYear"),
-                    "runtime": int(media.get("duration") or 24),
-                    "studio": studios[0] if studios else None,
-                    "plot": desc,
-                    "content_category": cat,
-                    "anilist_id": int(media["id"]),
-                    "is_adult": 0,
-                    "has_metadata": 1,
-                    "metadata_source": "anilist",
-                    "poster_url": cover,
-                    "genres": media.get("genres") or [],
-                    "rating": score,
-                }
-    except Exception:
-        pass
+                    best_title = t_obj.get("english") or t_obj.get("romaji") or title_query
+                    base_series = re.sub(
+                        r"(?i)\s*(?:Season\s*\d+|2nd\s*Season|3rd\s*Season|\d+th\s*Season|Part\s*\d+)\s*$",
+                        "",
+                        best_title,
+                    ).strip() or best_title
+                    native_title = t_obj.get("native") or t_obj.get("romaji")
+                    studios = [s.get("name") for s in ((media.get("studios") or {}).get("nodes") or []) if s.get("name")]
+                    cover = (media.get("coverImage") or {}).get("extraLarge") or (media.get("coverImage") or {}).get("large")
+                    desc = re.sub(r"<[^>]+>", "", media.get("description") or "").strip()
+                    score = round((media.get("averageScore") or 0) / 10.0, 1)
+                    return {
+                        "title": best_title,
+                        "series_title": base_series,
+                        "original_title": native_title,
+                        "year": media.get("seasonYear"),
+                        "runtime": int(media.get("duration") or 24),
+                        "studio": studios[0] if studios else None,
+                        "plot": desc,
+                        "content_category": cat,
+                        "anilist_id": int(media["id"]),
+                        "is_adult": 0,
+                        "has_metadata": 1,
+                        "metadata_source": "anilist",
+                        "poster_url": cover,
+                        "genres": media.get("genres") or [],
+                        "rating": score,
+                    }
+        except Exception:
+            return None
+        return None
+
+    # Release suffixes ("NF", "Subtitle Indonesia ...") break AniList search the
+    # same way they break TMDb, so retry with the trimmed variants.
+    search_terms = [title_query]
+    for variant in _trim_release_tail(title_query)[:2]:
+        if variant.casefold() not in {t.casefold() for t in search_terms}:
+            search_terms.append(variant)
+    for term in search_terms:
+        result = _lookup(term)
+        if result:
+            return result
     return None
 
 
