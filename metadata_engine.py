@@ -1034,6 +1034,56 @@ def _ascii_fold(value: str) -> str:
     return "".join(ch for ch in value if not unicodedata.combining(ch))
 
 
+# Trailing release flags that never belong to a title. They survive
+# clean_search_title() because that helper splits on technical tags, so a name
+# like "Apocalypse Z New World (2026) HQ HDRip" keeps the "HQ" suffix and TMDb
+# then returns zero results for the whole query.
+_RELEASE_NOISE_TAIL_TOKENS = {
+    "hq", "hd", "sd", "retail", "dksubs", "dubbed", "subbed",
+    "sub", "subs", "multi", "proper", "repack", "extended", "unrated",
+    "remux", "nf", "yify", "yts",
+}
+# Audio/subtitle language labels often trail a release name ("Barfi Hindi").
+# They are trimmed only from the end and only as an extra fallback candidate.
+_LANGUAGE_TAIL_TOKENS = {
+    "hindi", "indonesia", "indo", "melayu", "malay", "tamil", "telugu",
+    "kannada", "malayalam", "english", "japanese", "korean", "spanish",
+    "italian", "french", "german", "russian", "portuguese", "dutch",
+    "arabic", "thai", "vietnamese", "filipino",
+}
+
+
+def _trim_release_tail(title: str, max_steps: int = 4) -> List[str]:
+    """Return progressively shorter variants of a noisy release title.
+
+    Only trailing, well-known release noise is removed; the original title is
+    never mutated. Callers keep the untouched title as the first candidate, so
+    these variants merely widen the provider search instead of replacing it.
+    """
+    current = re.sub(r"\s+", " ", title or "").strip(" :.-_")
+    variants: List[str] = []
+    trailer = re.search(
+        r"(?i)\s*[-–—:]?\s*\b(?:subtitle|sub)\s+(?:indonesia|indo|melayu|english)\b.*$",
+        current,
+    )
+    if trailer and trailer.start() > 0:
+        current = current[: trailer.start()].strip(" -–—:,")
+        if current:
+            variants.append(current)
+    for _ in range(max_steps):
+        parts = current.split()
+        if len(parts) < 2:
+            break
+        tail = parts[-1].strip("()[]{}.,:;-_").casefold()
+        if tail not in _RELEASE_NOISE_TAIL_TOKENS and tail not in _LANGUAGE_TAIL_TOKENS:
+            break
+        current = " ".join(parts[:-1]).strip(" -_")
+        if len(current) < 3:
+            break
+        variants.append(current)
+    return variants
+
+
 def _build_tmdb_search_candidates(title_query: str, year: Optional[int] = None) -> List[str]:
     """Create conservative title variants for TMDb without broad fuzzy guessing."""
     clean = clean_search_title(title_query)
@@ -1070,12 +1120,18 @@ def _build_tmdb_search_candidates(title_query: str, year: Optional[int] = None) 
 
     add(clean)
 
+    # Release-noise variants ("... HQ", "... RETAIL DKSUBS", "... Hindi") and
+    # titles carrying a "Subtitle Indonesia" blurb. These run after the exact
+    # title so a clean match always wins first.
+    for variant in _trim_release_tail(clean):
+        add(variant)
+
     # Remove a trailing standalone sequel index for a fallback query. The year
     # filter is retained by the caller to avoid matching an older franchise film.
     if sequel:
         add(sequel.group(1))
 
-    return candidates[:4]
+    return candidates[:6]
 
 
 def _fetch_tmdb_metadata(
@@ -1539,6 +1595,32 @@ def fetch_official_series_seasons(
     return None, []
 
 
+def _search_title_candidates(primary: str, extras: Tuple[str, ...] = ()) -> List[str]:
+    """Ordered provider search titles: the confirmed/parsed title first, then
+    parent folder and stored series/title aliases as fallback queries.
+
+    Localized release folders often carry an English alias (for example an
+    Italian episode whose parent folder also names "The Rings of Power"), so a
+    failed exact search can still succeed on the next query without guessing.
+    """
+    titles: List[str] = []
+
+    def add(value: str) -> None:
+        value = re.sub(r"\s+", " ", str(value or "")).strip()
+        if len(value) < 2:
+            return
+        if value.casefold() in {t.casefold() for t in titles}:
+            return
+        titles.append(value)
+
+    add(primary)
+    for raw in extras:
+        cleaned = clean_search_title(raw)
+        if cleaned:
+            add(cleaned)
+    return titles[:4]
+
+
 def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[str, Any]:
     # Keep the immutable source filename for product-code parsing, but prefer the
     # user's confirmed normalized title for provider searches.
@@ -1562,6 +1644,16 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
     )
     confirmed_title = (item.get("normalized_title") or (item.get("series_title") if title_is_confirmed else "") or "").strip()
     clean_title = confirmed_title or parsed["clean_series_title"]
+    # Search the parsed title first, then the parent folder and stored aliases.
+    # A confirmed/manual title stays authoritative and is used alone.
+    search_titles = _search_title_candidates(
+        clean_title,
+        () if title_is_confirmed else (
+            parent_name,
+            str(item.get("series_title") or ""),
+            str(item.get("title") or ""),
+        ),
+    )
     provider_diagnostics: List[Dict[str, Any]] = []
     season_num = item.get("season_num") if item.get("season_num") is not None else parsed["season_num"]
     episode_num = item.get("episode_num") if item.get("episode_num") is not None else parsed["episode_num"]
@@ -1791,9 +1883,16 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
 
     # 4. Donghua / Anime
     if pre_cat in ("donghua", "anime"):
-        meta = _fetch_anilist_metadata(clean_title, force_donghua=(pre_cat == "donghua"))
+        meta = None
+        for query in search_titles:
+            meta = _fetch_anilist_metadata(query, force_donghua=(pre_cat == "donghua"))
+            if meta:
+                break
         if not meta and tmdb_key:
-            meta = _fetch_tmdb_metadata(clean_title, tmdb_key, year=year_hint, prefer_tv=True, diagnostics=provider_diagnostics)
+            for query in search_titles:
+                meta = _fetch_tmdb_metadata(query, tmdb_key, year=year_hint, prefer_tv=True, diagnostics=provider_diagnostics)
+                if meta:
+                    break
         if not meta:
             meta = {
                 "title": clean_title,
@@ -1809,10 +1908,17 @@ def enrich_media_item(item: Dict[str, Any], settings: Dict[str, str]) -> Dict[st
         return _finalize(meta)
 
     # 5. TV Show / General Movie via TMDb (jika is_episodic, kunci ke TV endpoint)
-    meta = _fetch_tmdb_metadata(clean_title, tmdb_key, year=year_hint, prefer_tv=is_episodic, diagnostics=provider_diagnostics)
+    meta = None
+    for query in search_titles:
+        meta = _fetch_tmdb_metadata(query, tmdb_key, year=year_hint, prefer_tv=is_episodic, diagnostics=provider_diagnostics)
+        if meta:
+            break
 
     if not meta and is_episodic:
-        meta = _fetch_tvmaze_fallback(clean_title)
+        for query in search_titles:
+            meta = _fetch_tvmaze_fallback(query)
+            if meta:
+                break
 
     if not meta:
         meta = {

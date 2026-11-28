@@ -661,6 +661,13 @@ a.stat-tile:hover {
   font-size: 12.5px;
 }
 
+.panel__note {
+  margin: 10px 0 0;
+  color: var(--text-3);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
 /* ============================ LIST ROWS =============================== */
 
 .rowlist {

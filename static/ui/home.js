@@ -998,20 +998,42 @@
     );
   }
 
+  // Subtitle retrieval intentionally skips these categories (adult Indo content
+  // and English adult scenes), so they must not lower the coverage percentage.
+  const SUBTITLE_EXEMPT_CATEGORIES = new Set(["indo", "indo_movie", "english_adult"]);
+
   function computedCounts() {
     let cloud = 0;
     let local = 0;
     let watched = 0;
     let sub = 0;
     let meta = 0;
+    let poster = 0;
+    let subEligible = 0;
+    let subEligibleTotal = 0;
     for (const it of state.items) {
       if (it.source_type === "local") local += 1;
       else if (it.source_type === "cloud") cloud += 1;
       if (truthyFlag(it.is_watched)) watched += 1;
       if (truthyFlag(it.has_subtitle)) sub += 1;
       if (truthyFlag(it.has_metadata)) meta += 1;
+      if (truthyFlag(it.has_poster)) poster += 1;
+      if (!SUBTITLE_EXEMPT_CATEGORIES.has(it.content_category || "uncategorized")) {
+        subEligibleTotal += 1;
+        if (truthyFlag(it.has_subtitle)) subEligible += 1;
+      }
     }
-    return { total: state.items.length, cloud, local, watched, sub, meta };
+    return {
+      total: state.items.length,
+      cloud,
+      local,
+      watched,
+      sub,
+      meta,
+      poster,
+      subEligible,
+      subEligibleTotal,
+    };
   }
 
   /* ------------------------------- Views -------------------------------- */
@@ -1215,7 +1237,7 @@
         { class: "stat-strip" },
         statTile(numberLabel(counts.total), "Total item", `${numberLabel(counts.cloud)} cloud · ${numberLabel(counts.local)} lokal`, () => setView("stats")),
         statTile(numberLabel(counts.watched), "Sudah ditonton", `${numberLabel(counts.total - counts.watched)} belum`, () => goLibrary({ watched: "watched" })),
-        statTile(numberLabel(counts.sub), "Punya subtitle", `${numberLabel(counts.total - counts.sub)} belum`, () => goLibrary({ sub: "has" })),
+        statTile(numberLabel(counts.sub), "Punya subtitle", `${Math.round(pct(counts.subEligible, Math.max(1, counts.subEligibleTotal)))}% item non-adult`, () => goLibrary({ sub: "has" })),
         statTile(numberLabel(state.playlists.length), "Playlist", "Kelola dan putar berurutan", () => setView("playlists"))
       ),
       el(
@@ -1393,12 +1415,12 @@
         )
       ),
       filterField(
-        "Metadata",
+        "Cover",
         selectNode(
           [
             { value: "all", label: "Semua" },
-            { value: "has", label: "Lengkap" },
-            { value: "none", label: "Belum ada" },
+            { value: "has", label: "Ada cover" },
+            { value: "none", label: "Tanpa cover" },
           ],
           state.filters.meta,
           (v) => updateFilters({ meta: v })
@@ -2811,10 +2833,10 @@
     const total = Math.max(1, counts.total);
 
     const classification = [
-      ["classified", stats.classification_classified_count || 0, "ok"],
-      ["manual", stats.classification_manual_count || 0, "completed"],
-      ["needs review", stats.classification_needs_review_count || 0, "queued"],
-      ["pending", stats.classification_pending_count || 0, "failed"],
+      ["terklasifikasi otomatis", stats.classification_classified_count || 0, "ok"],
+      ["diklasifikasikan manual", stats.classification_manual_count || 0, "completed"],
+      ["perlu tinjauan", stats.classification_needs_review_count || 0, "queued"],
+      ["belum tercatat", stats.classification_pending_count || 0, "idle"],
     ];
 
     const actions = [
@@ -2844,8 +2866,8 @@
       el("button", {
         class: "btn btn--ghost btn--sm",
         type: "button",
-        html: `${ICON.spark}<span>Klasifikasi pending</span>`,
-        onclick: () => runTask("classify", "Klasifikasi pending"),
+        html: `${ICON.spark}<span>Klasifikasi ulang</span>`,
+        onclick: () => runTask("classify", "Klasifikasi ulang"),
       }),
     ];
 
@@ -2882,13 +2904,23 @@
             el(
               "div",
               { class: "coverage" },
-              coverageItem(`${Math.round(pct(counts.meta, total))}%`, "Metadata"),
-              coverageItem(`${Math.round(pct(counts.sub, total))}%`, "Subtitle"),
+              coverageItem(`${Math.round(pct(counts.poster, total))}%`, "Cover tersedia"),
+              coverageItem(
+                `${Math.round(pct(counts.subEligible, Math.max(1, counts.subEligibleTotal)))}%`,
+                "Subtitle non-adult"
+              ),
               coverageItem(`${Math.round(pct(counts.watched, total))}%`, "Ditonton"),
-              coverageItem(`${numberLabel(counts.total - counts.meta)}`, "Tanpa metadata"),
-              coverageItem(`${numberLabel(counts.total - counts.sub)}`, "Tanpa subtitle"),
+              coverageItem(`${numberLabel(counts.total - counts.poster)}`, "Tanpa cover"),
+              coverageItem(`${numberLabel(counts.subEligibleTotal - counts.subEligible)}`, "Tanpa subtitle"),
               coverageItem(`${numberLabel(stats.available_for_playlist_count || 0)}`, "Siap playlist")
-            )
+            ),
+            el("p", {
+              class: "panel__note",
+              text:
+                "Cover = judul yang cocok dengan provider metadata. Persentase subtitle hanya menghitung item yang memang dicari subtitle-nya (" +
+                numberLabel(counts.subEligibleTotal) +
+                " item; konten Indo dan English adult dikecualikan).",
+            })
           )
         ),
         el(
@@ -2909,7 +2941,12 @@
                   el("span", { class: "pill pill--" + kind, text: numberLabel(value) })
                 )
               )
-            )
+            ),
+            el("p", {
+              class: "panel__note",
+              text:
+                "“Belum tercatat” bukan antrean: kategori sudah disimpan oleh jalur impor/enrich, hanya status klasifikasi otomatis yang tidak pernah ditulis. Tombol Klasifikasi ulang memproses ulang item yang kategorinya masih bisa berubah.",
+            })
           )
         ),
         el(
@@ -3331,7 +3368,7 @@
       el("span", { class: "pill pill--idle", text: item.source_type === "local" ? "Lokal" : "TorBox Cloud" }),
       el("span", { class: "pill pill--" + (isWatched() ? "ok" : "idle"), text: isWatched() ? "Ditonton" : "Belum ditonton" }),
       el("span", { class: "pill pill--" + (truthyFlag(item.has_subtitle) ? "ok" : "idle"), text: truthyFlag(item.has_subtitle) ? "Subtitle ada" : "Tanpa subtitle" }),
-      el("span", { class: "pill pill--" + (truthyFlag(item.has_metadata) ? "ok" : "idle"), text: truthyFlag(item.has_metadata) ? "Metadata ada" : "Metadata belum" })
+      el("span", { class: "pill pill--" + (truthyFlag(item.has_poster) ? "ok" : "idle"), text: truthyFlag(item.has_poster) ? "Cover ada" : "Tanpa cover" })
     );
 
     const panel = el(
