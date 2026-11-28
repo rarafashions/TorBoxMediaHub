@@ -2,8 +2,8 @@
 
 **Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
 **Tanggal:** 28 November 2026
-**Versi acuan:** `v1.3DO`
-**Baseline tes:** `535 passed, 196 subtests passed`
+**Versi acuan:** `v1.3DP`
+**Baseline tes:** `536 passed, 204 subtests passed`
 
 ---
 
@@ -582,6 +582,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | Playwright port 5056 (`/v2#/discover`, `v1.3DM`) | 50 kartu Film tanpa error konsol, gate adult lalu 60 item, sheet adult memuat sinopsis/tag/tombol WebDL, panel detail menampilkan 4 aksi kurasi, sheet rilis merender 2 baris mock (1 CACHED + 1 UNCACHED) |
 | Playwright port 5056 (`/v2#/discover`, `v1.3DN`) | Toolbar satu baris pada 1440/1024 (tab + chip kategori + chip urutan + status kanan), grid mulai `y=288` (dari `y=565`), kontras `.card__sub` 5,85:1 dan `.chip`/`.discover-status` 8,28:1, tanpa overflow di 390/1024/1440 |
 | Playwright port 5056 (`/v2#/discover`, `v1.3DO`) | Detail adult dengan respons stream tiruan: 4 kartu sumber, 4 analisis, tombol Cached TorBox / Torrent ke TorBox / NZB ke TorBox / yt-dlp / aria2c; pengiriman TorBox dan job lokal terverifikasi; tanpa overflow di 390 px |
+| Playwright port 5056 (`/v2#/discover`, `v1.3DP`) | Badge `IN LIBRARY`: Film 8, Serial TV 2 (`(29)`, `(8)`), Anime 1, Donghua 1 pada pencarian "Swallowed Star" (2 item), English Adult 5; tag badge tampil di sheet detail; tanpa overflow di 390 px |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 
@@ -600,6 +601,8 @@ Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app liv
 **Poles `v1.3DN`:** `.discover-toolbar` menyatukan tab, chip kategori, chip urutan, dan status dalam satu baris (status `margin-left:auto`, membungkus di bawah 900 px). Tinggi baris pencarian yang membengkak 320 px akibat basis flex di dalam kolom flex diperbaiki (`.discovery > .discover-search { flex: 0 0 auto; }`), sehingga kartu naik ~277 px. `--text-3` menjadi `#8a8a94` (≈5,8:1 terhadap `--surface-0`) dan `.view__sub` memakai `--text-2`; tes kontras baru menjaga ambang 4,5:1.
 
 **Pulih `v1.3DO`:** detail English Adult kembali memuat section **Sumber unduhan**. `openAdultDiscoverItem` tidak lagi membuang array `streams`; setiap stream dianalisis lewat `/api/roxxy/analyze` (maksimal 3 paralel), lalu tombol rute dibuat dari `analysis.options`: Cached TorBox / Torrent ke TorBox / NZB ke TorBox (`/api/torbox/add-cached`) atau yt-dlp/aria2c lokal (`/api/roxxy/local/start`, setelah konfirmasi). Metadata memakai `_roxxySource: english_adult` + `id` provider.
+
+**Penanda `v1.3DP`:** kartu Discovery memakai indeks Library per kategori (`state.items`) dan menampilkan badge centang **IN LIBRARY** bila `tmdb_id`/`anilist_id` cocok, atau judul ternormalisasi + tahun cocok. Adult memakai pencocokan judul seperti server.
 
 Urutan yang disarankan: **A1 → A2 → A3 → A4 → A5(legacy) → Tahap 1 (v2 Discovery + kurasi) → Tahap 2 → Tahap 3.** Dengan begitu Discovery adult sudah bisa dipakai sebelum wajah v2 diubah.
 

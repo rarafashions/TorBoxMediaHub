@@ -106,6 +106,21 @@ class V2DiscoveryUiTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.css)
 
+    def test_discovery_cards_mark_items_already_in_library(self):
+        for marker in (
+            "discoverLibraryMatch",
+            "discoveryLibraryIndex",
+            "normalizeMatchText",
+            "libraryBadgeNode",
+            "IN LIBRARY",
+            'category: "english_adult"',
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.js)
+        for marker in (".card__lib-badge", ".tag--lib"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.css)
+
     def test_secondary_and_tertiary_text_stay_readable_on_dark_surface(self):
         import re
 

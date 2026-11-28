@@ -1,8 +1,8 @@
 # Dokumentasi Lengkap — TorBox Media Hub
 
-**Versi aplikasi:** `v1.3DO`  
+**Versi aplikasi:** `v1.3DP`  
 **Status dokumen:** 28 November 2026  
-**Baseline tes:** `python -m pytest tests -q --no-header` → **535 passed, 196 subtests passed**
+**Baseline tes:** `python -m pytest tests -q --no-header` → **536 passed, 204 subtests passed**
 
 Dokumen ini menjelaskan aplikasi secara menyeluruh: fitur, cara menjalankan untuk pengguna baru, konfigurasi, mesin internal, keamanan, batasan, dan pemecahan masalah. Untuk catatan rilis dan keputusan pengembangan, lihat [`CATATAN_VERSI_PENGEMBANGAN.md`](CATATAN_VERSI_PENGEMBANGAN.md). Untuk draf README GitHub, lihat [`README_GITHUB_DRAFT.md`](README_GITHUB_DRAFT.md).
 

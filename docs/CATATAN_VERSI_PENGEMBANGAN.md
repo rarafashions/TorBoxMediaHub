@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DO`
+**Versi saat ini:** `v1.3DP`
 **Tanggal status:** 28 November 2026
-**Baseline tes:** `python -m pytest tests -q --no-header` → **535 passed, 196 subtests passed** (0 gagal)
+**Baseline tes:** `python -m pytest tests -q --no-header` → **536 passed, 204 subtests passed** (0 gagal)
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -61,6 +61,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DM` | 28 Nov 2026 | Discovery pindah ke `/v2` (Film/Serial/Anime/Donghua + English Adult 18+) dan panel detail v2 mendapat kurasi: edit metadata, klasifikasi, poster, hapus fisik |
 | `v1.3DN` | 28 Nov 2026 | Toolbar Discovery satu baris (tab + chip kategori + chip urutan + status di kanan), kartu naik ~275 px, dan kontras teks sekunder/tersier pada kanvas gelap dinaikkan |
 | `v1.3DO` | 28 Nov 2026 | Detail English Adult memulihkan daftar sumber unduhan: analisis provider + rute Cached TorBox, Torrent ke TorBox, NZB ke TorBox, dan unduh lokal yt-dlp/aria2c |
+| `v1.3DP` | 28 Nov 2026 | Kartu Discovery (Film, Serial TV, Anime, Donghua, English Adult) menampilkan badge centang **IN LIBRARY**; sheet detail juga menampilkan tag yang sama |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -213,6 +214,15 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 - **Tes**: marker tambahan (`/api/roxxy/analyze`, `/api/roxxy/local/start`, `analysis.nzb_url`, `Sumber unduhan`, `.disc-stream`, `.disc-stream__actions`); suite **535 passed, 196 subtests**.
 - **Verifikasi browser** (port 5056, endpoint adult direspons tiruan): 4 stream (MP4, HLS, magnet, NZB) menghasilkan 4 analisis dan **7 tombol** (2+2+2+1); Cached mengirim torrent+magnet, NZB mengirim `kind=usenet`, yt-dlp memulai job lokal bertanda `english_adult`; sheet tetap tanpa overflow pada 390 px.
 
+### 4.16 `v1.3DP` — Badge IN LIBRARY di seluruh Discovery
+
+- **Regresi fitur**: kartu Discovery v2 tidak menandai judul yang sudah ada di Library; hanya sheet English Adult yang menyebutkannya sebagai teks. Legacy `/` sudah memakai badge `✓ IN LIBRARY (N)`.
+- **Indeks Library**: `state.items` diindeks per `content_category` (cache dibuang otomatis saat `loadAll` mengganti array). Pencocokan berurutan: `tmdb_id` → `anilist_id` → judul ternormalisasi + tahun.
+- **Judul longgar**: bila ID tidak tersedia, judul yang saling memuat dianggap cocok hanya jika judul pendek ≥2 kata atau ≥8 huruf; mainstream tetap menolak bila kedua tahun ada dan berbeda. Adult mengikuti perilaku server `_adult_library_matches` (tahun diabaikan karena tahun provider tidak konsisten).
+- **Tampilan**: badge hijau `card__lib-badge` di kiri bawah poster (ikon centang + `IN LIBRARY`, ditambah `(N)` bila ada beberapa item). Sheet detail memakai `.tag tag--ok tag--lib`; detail adult memprioritaskan `in_library` dari server dan memakai kecocokan lokal sebagai cadangan.
+- **Tes**: `test_discovery_cards_mark_items_already_in_library` (6 marker JS + 2 marker CSS); suite **536 passed, 204 subtests**.
+- **Verifikasi browser** (port 5056, salinan DB): Film 50 kartu → **8 badge**, Serial TV 50 → **2 badge** (`IN LIBRARY (29)` dan `(8)`), Anime 50 → **1 badge**, Donghua pencarian "Swallowed Star" → **1 badge (2 item)**, English Adult 60 → **5 badge**; sheet detail menampilkan tag `IN LIBRARY`; tanpa overflow pada 390 px.
+
 ---
 
 ## 5. Keputusan yang mengikat
@@ -242,6 +252,7 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 21. **Discovery di `/v2` memakai endpoint lama, bukan implementasi kedua.** Mainstream memakai `/api/discover*` + `/api/torbox/add-cached`; adult memakai `/api/adult/*`. Gate 18+ disimpan per browser (`tbh_adult_v2_gate`). Pencarian rilis tidak dijalankan otomatis saat sheet dibuka. Aksi kurasi v2 (`manual`, `classification`, `poster`, `delete-physical`) tetap memakai route media yang sudah ada.
 22. **Teks di kanvas gelap wajib terbaca.** Rasio kontras minimum 4,5:1 terhadap `--surface-0` untuk `--text-2`/`--text-3` dijaga tes; toolbar Discovery harus satu baris pada lebar desktop dan tidak boleh memakai basis flex yang berubah menjadi tinggi di dalam kolom flex.
 23. **Detail English Adult wajib menampilkan seluruh rute unduhan.** Stream provider harus dianalisis (`/api/roxxy/analyze`) dan menawarkan Cached TorBox, Torrent ke TorBox, NZB ke TorBox, serta yt-dlp/aria2c lokal; WebDL saja tidak cukup.
+24. **Kartu Discovery wajib menandai judul yang sudah ada di Library.** Badge centang `IN LIBRARY` dipakai untuk Film, Serial TV, Anime, Donghua, dan English Adult; pencocokan memprioritaskan ID kanonik lalu judul+tahun, dan adult mengikuti pencocokan judul server.
 
 ---
 

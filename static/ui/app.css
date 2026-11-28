@@ -391,6 +391,44 @@
   height: 12px;
 }
 
+/* Badge "IN LIBRARY" untuk kartu Discovery. */
+.card__lib-badge {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 16px);
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  background: rgba(63, 185, 80, 0.94);
+  color: #06210a;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.card__lib-badge .btn__svg {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+
+.tag--lib {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.tag--lib .btn__svg {
+  width: 11px;
+  height: 11px;
+}
+
 .card__progress {
   position: absolute;
   left: 0;

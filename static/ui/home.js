@@ -576,6 +576,101 @@
     return state.items.find((it) => Number(it.id) === Number(id)) || null;
   }
 
+  /* ------------------- Library match untuk Discovery --------------------- */
+
+  let libraryIndexCache = null;
+
+  function normalizeMatchText(value) {
+    return String(value || "")
+      .normalize("NFKC")
+      .toLowerCase()
+      .replace(/[._-]+/g, " ")
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function discoveryLibraryIndex() {
+    const items = Array.isArray(state.items) ? state.items : [];
+    if (libraryIndexCache && libraryIndexCache.items === items) return libraryIndexCache.byCategory;
+    const byCategory = new Map();
+    for (const row of items) {
+      const category = String(row.content_category || "").toLowerCase();
+      if (!category) continue;
+      let bucket = byCategory.get(category);
+      if (!bucket) {
+        bucket = { tmdb: new Map(), anilist: new Map(), exact: new Map(), rows: [] };
+        byCategory.set(category, bucket);
+      }
+      const tmdb = String(row.tmdb_id || "").trim();
+      if (tmdb) bucket.tmdb.set(tmdb, (bucket.tmdb.get(tmdb) || 0) + 1);
+      const anilist = String(row.anilist_id || "").trim();
+      if (anilist) bucket.anilist.set(anilist, (bucket.anilist.get(anilist) || 0) + 1);
+      const norm = normalizeMatchText(
+        row.title || row.original_title || row.normalized_title || row.series_title || row.file_name
+      );
+      if (!norm) continue;
+      const year = String(row.year || "").trim();
+      const key = `${norm}|${year}`;
+      bucket.exact.set(key, (bucket.exact.get(key) || 0) + 1);
+      bucket.rows.push({ norm, year, title: row.title || row.file_name || "" });
+    }
+    libraryIndexCache = { items, byCategory };
+    return byCategory;
+  }
+
+  function discoverLibraryMatch(item) {
+    if (!item) return { count: 0 };
+    const category = String(item.category || "").toLowerCase();
+    if (!category) return { count: 0 };
+    const bucket = discoveryLibraryIndex().get(category);
+    if (!bucket) return { count: 0 };
+
+    // Canonical IDs from TMDb/AniList are the strongest signal.
+    const tmdb = String(item.tmdb_id || "").trim();
+    if (tmdb && bucket.tmdb.has(tmdb)) return { count: bucket.tmdb.get(tmdb) };
+    const anilist = String(item.anilist_id || "").trim();
+    if (anilist && bucket.anilist.has(anilist)) return { count: bucket.anilist.get(anilist) };
+
+    const norm = normalizeMatchText(item.title || item.original_title || "");
+    if (!norm) return { count: 0 };
+    const year = String(item.year || "").trim();
+    const direct = bucket.exact.get(`${norm}|${year}`);
+    if (direct) return { count: direct };
+
+    let count = 0;
+    const isAdult = category === "english_adult";
+    for (const row of bucket.rows) {
+      if (!row.norm) continue;
+      if (row.norm === norm) {
+        if (isAdult || !year || !row.year || row.year === year) count += 1;
+        continue;
+      }
+      const shorter = norm.length <= row.norm.length ? norm : row.norm;
+      const longer = shorter === norm ? row.norm : norm;
+      // Containment only for distinctive titles: at least two words or 8+ chars.
+      if (shorter.length < 4 || !longer.includes(shorter)) continue;
+      if (shorter.split(" ").length < 2 && shorter.length < 8) continue;
+      // Mainstream keeps the year guard; the adult hint mirrors the server
+      // matcher, which ignores year because provider years are unreliable.
+      if (!isAdult && year && row.year && year !== row.year) continue;
+      count += 1;
+    }
+    return { count };
+  }
+
+  function libraryBadgeNode(count, opts) {
+    if (!count) return null;
+    const options = opts || {};
+    const label = `IN LIBRARY${count > 1 ? ` (${count})` : ""}`;
+    const node = el("span", {
+      class: options.tag ? "tag tag--ok tag--lib" : "card__lib-badge",
+      html: `${ICON.check}<span>${label}</span>`,
+    });
+    node.title = `Sudah ada di Library${count > 1 ? ` (${count} item)` : ""}`;
+    return node;
+  }
+
   /* --------------------------- Filtering/sort --------------------------- */
 
   function itemMatchesSearch(item) {
@@ -4037,6 +4132,9 @@
     }
     if (badges.childElementCount) frame.append(badges);
 
+    const libMatch = discoverLibraryMatch(item);
+    if (libMatch.count) frame.append(libraryBadgeNode(libMatch.count));
+
     const subParts = [];
     if (item.year) subParts.push(String(item.year));
     if (item.episodes) subParts.push(`${item.episodes} EP`);
@@ -4180,6 +4278,7 @@
     const metaLine = [item.year, Number(item.rating) > 0 ? `★ ${Number(item.rating).toFixed(1)}` : "", catLabel(item.category)]
       .filter(Boolean)
       .join(" · ");
+    const discoverMatch = discoverLibraryMatch(item);
 
     const poster = el(
       "div",
@@ -4234,6 +4333,7 @@
             el(
               "div",
               { class: "tagrow" },
+              libraryBadgeNode(discoverMatch.count, { tag: true }),
               ...(item.year ? [el("span", { class: "tag", text: String(item.year) })] : []),
               ...(Number(item.rating) > 0
                 ? [el("span", { class: "tag", text: `★ ${Number(item.rating).toFixed(1)}` })]
@@ -4584,6 +4684,11 @@
     }
     frame.append(badges);
 
+    const libMatch = discoverLibraryMatch(
+      Object.assign({}, item, { category: "english_adult" })
+    );
+    if (libMatch.count) frame.append(libraryBadgeNode(libMatch.count));
+
     const subParts = [];
     if (Number(item.rating) > 0) subParts.push(`★ ${Number(item.rating).toFixed(1)}`);
     if (item.views) subParts.push(`${numberLabel(item.views)} tayangan`);
@@ -4663,6 +4768,12 @@
     const page = (streamData && streamData.page_meta) || {};
     const tpdb = detail && detail.tpdb && detail.tpdb.status === "found" ? detail.tpdb : {};
     const inLibrary = detail && Array.isArray(detail.in_library) ? detail.in_library : [];
+    const localLibraryMatch = discoverLibraryMatch({
+      category: "english_adult",
+      title: merged.title || "",
+      year: merged.year || page.year || 0,
+    });
+    const libraryCount = inLibrary.length || localLibraryMatch.count;
     const tags = [...(Array.isArray(merged.tags) ? merged.tags : []), ...(Array.isArray(tpdb.tags) ? tpdb.tags : [])]
       .map((t) => String(t).trim())
       .filter(Boolean);
@@ -4722,6 +4833,7 @@
           el(
             "div",
             { class: "tagrow" },
+            libraryBadgeNode(libraryCount, { tag: true }),
             el("span", { class: "tag", text: merged.site_label || merged.provider || "Adult" }),
             duration ? el("span", { class: "tag", text: duration }) : null,
             Number(merged.rating) > 0 ? el("span", { class: "tag", text: `★ ${Number(merged.rating).toFixed(1)}` }) : null,
@@ -4737,6 +4849,8 @@
             class: "search-panel__note",
             text: inLibrary.length
               ? `Sudah ada di Library (${inLibrary.length}): ${inLibrary.map((it) => it.title || it.id).join(" · ")}`
+              : libraryCount
+              ? `Sudah ada di Library (${libraryCount}) berdasarkan kecocokan judul.`
               : "Belum ada judul serupa di Library kategori English Adult.",
           })
         )
