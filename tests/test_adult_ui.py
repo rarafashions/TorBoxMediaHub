@@ -135,6 +135,27 @@ class AdultDiscoveryUiTests(unittest.TestCase):
             self.html,
         )
 
+    def test_download_center_follows_the_roxxy_drawer(self):
+        # The detailed queue lives in a slide-over like Roxxy's Download
+        # Center, while the compact monitor above the catalogue stays visible
+        # and points at it, so auto-add progress is never hidden.
+        for marker in (
+            'id="adult-download-drawer"',
+            'id="adult-download-overlay"',
+            'id="adult-download-drawer-list"',
+            "openAdultDownloads",
+            "closeAdultDownloads",
+            "setAdultDownloadTab",
+            'data-adult-download-tab="torbox"',
+            'data-adult-download-tab="local"',
+            "Auto-add Library aktif",
+            "roxxy-panel",
+            "poster-card",
+            "#discovery-modal { background-color: #05070B; }",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.html)
+
     def test_blocked_providers_are_labelled_honestly(self):
         for label in ("terblokir", "hanya pencarian", "tempel URL"):
             with self.subTest(label=label):

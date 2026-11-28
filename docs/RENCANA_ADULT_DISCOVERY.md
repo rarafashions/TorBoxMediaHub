@@ -2,8 +2,8 @@
 
 **Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
 **Tanggal:** 28 November 2026
-**Versi acuan:** `v1.3DK`
-**Baseline tes:** `528 passed, 129 subtests passed`
+**Versi acuan:** `v1.3DL`
+**Baseline tes:** `529 passed, 141 subtests passed`
 
 ---
 
@@ -562,6 +562,8 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 - Metadata provider yang sama dikirim sebagai `metadata.description`/`poster`/`runtime` saat **WebDL** dan **unduhan lokal**, sehingga item hasil impor tidak lagi hanya bermodal judul.
 
 - **Header ringkas** (`v1.3DK`): satu baris untuk badge 18+, judul, dropdown sumber, dan tombol mode; satu baris pencarian dengan **Cari**, **Reset**, dan **Tempel URL**; baris tempel URL dilipat dan fokus otomatis ke input saat dibuka; status + jumlah item menyatu di kartu header, bukan baris terpisah di atas grid.
+- **Tema Roxxy** (`v1.3DL`): seluruh Discovery Hub memakai kanvas `#05070B` + aurora sky/rose, pil kategori sky, kartu `.poster-card` dengan hover lift/ring sky, dan panel kaca `.roxxy-panel`. Tab adult memakai palet yang sama (aksen rose hanya untuk badge 18+).
+- **Download Center** (`v1.3DL`): monitor di atas katalog tetap tampil (maksimal 3 baris + tautan "+N lainnya"); detail antrean pindah ke slide-over `#adult-download-drawer` (448 px, `#0A0F1A`) dengan tab **Semua / TorBox Cloud / Lokal**, kartu progres, dan catatan **Auto-add Library aktif**. Ditutup lewat overlay, tombol ✕, atau Escape.
 
 **Verifikasi live (instance sementara port 5052, data dir terpisah):**
 
@@ -576,6 +578,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | `POST /api/adult/streams` URL Eporner (koreksi A6) | 1 stream; `page_meta`: judul asli, sinopsis tag dari halaman, poster `8_360.jpg` (JSON-LD terbesar), durasi **770 s** |
 | `POST /api/adult/streams` URL XVideos (koreksi A6) | 2 stream; kartu generik `embedframe` tergantikan oleh halaman asli (`title`, poster, durasi **417 s**) |
 | `GET /` instance verifikasi | marka `Monitor Unduhan`, `Auto-add Library`, `adult-provider-health`, `adult-detail-synopsis`, `adult-download-empty` semua ada |
+| Playwright port 5055 (tema Roxxy `v1.3DL`) | kanvas `rgb(5,7,11)`, panel `.roxxy-panel` blur 18 px, drawer 448 px `rgb(10,15,26)`, tab Semua→Lokal beralih, Escape menutup drawer |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 

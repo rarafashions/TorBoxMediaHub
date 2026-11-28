@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DK`
+**Versi saat ini:** `v1.3DL`
 **Tanggal status:** 28 November 2026
-**Baseline tes:** `python -m pytest tests -q --no-header` → **528 passed, 129 subtests passed** (0 gagal)
+**Baseline tes:** `python -m pytest tests -q --no-header` → **529 passed, 141 subtests passed** (0 gagal)
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -57,6 +57,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DI` | 28 Nov 2026 | Modal kartu English Adult ala Roxxy: sumber stream langsung, analisis otomatis, unduhan lokal, monitoring unduhan + badge Library |
 | `v1.3DJ` | 28 Nov 2026 | Koreksi A6: monitor unduhan di atas katalog, tata letak dua kolom, cover/sinopsis/durasi dari halaman provider |
 | `v1.3DK` | 28 Nov 2026 | Header English Adult dipadatkan: sumber + mode satu baris, Tempel URL bisa dilipat, status menyatu dengan grid |
+| `v1.3DL` | 28 Nov 2026 | Discovery Hub memakai bahasa visual Roxxy: kanvas #05070B, kartu poster, dan slide-over Download Center untuk monitor + auto-add |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -163,6 +164,17 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 - Catatan 9 situs + SpankBang/SunPorno dipindah ke panel **Status Sumber** di kanan agar tidak menambah tinggi header.
 - Tes UI +1 (kontrak elemen header ringkas), suite **528 passed, 129 subtests**.
 
+### 4.12 `v1.3DL` — Discovery Hub memakai tampilan Roxxy
+
+- Kanvas Discovery Hub menjadi **#05070B** dengan aurora halus (radial sky/rose), header bergaya brand Roxxy (kotak gradient "D", judul tebal, tombol **Library** berbentuk pil kaca).
+- Kategori jadi pil (aktif **sky-500**), sub-tab Trending/Popular/Top Rated/Search memakai segmented control kaca; kotak pencarian, tombol Search/Reset, cache search, dan tombol "Load 50 More" ikut palet sky.
+- Kartu katalog (`disc-grid`, `adult-grid`) memakai `.poster-card`: naik 6 px + ring sky saat hover, gambar zoom halus, badge overlay kaca, tombol aksi **sky-500** (teks slate-950) seperti CTA Roxxy.
+- Panel adult memakai `.roxxy-panel` (putih 3%, border 8%, `backdrop-filter: blur(18px)`); monitor unduhan tetap di **atas** katalog, sekarang ringkas (maks. 3 baris + tautan "+N lainnya") dan bertombol **Download Center**.
+- **Download Center slide-over** baru (`#adult-download-drawer`, lebar 448 px, latar #0A0F1A) berisi tab **Semua / TorBox Cloud / Lokal**, kartu progres, dan catatan **Auto-add Library aktif**; dibuka dari monitor, ditutup lewat overlay, tombol ✕, atau Escape.
+- Modal detail adult menjadi sinematik: header gradient sky/rose, poster bersudut `rounded-xl`, kartu WebDL emerald, status cloud kaca, tombol "Analisis ulang" berbentuk pil.
+- Semua ID, handler, endpoint, dan rute lama dipertahankan; perubahan bersifat visual plus dua fungsi drawer aditif (`openAdultDownloads`, `closeAdultDownloads`, `setAdultDownloadTab`).
+- Tes UI +1 (kontrak drawer dan tema), suite **529 passed, 141 subtests**; verifikasi Playwright di port 5055 (kanvas `rgb(5,7,11)`, panel blur 18 px, drawer 448 px, tab berpindah, Escape menutup).
+
 ---
 
 ## 5. Keputusan yang mengikat
@@ -188,6 +200,7 @@ Keputusan berikut sudah diambil dan tidak boleh diubah tanpa persetujuan eksplis
 17. **Stream lokal English Adult diambil dari halaman provider**, bukan ekstraksi generik yt-dlp (diuji gagal untuk Eporner/XVideos), dan tidak mengubah `roxxy_module.py` maupun perilaku `/roxxy`.
 18. **Sumber adult memakai `_roxxySource = "english_adult"` dan tidak mengisi `_roxxyType`**, agar `_refresh_stream_url` tidak memanggil manifest Roxxy dengan id provider kita.
 19. **Metadata kartu adult berasal dari halaman provider** (judul, cover, sinopsis, durasi). TPDB hanya mengisi kekosongan; jangan menimpa cover/sinopsis provider dengan tebakan TPDB.
+20. **Discovery Hub memakai bahasa visual Roxxy** (kanvas #05070B, aksen sky, kartu poster, slide-over Download Center). Perubahan hanya visual/aditif: ID, handler, endpoint, dan rute lama wajib tetap berfungsi; `roxxy.html` tidak diubah.
 
 ---
 

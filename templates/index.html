@@ -13,6 +13,32 @@
     ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: #475569; }
     .line-clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+    /* ===== Roxxy theme for the Discovery Hub (scoped, visual only) ===== */
+    #discovery-modal { background-color: #05070B; }
+    #discovery-modal .roxxy-aurora {
+      background:
+        radial-gradient(60% 50% at 50% 0%, rgba(56, 189, 248, 0.10), transparent 70%),
+        radial-gradient(45% 45% at 95% 8%, rgba(244, 63, 94, 0.08), transparent 72%);
+    }
+    #discovery-modal .roxxy-panel {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(18px);
+    }
+    #discovery-modal .poster-card {
+      transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.35s ease, border-color 0.25s ease;
+    }
+    #discovery-modal .poster-card:hover {
+      transform: translateY(-6px) scale(1.03);
+      z-index: 10;
+      box-shadow: 0 20px 35px -10px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(56, 189, 248, 0.45);
+    }
+    #discovery-modal .poster-card img { transition: transform 0.5s ease; }
+    #discovery-modal .poster-card:hover img { transform: scale(1.06); }
+    #discovery-modal .disc-cat-btn,
+    #discovery-modal .disc-mode-btn { transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease; }
+    #adult-download-drawer { background: #0A0F1A; }
   </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col font-sans antialiased">
@@ -604,36 +630,40 @@
   </div>
 
   <!-- DISCOVERY & SEARCH HUB MODAL -->
-  <div id="discovery-modal" class="hidden fixed inset-0 z-[60] bg-slate-950 flex flex-col overflow-hidden">
-    <div class="bg-slate-900 w-full h-full min-h-0 flex flex-col overflow-hidden shadow-2xl">
-      
+  <div id="discovery-modal" class="hidden fixed inset-0 z-[60] bg-[#05070B] flex flex-col overflow-hidden">
+    <div class="bg-[#05070B] relative w-full h-full min-h-0 flex flex-col overflow-hidden shadow-2xl">
+      <div class="pointer-events-none absolute inset-0 roxxy-aurora"></div>
+
       <!-- Modal Header -->
-      <div class="px-5 py-3.5 bg-slate-950/90 border-b border-slate-800 flex items-center justify-between gap-3 shrink-0">
-        <div class="flex items-center gap-2.5">
-          <span class="px-2 py-0.5 rounded bg-purple-600/30 border border-purple-500/40 text-purple-300 text-[10px] font-bold uppercase tracking-wider">DISCOVERY HUB</span>
-          <h3 class="text-base font-bold text-white">Discover, Search &amp; Add to TorBox Cloud</h3>
+      <div class="relative px-4 sm:px-6 py-3 bg-[#05070B]/90 backdrop-blur-2xl border-b border-white/5 flex items-center justify-between gap-3 shrink-0">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-sky-400 to-blue-600 font-black text-slate-950 shadow-lg shadow-sky-500/20">D</div>
+          <div class="min-w-0">
+            <div class="text-[10px] font-bold uppercase tracking-[0.18em] text-sky-400">Discovery Hub</div>
+            <h3 class="truncate text-base font-black tracking-tight text-white">Discover, Search &amp; Add to TorBox Cloud</h3>
+          </div>
         </div>
-        <button onclick="closeDiscoveryModal()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-white" title="Back to Library">&#8592; Back to Library</button>
+        <button onclick="closeDiscoveryModal()" class="flex shrink-0 items-center gap-1.5 rounded-full bg-white/5 px-3.5 py-1.5 text-xs font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white" title="Back to Library">&#8592; Library</button>
       </div>
 
       <!-- Category Tabs & Sub-Tabs (Trending / Popular / Top Rated / Search) -->
-      <div class="px-5 py-3 bg-slate-900 border-b border-slate-800 space-y-2.5 shrink-0">
+      <div class="relative px-4 sm:px-6 py-3 bg-[#05070B]/70 border-b border-white/5 space-y-2.5 shrink-0">
         <div class="flex flex-wrap items-center justify-between gap-2.5">
           <!-- Category Pills -->
           <div class="flex flex-wrap items-center gap-1.5">
-            <button onclick="setDiscoveryCategory('general_movie')" id="disc-cat-general_movie" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white">Movies</button>
-            <button onclick="setDiscoveryCategory('tv_show')" id="disc-cat-tv_show" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">TV Shows</button>
-            <button onclick="setDiscoveryCategory('anime')" id="disc-cat-anime" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">Anime</button>
-            <button onclick="setDiscoveryCategory('donghua')" id="disc-cat-donghua" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white">Donghua</button>
-            <button onclick="setDiscoveryCategory('english_adult')" id="disc-cat-english_adult" class="disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-rose-300 hover:text-white" title="English Adult (18+) — katalog 10 situs">English Adult <span class="align-top text-[9px] font-bold text-rose-400">18+</span></button>
+            <button onclick="setDiscoveryCategory('general_movie')" id="disc-cat-general_movie" class="disc-cat-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-sky-500 text-slate-950 shadow-lg shadow-sky-500/20">Movies</button>
+            <button onclick="setDiscoveryCategory('tv_show')" id="disc-cat-tv_show" class="disc-cat-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white">TV Shows</button>
+            <button onclick="setDiscoveryCategory('anime')" id="disc-cat-anime" class="disc-cat-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white">Anime</button>
+            <button onclick="setDiscoveryCategory('donghua')" id="disc-cat-donghua" class="disc-cat-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-white/5 text-slate-300 hover:bg-white/10 hover:text-white">Donghua</button>
+            <button onclick="setDiscoveryCategory('english_adult')" id="disc-cat-english_adult" class="disc-cat-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-white/5 text-rose-300 hover:bg-rose-500/10 hover:text-white" title="English Adult (18+) — katalog 10 situs">English Adult <span class="align-top text-[9px] font-bold text-rose-400">18+</span></button>
           </div>
 
           <!-- Sub-Tabs: Trending / Popular / Top Rated / Search -->
-          <div class="inline-flex bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs">
-            <button onclick="setDiscoveryMode('trending')" id="disc-mode-trending" class="disc-mode-btn px-3 py-1 rounded-md font-semibold bg-sky-600 text-white">&#128293; Trending</button>
-            <button onclick="setDiscoveryMode('popular')" id="disc-mode-popular" class="disc-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white">&#11088; Popular</button>
-            <button onclick="setDiscoveryMode('top_rated')" id="disc-mode-top_rated" class="disc-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white">&#127942; Top Rated</button>
-            <button onclick="setDiscoveryMode('search')" id="disc-mode-search" class="disc-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white">&#128269; Search</button>
+          <div class="inline-flex bg-black/50 p-1 rounded-xl border border-white/5 text-xs">
+            <button onclick="setDiscoveryMode('trending')" id="disc-mode-trending" class="disc-mode-btn px-3 py-1 rounded-lg font-semibold bg-sky-500 text-slate-950">&#128293; Trending</button>
+            <button onclick="setDiscoveryMode('popular')" id="disc-mode-popular" class="disc-mode-btn px-3 py-1 rounded-lg font-semibold text-slate-400 hover:text-white">&#11088; Popular</button>
+            <button onclick="setDiscoveryMode('top_rated')" id="disc-mode-top_rated" class="disc-mode-btn px-3 py-1 rounded-lg font-semibold text-slate-400 hover:text-white">&#127942; Top Rated</button>
+            <button onclick="setDiscoveryMode('search')" id="disc-mode-search" class="disc-mode-btn px-3 py-1 rounded-lg font-semibold text-slate-400 hover:text-white">&#128269; Search</button>
           </div>
         </div>
 
@@ -646,7 +676,7 @@
               oninput="onDiscoverySearchInput()"
               onkeydown="if(event.key==='Enter') executeDiscoverySearch()"
               placeholder="Search movie, TV show, anime, or donghua title..."
-              class="w-full bg-slate-950 border border-slate-700 rounded-lg pl-3.5 pr-8 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+              class="w-full bg-white/[0.04] border border-white/10 rounded-xl pl-3.5 pr-8 py-2 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-500"
             />
             <button
               id="disc-clear-search-btn"
@@ -658,39 +688,39 @@
               &times;
             </button>
           </div>
-          <button id="disc-search-btn" onclick="executeDiscoverySearch()" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-xs font-semibold text-white shrink-0 transition disabled:opacity-60 disabled:cursor-wait">
+          <button id="disc-search-btn" onclick="executeDiscoverySearch()" class="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-xs font-bold text-slate-950 shrink-0 transition disabled:opacity-60 disabled:cursor-wait">
             Search Catalog
           </button>
           <button
             id="disc-reset-btn"
             type="button"
             onclick="clearDiscoverySearch()"
-            class="hidden px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200 shrink-0"
+            class="hidden px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-xs font-semibold text-slate-200 shrink-0"
             title="Clear search filter and reload default feed"
           >
             &#8635; Clear Search
           </button>
-          <button onclick="directSearchTorboxCacheFromInput()" class="px-4 py-2 rounded-lg bg-emerald-700 hover:bg-emerald-600 text-xs font-semibold text-white shrink-0" title="Search TorBox Instant Cache directly using keyword above">
+          <button onclick="directSearchTorboxCacheFromInput()" class="px-4 py-2 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-xs font-bold text-slate-950 shrink-0" title="Search TorBox Instant Cache directly using keyword above">
             &#9889; Direct Cache Search
           </button>
         </div>
       </div>
 
       <!-- Modal Body: Cache/Upgrade Inspector Drawer + Catalog Grid -->
-      <div id="discovery-scroll-area" onscroll="updateDiscoveryBackToTop()" class="flex-1 min-h-0 overflow-y-auto p-5 space-y-4">
+      <div id="discovery-scroll-area" onscroll="updateDiscoveryBackToTop()" class="relative flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 space-y-4">
         <div id="disc-mainstream-body" class="space-y-4">
         
         <!-- Active Cache & Upgrade Panel -->
-        <div id="disc-cache-drawer" class="hidden bg-slate-950 border border-indigo-500/50 rounded-xl p-4 space-y-3 shadow-lg">
-          <div class="flex items-start justify-between gap-3 border-b border-slate-800 pb-2.5">
+        <div id="disc-cache-drawer" class="hidden roxxy-panel rounded-2xl p-4 space-y-3 shadow-2xl">
+          <div class="flex items-start justify-between gap-3 border-b border-white/10 pb-2.5">
             <div>
               <div class="flex items-center gap-2">
-                <span class="px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-bold">TORBOX CACHE CHECK</span>
+                <span class="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30 text-[10px] font-bold">TORBOX CACHE CHECK</span>
                 <h4 id="disc-cache-title" class="text-sm font-bold text-white">Selected Title</h4>
               </div>
               <p id="disc-cache-subtitle" class="text-[11px] text-slate-400 mt-0.5">Select a release below to add directly to TorBox Cloud.</p>
             </div>
-            <button onclick="closeDiscoveryCacheDrawer()" class="text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-900 border border-slate-700">Close Panel</button>
+            <button onclick="closeDiscoveryCacheDrawer()" class="text-xs text-slate-400 hover:text-white px-2 py-1 rounded-full bg-white/5 border border-white/10">Close Panel</button>
           </div>
 
           <!-- Series Season Selector (Only for tv_show / anime / donghua) -->
@@ -699,7 +729,7 @@
             <input id="disc-season-num" type="number" min="1" value="1" class="w-16 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-mono" />
             <label class="text-slate-400 font-semibold ml-2">Episode (Optional):</label>
             <input id="disc-episode-num" type="number" min="1" placeholder="All / Pack" class="w-24 bg-slate-950 border border-slate-700 rounded px-2 py-1 text-white font-mono" />
-            <button onclick="recheckDiscoveryCacheWithSeason()" class="px-3 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-semibold">
+            <button onclick="recheckDiscoveryCacheWithSeason()" class="px-3 py-1 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold">
               Re-Scan Season/Ep
             </button>
           </div>
@@ -738,7 +768,7 @@
         <div id="disc-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5"></div>
         <div id="disc-load-more-wrap" class="hidden text-center py-5">
           <button id="disc-load-more-btn" type="button" onclick="loadMoreDiscoveryFeed()"
-            class="px-6 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold">
+            class="px-6 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-bold">
             Load 50 More
           </button>
           <p id="disc-load-more-note" class="text-[10px] text-slate-500 mt-2"></p>
@@ -751,13 +781,17 @@
         <!-- ENGLISH ADULT (18+) PANEL -->
         <div id="adult-panel" class="hidden space-y-4">
           <!-- MONITOR UNDUHAN: tetap di atas agar progres + auto-add Library terlihat saat modal ditutup -->
-          <div id="adult-downloads" class="bg-slate-950 border border-emerald-500/30 rounded-xl p-3 space-y-2">
+          <div id="adult-downloads" class="bg-slate-950 roxxy-panel rounded-2xl p-3 space-y-2 shadow-2xl">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div class="flex flex-wrap items-center gap-2">
-                <span class="text-[11px] font-bold text-white">Monitor Unduhan &middot; TorBox Cloud</span>
-                <span class="px-1.5 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[9px] font-bold uppercase tracking-wider">Auto-add Library</span>
+                <span class="flex h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.7)]"></span>
+                <span class="text-[11px] font-bold tracking-tight text-white">Monitor Unduhan <span class="text-slate-500">&middot;</span> TorBox Cloud</span>
+                <span class="px-1.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 text-[9px] font-bold uppercase tracking-wider">Auto-add Library</span>
               </div>
-              <span id="adult-downloads-count" class="text-[10px] text-slate-500"></span>
+              <div class="flex items-center gap-2">
+                <span id="adult-downloads-count" class="text-[10px] text-slate-500"></span>
+                <button type="button" onclick="openAdultDownloads()" class="flex items-center gap-1.5 rounded-full bg-white/5 border border-white/10 px-2.5 py-1 text-[10px] font-semibold text-slate-300 transition hover:bg-white/10 hover:text-white">Download Center</button>
+              </div>
             </div>
             <p id="adult-download-empty" class="text-[11px] text-slate-500">Belum ada unduhan aktif. Kirim kartu ke TorBox WebDL atau mulai unduhan lokal; progres dan impor Library muncul di sini.</p>
             <div id="adult-download-list" class="grid gap-2 sm:grid-cols-2"></div>
@@ -766,35 +800,35 @@
           <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4 items-start">
             <div class="space-y-3 min-w-0">
           <!-- Header ringkas: judul, sumber, mode, pencarian, tempel URL dalam dua baris -->
-          <div class="bg-slate-950 border border-rose-500/40 rounded-xl p-3 space-y-2.5">
+          <div class="roxxy-panel rounded-2xl p-3 space-y-2.5 shadow-2xl">
             <div class="flex flex-wrap items-center gap-2">
-              <span class="px-2 py-0.5 rounded bg-rose-600/20 border border-rose-500/40 text-rose-300 text-[10px] font-bold uppercase tracking-wider">18+</span>
-              <h4 class="text-sm font-bold text-white mr-auto">Katalog Adult</h4>
+              <span class="px-2 py-0.5 rounded-full bg-rose-500/15 border border-rose-400/30 text-rose-300 text-[10px] font-bold uppercase tracking-wider">18+</span>
+              <h4 class="mr-auto text-sm font-black tracking-tight text-white">Katalog Adult</h4>
               <label for="adult-provider" class="sr-only">Sumber</label>
-              <select id="adult-provider" onchange="onAdultProviderChange()" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-rose-500 min-w-[160px] max-w-[220px]">
+              <select id="adult-provider" onchange="onAdultProviderChange()" class="min-w-[160px] max-w-[220px] rounded-xl border border-white/10 bg-black/50 px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-sky-500">
                 <option value="all">Semua sumber otomatis</option>
               </select>
-              <div class="inline-flex bg-slate-900 p-1 rounded-lg border border-slate-800 text-xs" id="adult-mode-btns">
-                <button onclick="setAdultMode('new')" id="adult-mode-new" class="adult-mode-btn px-2.5 py-1 rounded-md font-semibold bg-rose-600 text-white">Terbaru</button>
-                <button onclick="setAdultMode('popular')" id="adult-mode-popular" class="adult-mode-btn px-2.5 py-1 rounded-md font-semibold text-slate-400 hover:text-white">Populer</button>
-                <button onclick="setAdultMode('top_rated')" id="adult-mode-top_rated" class="adult-mode-btn px-2.5 py-1 rounded-md font-semibold text-slate-400 hover:text-white">Rating</button>
+              <div class="inline-flex rounded-xl border border-white/5 bg-black/50 p-1 text-xs" id="adult-mode-btns">
+                <button onclick="setAdultMode('new')" id="adult-mode-new" class="adult-mode-btn px-2.5 py-1 rounded-lg font-semibold bg-sky-500 text-slate-950">Terbaru</button>
+                <button onclick="setAdultMode('popular')" id="adult-mode-popular" class="adult-mode-btn px-2.5 py-1 rounded-lg font-semibold text-slate-400 hover:text-white">Populer</button>
+                <button onclick="setAdultMode('top_rated')" id="adult-mode-top_rated" class="adult-mode-btn px-2.5 py-1 rounded-lg font-semibold text-slate-400 hover:text-white">Rating</button>
               </div>
             </div>
 
             <div class="flex items-center gap-2">
               <div class="relative flex-1 min-w-0">
-                <input id="adult-search-input" type="search" onkeydown="if(event.key==='Enter') executeAdultSearch()" placeholder="Cari judul atau bintang..." class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-rose-500" />
+                <input id="adult-search-input" type="search" onkeydown="if(event.key==='Enter') executeAdultSearch()" placeholder="Cari judul atau bintang..." class="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-sky-500" />
               </div>
-              <button onclick="executeAdultSearch()" class="shrink-0 px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-xs font-semibold text-white">Cari</button>
-              <button onclick="resetAdultCatalog()" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-semibold text-slate-200" title="Kembali ke mode Terbaru tanpa kata kunci">Reset</button>
-              <button type="button" onclick="toggleAdultPasteRow()" id="adult-paste-toggle" class="shrink-0 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-amber-500/40 text-xs font-semibold text-amber-200" aria-expanded="false" aria-controls="adult-paste-row">Tempel URL</button>
+              <button onclick="executeAdultSearch()" class="shrink-0 rounded-xl bg-sky-500 px-3 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-sky-400">Cari</button>
+              <button onclick="resetAdultCatalog()" class="shrink-0 rounded-xl border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs font-semibold text-slate-200 transition hover:bg-white/10" title="Kembali ke mode Terbaru tanpa kata kunci">Reset</button>
+              <button type="button" onclick="toggleAdultPasteRow()" id="adult-paste-toggle" class="shrink-0 rounded-xl border border-amber-400/30 bg-amber-500/10 px-2.5 py-1.5 text-xs font-semibold text-amber-200 transition hover:bg-amber-500/20" aria-expanded="false" aria-controls="adult-paste-row">Tempel URL</button>
             </div>
 
             <div id="adult-paste-row" class="hidden items-center gap-2">
               <div class="relative flex-1 min-w-0">
-                <input id="adult-paste-input" type="text" onkeydown="if(event.key==='Enter') pasteAdultLink()" placeholder="Tempel URL halaman (mis. SpankBang yang terblokir)..." class="w-full bg-slate-900 border border-amber-500/40 rounded-lg px-3 py-1.5 text-xs text-white focus:outline-none focus:border-amber-400" />
+                <input id="adult-paste-input" type="text" onkeydown="if(event.key==='Enter') pasteAdultLink()" placeholder="Tempel URL halaman (mis. SpankBang yang terblokir)..." class="w-full rounded-xl border border-amber-400/30 bg-black/40 px-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-300" />
               </div>
-              <button onclick="pasteAdultLink()" id="adult-paste-btn" class="shrink-0 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-xs font-semibold text-white">Buka</button>
+              <button onclick="pasteAdultLink()" id="adult-paste-btn" class="shrink-0 rounded-xl bg-amber-500 px-3 py-1.5 text-xs font-bold text-slate-950 transition hover:bg-amber-400">Buka</button>
             </div>
 
             <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[10px] text-slate-500">
@@ -806,15 +840,15 @@
           <div id="adult-grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2.5"></div>
 
           <div id="adult-load-more-wrap" class="hidden text-center py-4">
-            <button onclick="loadMoreAdultFeed()" class="px-6 py-2.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white text-xs font-semibold">Muat 20 Lagi</button>
+            <button onclick="loadMoreAdultFeed()" class="rounded-xl bg-sky-500 px-6 py-2.5 text-xs font-bold text-slate-950 transition hover:bg-sky-400">Muat 20 Lagi</button>
           </div>
             </div><!-- /kolom katalog -->
 
             <aside class="space-y-3">
-              <div class="bg-slate-950 border border-white/10 rounded-xl p-3 space-y-2">
+              <div class="roxxy-panel rounded-2xl p-3.5 space-y-2 shadow-2xl">
                 <div class="flex items-center justify-between gap-2">
                   <span class="text-[11px] font-bold text-white">Status Sumber</span>
-                  <button type="button" onclick="refreshAdultProviderHealth()" class="rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 px-2 py-1 text-[10px] font-semibold text-slate-200">Perbarui</button>
+                  <button type="button" onclick="refreshAdultProviderHealth()" class="rounded-full border border-white/10 bg-white/5 px-2.5 py-1 text-[10px] font-semibold text-slate-200 transition hover:bg-white/10 hover:text-white">Perbarui</button>
                 </div>
                 <div id="adult-provider-health" class="space-y-1"></div>
                 <div id="adult-warnings" class="space-y-1"></div>
@@ -825,23 +859,55 @@
             </aside>
           </div><!-- /bagi dua katalog & status -->
 
-          <!-- ADULT DETAIL MODAL -->
-          <div id="adult-detail" class="hidden fixed inset-0 z-[85] overflow-y-auto bg-slate-950/85 backdrop-blur-sm p-3 sm:p-6" onclick="if (event.target === this) closeAdultDetail()">
-            <div class="mx-auto w-full max-w-3xl bg-slate-950 border border-rose-500/40 rounded-2xl shadow-2xl">
-              <div class="flex items-start justify-between gap-3 border-b border-slate-800 p-4">
-                <div class="min-w-0 space-y-1">
-                  <div class="flex flex-wrap items-center gap-2">
-                    <span id="adult-detail-library-badge" class="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[10px] font-bold tracking-wide text-slate-300">NOT IN LIBRARY</span>
-                    <span class="px-2 py-0.5 rounded bg-rose-600/20 border border-rose-500/40 text-rose-300 text-[10px] font-bold uppercase tracking-wider">English Adult &middot; 18+</span>
-                  </div>
-                  <h4 id="adult-detail-title" class="text-base font-bold text-white"></h4>
-                  <p id="adult-detail-sub" class="text-[11px] text-slate-400"></p>
-                </div>
-                <button type="button" onclick="closeAdultDetail()" class="shrink-0 text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-slate-900 border border-slate-700">Tutup</button>
+          <!-- DOWNLOAD CENTER (slide-over ala Roxxy) -->
+          <div id="adult-download-overlay" onclick="closeAdultDownloads()" class="hidden fixed inset-0 z-[69] bg-black/70 backdrop-blur-sm opacity-0 transition-opacity duration-300" aria-hidden="true"></div>
+          <aside id="adult-download-drawer" role="dialog" aria-modal="true" aria-labelledby="adult-download-drawer-title" class="fixed inset-y-0 right-0 z-[70] hidden w-full max-w-md translate-x-full flex-col border-l border-white/10 bg-[#0A0F1A] shadow-2xl transition-transform duration-300">
+            <div class="flex items-center justify-between border-b border-white/10 p-5">
+              <div>
+                <h3 id="adult-download-drawer-title" class="text-lg font-extrabold text-white">Download Center</h3>
+                <p class="text-xs text-slate-400">Monitor antrean Lokal &amp; Cloud TorBox</p>
               </div>
-              <div class="p-4 space-y-4">
+              <button type="button" onclick="closeAdultDownloads()" class="flex h-8 w-8 items-center justify-center rounded-full bg-white/5 text-slate-400 transition hover:bg-white/15 hover:text-white" aria-label="Tutup Download Center">&#10005;</button>
+            </div>
+            <div class="flex-1 space-y-4 overflow-y-auto p-5">
+              <div class="grid grid-cols-3 gap-1.5 rounded-xl border border-white/5 bg-black/50 p-1" id="adult-download-tabs">
+                <button type="button" onclick="setAdultDownloadTab('all')" data-adult-download-tab="all" class="rounded-lg bg-sky-500 py-2 text-[11px] font-bold text-slate-950 transition">Semua</button>
+                <button type="button" onclick="setAdultDownloadTab('torbox')" data-adult-download-tab="torbox" class="rounded-lg py-2 text-[11px] font-bold text-slate-400 transition hover:text-white">TorBox Cloud</button>
+                <button type="button" onclick="setAdultDownloadTab('local')" data-adult-download-tab="local" class="rounded-lg py-2 text-[11px] font-bold text-slate-400 transition hover:text-white">Lokal</button>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-semibold text-slate-300">Antrean unduhan</span>
+                <span id="adult-download-drawer-count" class="rounded-full bg-white/5 px-2.5 py-0.5 text-[11px] text-slate-300">0 aktif</span>
+              </div>
+              <div id="adult-download-drawer-list" class="space-y-2.5">
+                <p class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Belum ada unduhan aktif.</p>
+              </div>
+              <p class="rounded-xl border border-emerald-500/20 bg-emerald-500/[0.04] px-3 py-2 text-[11px] leading-relaxed text-emerald-200/80">
+                <span class="font-bold text-emerald-300">Auto-add Library aktif.</span> Item yang selesai di TorBox Cloud langsung masuk Library tanpa perlu menekan tombol.
+              </p>
+            </div>
+          </aside>
+
+          <!-- ADULT DETAIL MODAL -->
+          <div id="adult-detail" class="hidden fixed inset-0 z-[85] overflow-y-auto bg-black/80 backdrop-blur-sm p-3 sm:p-6" onclick="if (event.target === this) closeAdultDetail()">
+            <div class="mx-auto w-full max-w-3xl overflow-hidden rounded-2xl border border-white/10 bg-[#0B101B] shadow-2xl shadow-black/60">
+              <div class="relative border-b border-white/10 p-4 sm:p-5">
+                <div class="pointer-events-none absolute inset-0 bg-gradient-to-br from-sky-500/10 via-transparent to-rose-500/10"></div>
+                <div class="relative flex items-start justify-between gap-3">
+                  <div class="min-w-0 space-y-1.5">
+                    <div class="flex flex-wrap items-center gap-2">
+                      <span id="adult-detail-library-badge" class="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[10px] font-bold tracking-wide text-slate-300">NOT IN LIBRARY</span>
+                      <span class="px-2 py-0.5 rounded-full bg-rose-500/15 border border-rose-400/30 text-rose-300 text-[10px] font-bold uppercase tracking-wider">English Adult &middot; 18+</span>
+                    </div>
+                    <h4 id="adult-detail-title" class="text-lg font-black leading-snug tracking-tight text-white"></h4>
+                    <p id="adult-detail-sub" class="text-[11px] text-slate-400"></p>
+                  </div>
+                  <button type="button" onclick="closeAdultDetail()" class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-white/5 text-slate-400 transition hover:bg-white/15 hover:text-white" aria-label="Tutup detail">&#10005;</button>
+                </div>
+              </div>
+              <div class="space-y-4 p-4 sm:p-5">
                 <div class="flex flex-wrap gap-3">
-                  <img id="adult-detail-poster" class="hidden w-44 aspect-video object-cover rounded-lg border border-slate-800 bg-slate-900" referrerpolicy="no-referrer" alt="" />
+                  <img id="adult-detail-poster" class="hidden w-40 sm:w-44 aspect-video object-cover rounded-xl border border-white/10 bg-black/40 shadow-2xl" referrerpolicy="no-referrer" alt="" />
                   <div class="flex-1 min-w-[220px] space-y-2 text-[11px] text-slate-300">
                     <div id="adult-detail-meta" class="grid grid-cols-2 sm:grid-cols-4 gap-1.5"></div>
                     <p id="adult-detail-synopsis" class="text-[11px] text-slate-300 leading-relaxed"></p>
@@ -851,30 +917,33 @@
                     <p id="adult-detail-library"></p>
                   </div>
                 </div>
-                <div class="rounded-xl border border-emerald-500/30 bg-emerald-500/[0.06] p-3 space-y-2">
+                <div class="rounded-2xl border border-emerald-500/25 bg-emerald-500/[0.06] p-3.5 space-y-2">
                   <div class="flex flex-wrap items-center gap-2">
-                    <button id="adult-detail-submit" onclick="submitAdultWebdl()" class="rounded-lg bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 transition hover:bg-emerald-400">&#9729; Simpan ke TorBox Cloud (WebDL)</button>
-                    <button type="button" onclick="openAdultPageLink()" class="rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-200">Buka halaman asli</button>
+                    <button id="adult-detail-submit" onclick="submitAdultWebdl()" class="rounded-xl bg-emerald-500 px-4 py-2 text-xs font-bold text-slate-950 shadow-lg shadow-emerald-500/20 transition hover:bg-emerald-400">&#9729; Simpan ke TorBox Cloud (WebDL)</button>
+                    <button type="button" onclick="openAdultPageLink()" class="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-slate-200 transition hover:bg-white/10">Buka halaman asli</button>
                   </div>
                   <p id="adult-detail-webdl-hint" class="text-[11px] text-slate-400"></p>
                   <p id="adult-detail-note" class="text-[10px] text-slate-400"></p>
                 </div>
-                <div class="rounded-xl border border-white/10 bg-white/[0.02] p-3">
+                <div class="rounded-2xl border border-white/10 bg-white/[0.02] p-3.5">
                   <div class="flex flex-wrap items-center justify-between gap-2">
                     <div class="min-w-0">
                       <div class="text-[11px] font-bold text-white">Status TorBox Cloud</div>
                       <div id="adult-cloud-status" class="text-[11px] text-slate-400">Tidak ada download aktif.</div>
                     </div>
-                    <span id="adult-cloud-state" class="shrink-0 rounded-md bg-slate-800 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-300">IDLE</span>
+                    <span id="adult-cloud-state" class="shrink-0 rounded-md bg-white/5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-300">IDLE</span>
                   </div>
                   <div id="adult-cloud-queue" class="mt-2 space-y-2"></div>
                 </div>
                 <div>
                   <div class="flex flex-wrap items-center justify-between gap-2">
-                    <h3 class="text-sm font-extrabold uppercase tracking-wider text-slate-200">Pilihan Sumber Stream</h3>
+                    <div class="flex items-center gap-2">
+                      <span class="h-3.5 w-1 rounded-full bg-sky-400"></span>
+                      <h3 class="text-sm font-extrabold uppercase tracking-wider text-slate-200">Pilihan Sumber Stream</h3>
+                    </div>
                     <div class="flex items-center gap-2">
                       <span id="adult-streams-count" class="text-[10px] text-slate-500"></span>
-                      <button type="button" onclick="analyzeAdultStreams()" class="rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 px-3 py-1.5 text-[11px] font-semibold text-slate-200">Analisis ulang</button>
+                      <button type="button" onclick="analyzeAdultStreams()" class="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:bg-white/10 hover:text-white">Analisis ulang</button>
                     </div>
                   </div>
                   <p id="adult-streams-note" class="mt-1 text-[11px] text-slate-400">Mengambil sumber langsung dari halaman provider&hellip;</p>
@@ -890,7 +959,7 @@
   </div>
 
   <button id="discovery-back-to-top" type="button" onclick="scrollDiscoveryToTop()"
-    class="hidden fixed bottom-6 right-6 z-[70] w-11 h-11 rounded-full bg-indigo-600 hover:bg-indigo-500 border border-indigo-400/40 text-white text-xl font-bold shadow-xl transition"
+    class="hidden fixed bottom-6 right-6 z-[70] w-11 h-11 rounded-full bg-sky-500 hover:bg-sky-400 border border-sky-400/40 text-slate-950 text-xl font-bold shadow-xl shadow-sky-500/20 transition"
     title="Back to top" aria-label="Back to top">&#8593;</button>
 
   <!-- TOAST -->
@@ -968,6 +1037,11 @@
     // toast fires, so auto-add is observable even with the modal closed.
     const adultRecentImports = new Map();
     const ADULT_IMPORT_VISIBLE_MS = 10 * 60 * 1000;
+    // Roxxy-style Download Center drawer: one row list shared by the top
+    // monitor and the slide-over, filtered by tab without touching the API.
+    let adultDownloadRows = [];
+    let adultDownloadTab = "all";
+    let adultDownloadCloseTimer = null;
 
     const TASK_LABELS = {
       subtitle_quality_audit: "SUBTITLE QUALITY AUDIT",
@@ -989,6 +1063,10 @@
         }
         if (!document.getElementById("adult-detail").classList.contains("hidden")) {
           closeAdultDetail();
+          return;
+        }
+        if (!document.getElementById("adult-download-drawer").classList.contains("hidden")) {
+          closeAdultDownloads();
           return;
         }
         if (!document.getElementById("discovery-modal").classList.contains("hidden")) {
@@ -1020,6 +1098,8 @@
     }
 
     function closeDiscoveryModal() {
+      const drawer = document.getElementById("adult-download-drawer");
+      if (drawer && !drawer.classList.contains("hidden")) closeAdultDownloads();
       document.getElementById("discovery-modal").classList.add("hidden");
       const topButton = document.getElementById("discovery-back-to-top");
       if (topButton) topButton.classList.add("hidden");
@@ -1059,7 +1139,7 @@
         document.querySelectorAll(".disc-mode-btn").forEach(btn => {
           const isAct = btn.id === "disc-mode-trending";
           btn.className = isAct
-            ? "disc-mode-btn px-3 py-1 rounded-md font-semibold bg-sky-600 text-white"
+            ? "disc-mode-btn px-3 py-1 rounded-lg font-semibold bg-sky-500 text-slate-950"
             : "disc-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white";
         });
       }
@@ -1076,9 +1156,10 @@
       discCategory = cat;
       document.querySelectorAll(".disc-cat-btn").forEach(btn => {
         const isAct = btn.id === `disc-cat-${cat}`;
+        const adult = btn.id === "disc-cat-english_adult";
         btn.className = isAct
-          ? "disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 text-white"
-          : "disc-cat-btn px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:text-white";
+          ? "disc-cat-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-sky-500 text-slate-950 shadow-lg shadow-sky-500/20"
+          : `disc-cat-btn px-3 py-1.5 rounded-full text-xs font-semibold bg-white/5 ${adult ? "text-rose-300" : "text-slate-300"} hover:bg-white/10 hover:text-white`;
       });
 
       const isAdult = cat === "english_adult";
@@ -1108,7 +1189,7 @@
       document.querySelectorAll(".disc-mode-btn").forEach(btn => {
         const isAct = btn.id === "disc-mode-trending";
         btn.className = isAct
-          ? "disc-mode-btn px-3 py-1 rounded-md font-semibold bg-sky-600 text-white"
+          ? "disc-mode-btn px-3 py-1 rounded-lg font-semibold bg-sky-500 text-slate-950"
           : "disc-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white";
       });
       updateDiscoveryClearButtons();
@@ -1123,8 +1204,8 @@
       document.querySelectorAll(".disc-mode-btn").forEach(btn => {
         const isAct = btn.id === `disc-mode-${mode}`;
         btn.className = isAct
-          ? "disc-mode-btn px-3 py-1 rounded-md font-semibold bg-sky-600 text-white"
-          : "disc-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white";
+          ? "disc-mode-btn px-3 py-1 rounded-lg font-semibold bg-sky-500 text-slate-950"
+          : "disc-mode-btn px-3 py-1 rounded-lg font-semibold text-slate-400 hover:text-white";
       });
       updateDiscoveryClearButtons();
       if (mode === "search") {
@@ -1144,7 +1225,7 @@
         document.querySelectorAll(".disc-mode-btn").forEach(btn => {
           const isAct = btn.id === "disc-mode-search";
           btn.className = isAct
-            ? "disc-mode-btn px-3 py-1 rounded-md font-semibold bg-sky-600 text-white"
+            ? "disc-mode-btn px-3 py-1 rounded-lg font-semibold bg-sky-500 text-slate-950"
             : "disc-mode-btn px-3 py-1 rounded-md font-semibold text-slate-400 hover:text-white";
         });
       }
@@ -1413,27 +1494,27 @@
              </div>`;
 
         return `
-          <div class="group bg-slate-950 border ${inLib ? "border-emerald-500/60" : "border-slate-800 hover:border-indigo-500/70"} rounded-xl overflow-hidden flex flex-col transition shadow-md">
-            <div class="relative ${posterAspectClass} bg-slate-900 overflow-hidden">
+          <div class="group poster-card bg-white/[0.02] border ${inLib ? "border-emerald-500/50" : "border-white/10 hover:border-sky-500/50"} rounded-2xl overflow-hidden flex flex-col transition shadow-lg">
+            <div class="relative ${posterAspectClass} bg-black/40 overflow-hidden">
               ${posterHtml}
               <div class="absolute top-2 left-2 flex flex-wrap gap-1">
-                ${item.year ? `<span class="px-1.5 py-0.5 rounded bg-slate-950/90 text-slate-200 text-[10px] font-bold">${escapeHtml(item.year)}</span>` : ""}
-                ${item.rating > 0 ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/90 text-slate-950 text-[10px] font-bold">&#9733; ${Number(item.rating).toFixed(1)}</span>` : ""}
+                ${item.year ? `<span class="px-1.5 py-0.5 rounded-md bg-black/70 backdrop-blur text-slate-200 text-[10px] font-bold">${escapeHtml(item.year)}</span>` : ""}
+                ${item.rating > 0 ? `<span class="px-1.5 py-0.5 rounded-md bg-amber-500/90 text-slate-950 text-[10px] font-bold">&#9733; ${Number(item.rating).toFixed(1)}</span>` : ""}
               </div>
               ${inLib ? `
                 <div class="absolute bottom-2 left-2 right-2">
-                  <span class="px-2 py-0.5 rounded bg-emerald-600/95 text-white text-[10px] font-bold shadow">&#10003; IN LIBRARY (${matches.length})</span>
+                  <span class="px-2 py-0.5 rounded-md bg-emerald-500/95 text-slate-950 text-[10px] font-bold shadow">&#10003; IN LIBRARY (${matches.length})</span>
                 </div>
               ` : ""}
             </div>
 
-            <div class="p-2 flex-1 flex flex-col justify-between gap-1.5 min-h-[112px]">
+            <div class="p-2.5 flex-1 flex flex-col justify-between gap-1.5 min-h-[112px]">
               <div class="min-w-0">
                 <h4 class="text-[11px] font-bold text-white line-clamp-2 leading-snug" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h4>
                 ${overviewText ? `<p class="text-[9px] text-slate-400 line-clamp-1 mt-0.5">${escapeHtml(overviewText)}</p>` : ""}
               </div>
 
-              <button onclick="openDiscoveryCacheCheck(${idx})" class="w-full py-1.5 px-2 rounded-lg ${inLib ? "bg-amber-600 hover:bg-amber-500" : "bg-indigo-600 hover:bg-indigo-500"} text-[11px] font-semibold text-white transition">${inLib ? "&#9889; Check Cache / Upgrade" : "&#128269; Check TorBox Cache"}</button>
+              <button onclick="openDiscoveryCacheCheck(${idx})" class="w-full py-1.5 px-2 rounded-lg ${inLib ? "bg-amber-500 hover:bg-amber-400 text-slate-950" : "bg-sky-500 hover:bg-sky-400 text-slate-950"} text-[11px] font-bold transition">${inLib ? "&#9889; Check Cache / Upgrade" : "&#128269; Check TorBox Cache"}</button>
             </div>
           </div>
         `;
@@ -1474,8 +1555,8 @@
       document.querySelectorAll(".adult-mode-btn").forEach(btn => {
         const isAct = btn.id === `adult-mode-${mode}`;
         btn.className = isAct
-          ? "adult-mode-btn px-2.5 py-1 rounded-md font-semibold bg-rose-600 text-white"
-          : "adult-mode-btn px-2.5 py-1 rounded-md font-semibold text-slate-400 hover:text-white";
+          ? "adult-mode-btn px-2.5 py-1 rounded-lg font-semibold bg-sky-500 text-slate-950"
+          : "adult-mode-btn px-2.5 py-1 rounded-lg font-semibold text-slate-400 hover:text-white";
       });
     }
 
@@ -1596,7 +1677,7 @@
         if (loadWrap) loadWrap.classList.add("hidden");
         grid.innerHTML = `
           <div class="col-span-full py-12 text-center text-xs text-slate-300 space-y-2">
-            <div class="inline-block w-5 h-5 border-2 border-rose-400 border-t-transparent rounded-full animate-spin"></div>
+            <div class="inline-block w-5 h-5 border-2 border-sky-400 border-t-transparent rounded-full animate-spin"></div>
             <div>Memuat katalog ${escapeHtml(adultProvider === "all" ? "semua sumber" : adultProvider)}...</div>
           </div>`;
       }
@@ -1669,7 +1750,7 @@
         return;
       }
       box.innerHTML = warnings.slice(0, 12).map(w => `
-        <div class="text-[10px] text-amber-200 bg-amber-950/40 border border-amber-500/30 rounded px-2 py-1">
+        <div class="text-[10px] text-amber-200 bg-amber-500/[0.08] border border-amber-500/25 rounded-lg px-2 py-1">
           <span class="font-semibold">${escapeHtml(w.provider || "")}</span> &mdash; ${escapeHtml(w.message || w.code || "")}
         </div>`).join("");
     }
@@ -1695,8 +1776,9 @@
             ? "text-rose-300"
             : "text-slate-400";
         const detail = p.manual ? "tempel URL" : p.status === "search_only" ? "cari saja" : "";
-        return `<div class="flex items-start justify-between gap-2 rounded bg-white/[0.03] px-2 py-1 text-[10px]">
-          <span class="font-semibold text-slate-200">${escapeHtml(p.label || p.id)}</span>
+        const dot = p.status === "cooldown" ? "bg-amber-400" : p.status === "blocked" ? "bg-rose-400" : "bg-slate-500";
+        return `<div class="flex items-center justify-between gap-2 rounded-lg bg-white/[0.03] px-2.5 py-1.5 text-[10px]">
+          <span class="flex items-center gap-1.5 font-semibold text-slate-200"><span class="h-1.5 w-1.5 rounded-full ${dot}"></span>${escapeHtml(p.label || p.id)}</span>
           <span class="${cls} text-right">${escapeHtml(label + wait)}${detail ? ` · ${escapeHtml(detail)}` : ""}</span>
         </div>`;
       }).join("");
@@ -1732,19 +1814,19 @@
         const views = formatAdultCount(item.views);
         const rating = Number(item.rating || 0);
         return `
-          <div role="button" tabindex="0" onclick="openAdultDetail(${idx})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAdultDetail(${idx});}" class="group text-left bg-slate-950 border border-slate-800 hover:border-rose-500/70 rounded-xl overflow-hidden flex flex-col transition shadow-md cursor-pointer focus:outline-none focus:ring-2 focus:ring-rose-500/60">
-            <div class="relative aspect-video bg-slate-900 overflow-hidden">
+          <div role="button" tabindex="0" onclick="openAdultDetail(${idx})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openAdultDetail(${idx});}" class="group poster-card text-left bg-white/[0.02] border border-white/10 hover:border-sky-500/50 rounded-2xl overflow-hidden flex flex-col transition shadow-lg cursor-pointer focus:outline-none focus:ring-2 focus:ring-sky-500/60">
+            <div class="relative aspect-video bg-black/40 overflow-hidden">
               ${preview}
               <div class="absolute top-2 left-2 flex flex-wrap gap-1">
-                <span class="px-1.5 py-0.5 rounded bg-slate-950/90 text-rose-200 text-[10px] font-bold">${escapeHtml(item.site_label || item.provider)}</span>
-                ${duration ? `<span class="px-1.5 py-0.5 rounded bg-slate-950/90 text-slate-200 text-[10px] font-bold">${escapeHtml(duration)}</span>` : ""}
-                ${rating > 0 ? `<span class="px-1.5 py-0.5 rounded bg-amber-500/90 text-slate-950 text-[10px] font-bold">&#9733; ${rating.toFixed(1)}</span>` : ""}
+                <span class="px-1.5 py-0.5 rounded-md bg-black/70 backdrop-blur text-rose-200 text-[10px] font-bold">${escapeHtml(item.site_label || item.provider)}</span>
+                ${duration ? `<span class="px-1.5 py-0.5 rounded-md bg-black/70 backdrop-blur text-slate-200 text-[10px] font-bold">${escapeHtml(duration)}</span>` : ""}
+                ${rating > 0 ? `<span class="px-1.5 py-0.5 rounded-md bg-amber-500/90 text-slate-950 text-[10px] font-bold">&#9733; ${rating.toFixed(1)}</span>` : ""}
               </div>
-              ${views ? `<div class="absolute bottom-2 left-2 right-2"><span class="px-1.5 py-0.5 rounded bg-slate-950/90 text-slate-300 text-[10px]">${escapeHtml(views)} tayangan</span></div>` : ""}
+              ${views ? `<div class="absolute bottom-2 left-2 right-2"><span class="px-1.5 py-0.5 rounded-md bg-black/70 backdrop-blur text-slate-300 text-[10px]">${escapeHtml(views)} tayangan</span></div>` : ""}
             </div>
-            <div class="p-2 flex-1 flex flex-col justify-between gap-1.5 min-h-[104px]">
+            <div class="p-2.5 flex-1 flex flex-col justify-between gap-1.5 min-h-[104px]">
               <h4 class="text-[11px] font-bold text-white line-clamp-2 leading-snug" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</h4>
-              <button onclick="event.stopPropagation(); openAdultDetail(${idx})" class="w-full py-1.5 px-2 rounded-lg bg-rose-700 group-hover:bg-rose-600 text-[11px] font-semibold text-white transition">Detail &amp; Sumber Stream</button>
+              <button onclick="event.stopPropagation(); openAdultDetail(${idx})" class="w-full py-1.5 px-2 rounded-lg bg-sky-500 group-hover:bg-sky-400 text-[11px] font-bold text-slate-950 transition">Detail &amp; Sumber Stream</button>
             </div>
           </div>`;
       }).join("");
@@ -1848,7 +1930,7 @@ function adultStreamEsc(value) {
       const cloudState = document.getElementById("adult-cloud-state");
       if (cloudState) {
         cloudState.textContent = "IDLE";
-        cloudState.className = "shrink-0 rounded-md bg-slate-800 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-300";
+        cloudState.className = "shrink-0 rounded-md bg-white/5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-300";
       }
       const cloudStatus = document.getElementById("adult-cloud-status");
       if (cloudStatus) cloudStatus.textContent = "Tidak ada download aktif.";
@@ -2072,7 +2154,7 @@ function adultStreamEsc(value) {
         return;
       }
       list.innerHTML = adultStreams.map((s, i) => `
-        <div class="rounded-xl border border-white/10 bg-white/[0.02] p-3.5 transition hover:border-sky-500/40">
+        <div class="rounded-xl border border-white/10 bg-white/[0.02] p-3.5 transition hover:border-sky-500/40 hover:bg-white/[0.04]">
           <div class="flex flex-wrap items-center justify-between gap-2">
             <div class="text-xs font-bold text-white">${adultStreamEsc(s.name || `Stream ${i + 1}`)}</div>
             <span class="inline-flex items-center gap-1.5">
@@ -2330,7 +2412,7 @@ function adultStreamEsc(value) {
         ? `<div class="mt-1 text-[10px] ${libraryStatus === "failed" ? "text-rose-300" : "text-emerald-300"}">Library: ${adultStreamEsc(entry.library_message || adultStageLabel(libraryStatus))}</div>`
         : "";
       return `
-        <article class="rounded-lg border border-white/10 bg-white/[0.03] p-2.5">
+        <article class="rounded-xl border border-white/10 bg-white/[0.03] p-3">
           <div class="flex items-start justify-between gap-2">
             <div class="min-w-0 text-[11px] font-bold text-white line-clamp-2">${adultStreamEsc(entry.title || "Download")}</div>
             <div class="shrink-0 text-[10px] font-bold ${color}">${adultStreamEsc(stateLabel)}${showPct ? ` · ${pct.toFixed(0)}%` : ""}</div>
@@ -2387,7 +2469,7 @@ function adultStreamEsc(value) {
         statusEl.textContent = `${first.title || "Item"} berhasil masuk Library.`;
         queueEl.innerHTML = imported.map(row => adultQueueRow(row, "imported")).join("");
       } else {
-        setState("IDLE", "bg-slate-800 text-slate-300");
+        setState("IDLE", "bg-white/5 text-slate-300");
         statusEl.textContent = "Tidak ada download aktif.";
         queueEl.innerHTML = "";
       }
@@ -2427,9 +2509,11 @@ function adultStreamEsc(value) {
       const activeIds = new Set(torboxRows.map(row => String(row.id || row.title || "")));
       const importedRows = adultRecentImportRows().filter(row => !activeIds.has(String(row.id || row.title || "")));
       const rows = torboxRows.concat(localRows, importedRows);
+      adultDownloadRows = rows;
       // The monitor stays on screen above the catalogue so progress and the
       // Library auto-add remain visible after the card modal is closed.
       wrap.classList.remove("hidden");
+      renderAdultDownloadDrawer();
       if (!rows.length) {
         list.innerHTML = "";
         if (count) count.textContent = "";
@@ -2438,7 +2522,79 @@ function adultStreamEsc(value) {
       }
       if (empty) empty.classList.add("hidden");
       if (count) count.textContent = `${rows.length} aktif`;
+      // Keep the top strip compact: newest rows first, the rest in the drawer.
+      const topRows = rows.slice(0, 3);
+      list.innerHTML = topRows.map(row => adultQueueRow(row, row._kind || (row.id ? "local" : "torbox"))).join("")
+        + (rows.length > topRows.length
+          ? `<button type="button" onclick="openAdultDownloads()" class="col-span-full rounded-xl border border-dashed border-white/10 py-2 text-[10px] font-semibold text-sky-300 transition hover:border-sky-500/40 hover:text-sky-200">+${rows.length - topRows.length} unduhan lain &middot; buka Download Center</button>`
+          : "");
+    }
+
+    function adultDownloadKind(row) {
+      const kind = row._kind || (row.id ? "local" : "torbox");
+      if (kind === "imported" || kind === "importing") return "torbox";
+      return kind === "local" ? "local" : "torbox";
+    }
+
+    function renderAdultDownloadDrawer() {
+      const list = document.getElementById("adult-download-drawer-list");
+      const count = document.getElementById("adult-download-drawer-count");
+      if (!list) return;
+      document.querySelectorAll("[data-adult-download-tab]").forEach(btn => {
+        const isAct = btn.getAttribute("data-adult-download-tab") === adultDownloadTab;
+        btn.className = isAct
+          ? "rounded-lg bg-sky-500 py-2 text-[11px] font-bold text-slate-950 transition"
+          : "rounded-lg py-2 text-[11px] font-bold text-slate-400 transition hover:text-white";
+      });
+      const rows = adultDownloadTab === "all"
+        ? adultDownloadRows
+        : adultDownloadRows.filter(row => adultDownloadKind(row) === adultDownloadTab);
+      if (count) count.textContent = `${rows.length} aktif`;
+      if (!rows.length) {
+        list.innerHTML = '<p class="rounded-xl border border-dashed border-white/10 p-6 text-center text-xs text-slate-500">Belum ada unduhan aktif.</p>';
+        return;
+      }
       list.innerHTML = rows.map(row => adultQueueRow(row, row._kind || (row.id ? "local" : "torbox"))).join("");
+    }
+
+    function openAdultDownloads() {
+      const drawer = document.getElementById("adult-download-drawer");
+      const overlay = document.getElementById("adult-download-overlay");
+      if (!drawer || !overlay) return;
+      if (adultDownloadCloseTimer) {
+        clearTimeout(adultDownloadCloseTimer);
+        adultDownloadCloseTimer = null;
+      }
+      adultDownloadTab = "all";
+      renderAdultDownloadDrawer();
+      overlay.classList.remove("hidden");
+      drawer.classList.remove("hidden");
+      drawer.classList.add("flex");
+      requestAnimationFrame(() => {
+        overlay.classList.remove("opacity-0");
+        drawer.classList.remove("translate-x-full");
+      });
+      refreshAdultDownloads();
+    }
+
+    function closeAdultDownloads() {
+      const drawer = document.getElementById("adult-download-drawer");
+      const overlay = document.getElementById("adult-download-overlay");
+      if (!drawer || !overlay) return;
+      overlay.classList.add("opacity-0");
+      drawer.classList.add("translate-x-full");
+      adultDownloadCloseTimer = setTimeout(() => {
+        adultDownloadCloseTimer = null;
+        drawer.classList.add("hidden");
+        drawer.classList.remove("flex");
+        overlay.classList.add("hidden");
+      }, 220);
+    }
+
+    function setAdultDownloadTab(tab) {
+      if (!["all", "torbox", "local"].includes(tab)) return;
+      adultDownloadTab = tab;
+      renderAdultDownloadDrawer();
     }
 
     async function refreshAdultDownloads() {
