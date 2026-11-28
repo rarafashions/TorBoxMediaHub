@@ -599,6 +599,33 @@ def _register_roxxy_media(task: Dict[str, Any]) -> Dict[str, Any]:
     }
     media_id = db.upsert_media_item(media_data)
     cache_library_poster(media_id, media_data)
+
+    # D3 owns the row it just wrote, so the classifier verdict is recorded here
+    # instead of being left "pending" for a later batch pass. A locked/manual row
+    # keeps its verdict; only the metadata fields above are refreshed.
+    search_title = (
+        series_title if (season_value or episode_value) and series_title else title
+    )
+    if category in db.VALID_CATEGORIES and category != "uncategorized":
+        try:
+            db.save_classification_result(
+                media_id,
+                {
+                    "classification_status": "classified",
+                    "detected_category": category,
+                    "normalized_title": search_title,
+                    "classification_method": identification.get("classification_method")
+                    or "roxxy_d2",
+                    "category_confidence": identification.get("confidence"),
+                    "signals": identification.get("signals") or [],
+                    "classifier_version": identification.get("classifier_version"),
+                },
+                changed_by="roxxy_d3",
+                note="Roxxy D3 library registration",
+            )
+        except PermissionError:
+            pass
+
     return {"media_id": media_id, "unique_key": media_data["unique_key"],
             "title": title, "category": category}
 

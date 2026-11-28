@@ -2331,7 +2331,7 @@
   const TASK_ENDPOINTS = {
     sync: { path: "/api/tasks/sync-torbox", label: "Sinkronisasi TorBox", icon: ICON.refresh },
     scan: { path: "/api/tasks/scan-local", label: "Scan folder lokal", icon: ICON.folder },
-    classify: { path: "/api/tasks/classify-pending", label: "Klasifikasi pending", icon: ICON.spark },
+    classify: { path: "/api/tasks/classify-pending", label: "Klasifikasi ulang", icon: ICON.spark },
     enrich: { path: "/api/tasks/batch-enrich", label: "Enrich metadata", icon: ICON.film },
     subtitle: { path: "/api/tasks/batch-subtitle", label: "Cari subtitle", icon: ICON.list },
   };
@@ -2945,7 +2945,7 @@
             el("p", {
               class: "panel__note",
               text:
-                "“Belum tercatat” bukan antrean: kategori sudah disimpan oleh jalur impor/enrich, hanya status klasifikasi otomatis yang tidak pernah ditulis. Tombol Klasifikasi ulang memproses ulang item yang kategorinya masih bisa berubah.",
+                "“Belum tercatat” berarti jalur impor/enrich menyimpan kategori tanpa verdict klasifikasi. Tombol Klasifikasi ulang mencatat verdict untuk semua baris itu dan hanya memindahkan kategori bila buktinya cukup.",
             })
           )
         ),

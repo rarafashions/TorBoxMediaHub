@@ -322,6 +322,47 @@ class EpisodeRegistrationTests(unittest.TestCase):
         self.assertEqual(captured["series_title"], SERIES_NAME)
         self.assertIn("E219", captured["title"])
 
+    def test_registration_records_classification_verdict_for_episode(self):
+        captured = {}
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "episode-219.mp4")
+            with open(path, "wb") as handle:
+                handle.write(b"x")
+            task = {
+                "file_path": path,
+                "file_size": 1,
+                "metadata": {
+                    "name": f"{SERIES_NAME} - E219 - Multiple Subtitles",
+                    "series_title": SERIES_NAME,
+                    "season_num": 1,
+                    "episode_num": 219,
+                    "_roxxySource": "donghua",
+                },
+                "validation": {
+                    "size": 1,
+                    "d2_identification": {
+                        "category": "donghua",
+                        "classification_status": "classified",
+                        "classification_method": "roxxy_source_donghua",
+                        "confidence": 100,
+                        "classifier_version": engine.classification_engine.CLASSIFIER_VERSION,
+                    },
+                },
+            }
+            with patch.object(
+                engine.db, "upsert_media_item", side_effect=lambda data: captured.update(data) or 77
+            ), patch.object(engine, "cache_library_poster"), patch.object(
+                engine.db, "save_classification_result", return_value=None
+            ) as persist:
+                engine._register_roxxy_media(task)
+
+        verdict = persist.call_args.args[1]
+        self.assertEqual(verdict["classification_status"], "classified")
+        self.assertEqual(verdict["detected_category"], "donghua")
+        # An episode searches by its series name, never by the episode label.
+        self.assertEqual(verdict["normalized_title"], SERIES_NAME)
+        self.assertEqual(verdict["classifier_version"], engine.classification_engine.CLASSIFIER_VERSION)
+
 
 if __name__ == "__main__":
     unittest.main()

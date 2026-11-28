@@ -165,12 +165,21 @@ class SourceCategoryTests(unittest.TestCase):
             with patch.object(
                 engine.db, "upsert_media_item",
                 side_effect=lambda data: captured.update(data) or 55,
-            ), patch.object(engine, "cache_library_poster"):
+            ), patch.object(engine, "cache_library_poster"), patch.object(
+                engine.db, "save_classification_result", return_value=None
+            ) as persist:
                 result = engine._register_roxxy_media(task)
 
         self.assertEqual(result["media_id"], 55)
         self.assertEqual(captured["content_category"], "indo_movie")
         self.assertEqual(captured["is_adult"], 0)
+        # D3 owns the row, so the verdict must not stay "pending" for a later batch.
+        persist.assert_called_once()
+        self.assertEqual(persist.call_args.args[0], 55)
+        verdict = persist.call_args.args[1]
+        self.assertEqual(verdict["classification_status"], "classified")
+        self.assertEqual(verdict["detected_category"], "indo_movie")
+        self.assertEqual(persist.call_args.kwargs["changed_by"], "roxxy_d3")
 
 
 class AnalyzeOptionsTests(unittest.TestCase):

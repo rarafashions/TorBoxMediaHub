@@ -39,7 +39,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DA"  # single source of truth; templates render this
+APP_VERSION = "v1.3DB"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -885,6 +885,41 @@ def _guard_adult_reclassification(
     return result
 
 
+_EPISODIC_CATEGORIES = {"tv_show", "anime", "donghua"}
+
+
+def _reclassification_category_change_allowed(
+    old_category: str,
+    result: Dict[str, Any],
+) -> bool:
+    """Decide whether a batch verdict may move an existing row's category.
+
+    Every candidate gets its verdict recorded, but the category only moves when
+    the previous bucket was provisional (uncategorized), when an adult surface
+    is recovered, or inside the episodic family. Provider/manifest categories
+    (IndonesiaMovies, Donghua) are never rewritten here; a weaker verdict for
+    those rows becomes Needs Review through ``_guard_adult_reclassification``.
+    """
+    if result.get("classification_status") != "classified":
+        return False
+    new_category = result.get("detected_category")
+    if not new_category:
+        return False
+    old_category = str(old_category or "uncategorized")
+    if old_category in _STICKY_MANIFEST_CATEGORIES:
+        return False
+    if old_category == "uncategorized":
+        return True
+    if old_category in _ADULT_CATEGORIES:
+        # Any adult demotion was already turned into Needs Review by the guard.
+        return True
+    if old_category == "general_movie":
+        return new_category in _EPISODIC_CATEGORIES or new_category in _ADULT_CATEGORIES
+    if old_category in _EPISODIC_CATEGORIES:
+        return new_category in _EPISODIC_CATEGORIES
+    return False
+
+
 def _get_lan_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1403,7 +1438,13 @@ def _scan_local_folders_worker(auto_enrich: bool = False) -> None:
 
 
 def _classify_pending_worker() -> None:
-    """Re-run the classifier for new and outdated verdicts on the curated surfaces."""
+    """Record a classifier verdict for rows whose category has no stored one.
+
+    Import/enrich paths write ``content_category`` without touching the
+    classification status, which left hundreds of rows permanently "pending".
+    This pass persists the verdict for every candidate and only moves a category
+    when the evidence is provable (see ``_reclassification_category_change_allowed``).
+    """
     try:
         candidates = db.get_reclassify_candidates(limit=5000)
         total = len(candidates)
@@ -1430,31 +1471,21 @@ def _classify_pending_worker() -> None:
                     metadata=metadata,
                 )
                 old_category = str(item.get("content_category") or "uncategorized")
-                if old_category in db.RECLASSIFY_CATEGORIES:
-                    result = _guard_adult_reclassification(item, result)
-                    saved = db.save_classification_result(
-                        int(item["id"]), result,
-                        changed_by="classifier",
-                        note="Batch reclassification",
-                    )
-                elif (
-                    result.get("classification_status") == "classified"
-                    and result.get("detected_category") == "indo"
-                    and old_category not in _STICKY_MANIFEST_CATEGORIES
-                ):
-                    # Recover an Indo item that was stored in another bucket, but
-                    # never move a non-Indo row between non-adult categories and
-                    # never move a manifest category (IndonesiaMovies/Donghua).
-                    saved = db.save_classification_result(
-                        int(item["id"]), result,
-                        changed_by="classifier",
-                        note="Indo recovery during batch reclassification",
-                    )
-                else:
-                    db.mark_classifier_version(int(item["id"]))
-                    saved = None
+                result = _guard_adult_reclassification(item, result)
+                # Record a verdict for every candidate. The category only moves
+                # when the bucket was provisional or an adult/episodic verdict is
+                # provable; provider-canonical titles are never replaced.
+                saved = db.save_classification_result(
+                    int(item["id"]), result,
+                    changed_by="classifier",
+                    note="Batch reclassification",
+                    apply_category=_reclassification_category_change_allowed(old_category, result),
+                    apply_title=not bool(
+                        item.get("has_metadata") or item.get("title_is_manual")
+                    ),
+                )
                 if saved:
-                    if result.get("classification_status") == "classified":
+                    if saved.get("classification_status") == "classified":
                         classified_count += 1
                     else:
                         review_count += 1

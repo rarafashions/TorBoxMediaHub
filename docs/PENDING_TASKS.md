@@ -1,6 +1,6 @@
 # Pending Tasks
 
-Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **345 passed, 63 subtests passed** (0 gagal).
+Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-header` -> **357 passed, 63 subtests passed** (0 gagal).
 
 ---
 
@@ -44,15 +44,16 @@ Status per **28 November 2026**. Baseline uji: `python -m pytest tests -q --no-h
 
 | 35 | Parser judul + kandidat TMDb bertingkat + statistik jujur (Langkah 1-2 audit DB) | `metadata_engine.py`, `static/ui/home.js`, `static/ui/app.css`, `tests/test_metadata_provider_fallbacks.py` | `_trim_release_tail()` membuang token rilis di ujung (`HQ`, `RETAIL`, `DKSUBS`, `NF`) dan label bahasa (`Hindi`, ...), serta memotong blurb `Subtitle Indonesia ...`; varian itu hanya dipakai setelah judul persis gagal dan batas kandidat naik 4 -> 6. `_search_title_candidates()` mencoba judul hasil parse, lalu folder induk dan alias `series_title`/`title` yang sudah tersimpan; judul manual/locked tetap tunggal. Hasil dengan API key nyata: `Apocalypse Z New World HQ`, `Masters Of The Universe RETAIL DKSUBS`, dan `Barfi Hindi` menemukan TMDb lewat varian bersih, dan enam episode LOTR Italia menemukan serial Inggris dari folder induk. Statistik v2: tile **Cover** memakai `has_poster`, persentase subtitle memakai denominator non-adult (kecuali `indo`, `indo_movie`, `english_adult`), label status menjadi `belum tercatat` + catatan bahwa itu bukan antrean, filter/pil `Metadata` menjadi `Cover`, tombol `Klasifikasi ulang`. Tanpa perubahan skema DB. Tes: 7 baru (345 passed, 63 subtests) + harness jsdom `ALL CHECKS PASSED`. Verifikasi live setelah restart: 10 baris target ter-enrich (#10-15, #271, #272, #295, #299) dengan poster tersimpan, `has_metadata` 413 -> 423; enam episode LOTR menyatu ke `series_title` Inggris, tetapi S3E1-6 masih punya 2-4 baris duplikat (rilis Italia vs Inggris) yang belum di-dedupe. AniList juga mencoba varian judul bersih bila sufiks rilis menggagalkan pencarian. |
 
+| 36 | Satu jalur persist verdict klasifikasi (Langkah 3 audit DB) | `database_manager.py`, `app.py`, `roxxy_download_engine.py`, `static/ui/home.js`, `tests/test_classification_persistence.py` | (a) `save_classification_result()` menerima `apply_category`/`apply_title`; verdict tetap dicatat (status, method, confidence, signals, version) walau kategori atau judul kanonik tidak boleh berubah. (b) `get_reclassify_candidates()` selalu mengembalikan baris `pending` meski `classifier_version` sudah aktif, karena pending berarti verdict belum pernah ditulis; `mark_classifier_version()` tidak lagi bisa "menghapus" baris pending. (c) `_classify_pending_worker()` mencatat verdict untuk **semua** kandidat, lalu `_reclassification_category_change_allowed()` hanya memindahkan kategori bila bucket lama `uncategorized`, permukaan adult dipulihkan, atau penyempurnaan di dalam keluarga episodic (`tv_show`/`anime`/`donghua`); kategori manifest (`indo_movie`, `donghua`) tidak pernah ditulis ulang dan verdict yang lebih lemah menjadi Needs Review lewat `_guard_adult_reclassification()`. Judul `normalized_title` hanya diganti untuk baris tanpa metadata atau judul manual. (d) D3 `_register_roxxy_media()` menyimpan verdict D2 (`changed_by=roxxy_d3`, judul pencarian = nama seri untuk episode), sehingga unduhan Roxxy tidak lagi lahir `pending`; baris yang dikunci manual tetap dipertahankan. Tes: 12 baru + 1 tes lama diperbarui ke kontrak baru (357 passed, 63 subtests). |
+
 ---
 
 ## Tersisa
 
-### Audit DB - rencana lanjutan (Langkah 3-5)
+### Audit DB - rencana lanjutan (Langkah 4-5)
 
-Audit DB live 28 November 2026 (585 baris) menemukan empat sumber masalah yang belum dikerjakan:
+Audit DB live 28 November 2026 (585 baris) menemukan empat sumber masalah; dua sudah dikerjakan di Langkah 1-3, dua tersisa:
 
-- **Status klasifikasi tidak pernah ditulis enrich/D3.** 384 baris `pending` sudah punya `classifier_version=d2-multicat-5`, jadi `get_reclassify_candidates()` = 0 dan tombol Klasifikasi ulang tidak mengubah apa pun. `_classify_pending_worker()` hanya menyimpan verdict untuk `uncategorized/indo/english_adult`; `_register_roxxy_media()` (D3) tidak memanggil `save_classification_result()`. Perlu satu `persist_classification()` bersama.
 - **`general_movie` menampung konten adult.** 54 dari 81 `general_movie` tanpa cover, mayoritas adult Indonesia/Inggris dan JAV tanpa kode. Penyebab: aturan `title_plus_year` (conf 82) setelah engine adult gagal, fallback `filename_parser` di metadata_engine, dan lexicon Indo yang sengaja tanpa kata eksplisit. Perlu lexicon adult terpisah dari kamus Discovery Indonesia Movies.
 - **Subtitle batch memproses `english_adult`.** Batch hanya mengecualikan `indo`/`indo_movie`; 119 item English Adult mustahil match dan menurunkan persentase. Perlu pengecualian yang sama seperti statistik v2.
 - **Serial = baris, bukan judul.** 118 baris `tv_show` hanya 9 `series_title` unik (50 grup duplikat/244 baris). Perlu dedupe/mergrup saat impor atau tampilan.

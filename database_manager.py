@@ -872,9 +872,18 @@ def save_classification_result(
     changed_by: str = "classifier",
     note: Optional[str] = None,
     force: bool = False,
+    apply_category: bool = True,
+    apply_title: bool = True,
     conn: Optional[sqlite3.Connection] = None,
 ) -> Optional[Dict[str, Any]]:
     """Persist a classifier result; Needs Review never overwrites the current category.
+
+    ``apply_category=False`` records the verdict (status, method, confidence,
+    signals, version) while keeping the stored category — used when a row's
+    category is authoritative (manifest lock, provider metadata) but its
+    classification status was never written. ``apply_title=False`` keeps the
+    stored search title, so a provider-canonical title is not replaced by a
+    filename guess.
 
     Pass ``conn`` to reuse a caller-managed transaction (the caller commits).
     Manual classifications are only overwritten when ``force=True``.
@@ -910,7 +919,10 @@ def save_classification_result(
         if old.get("classification_status") == "manually_classified" and not force:
             raise PermissionError("This media classification is manual; pass force=True to override.")
 
-        new_category = category if category is not None else old["content_category"]
+        new_category = (
+            category if (category is not None and apply_category) else old["content_category"]
+        )
+        new_title = normalized_title if apply_title else old.get("normalized_title")
         new_status = status
         conn.execute(
             """UPDATE media_items SET
@@ -925,13 +937,13 @@ def save_classification_result(
                 classification_updated_at = ?,
                 updated_at = ?
             WHERE id = ?""",
-            (normalized_title, new_category,
+            (new_title, new_category,
              int(new_category in ("jav", "english_adult", "indo")), new_status, method, confidence,
              signals_json, version, now, now, media_id),
         )
         changed = (
             old.get("content_category") != new_category
-            or old.get("normalized_title") != normalized_title
+            or old.get("normalized_title") != new_title
             or old.get("classification_status") != new_status
             or old.get("classification_method") != method
             or old.get("category_confidence") != confidence
@@ -947,7 +959,7 @@ def save_classification_result(
                     changed_by, note, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (media_id, old.get("content_category"), new_category,
-                 old.get("normalized_title"), normalized_title,
+                 old.get("normalized_title"), new_title,
                  old.get("classification_status"), new_status,
                  int(old.get("classification_locked") or 0),
                  int(old.get("classification_locked") or 0),
@@ -1092,18 +1104,19 @@ def get_pending_classification_candidates(limit: int = 500) -> List[Dict[str, An
     return [serialize_row(r, pl_map) for r in rows]
 
 
-# Reclassification always applies to the surfaces the product still curates by
-# keyword. Rows in TV Show, Anime, Donghua, and General Movie are only rewritten
-# when the new verdict is Indo, so an Indo item stored in the wrong bucket is
-# recovered without churning the other categories.
-RECLASSIFY_CATEGORIES = ("uncategorized", "indo", "english_adult")
+# Batch reclassification records a verdict for every candidate. Which categories
+# may actually move is decided in app._reclassification_category_change_allowed():
+# provisional buckets accept a verdict, adult surfaces can be recovered, the
+# episodic family can be refined, and manifest-locked categories never move.
 
 
 def get_reclassify_candidates(limit: int = 5000) -> List[Dict[str, Any]]:
-    """Return locked-free rows whose stored verdict predates the active classifier.
+    """Return locked-free rows that need a verdict recorded.
 
-    This includes already-categorized rows, which the pending-only query never
-    revisits. Rows the user classified manually are excluded by status.
+    Includes rows whose stored verdict predates the active classifier and every
+    row still in ``pending``: a pending status means the category was written by
+    an import/enrich path that never recorded the classifier verdict, so the
+    version stamp alone cannot retire it.
     """
     safe_limit = max(1, min(int(limit), 5000))
     version = _classifier_version()
@@ -1112,7 +1125,10 @@ def get_reclassify_candidates(limit: int = 5000) -> List[Dict[str, Any]]:
             """SELECT * FROM media_items
                WHERE classification_locked = 0
                  AND classification_status IN ('pending', 'classified', 'needs_review')
-                 AND COALESCE(classifier_version, '') <> ?
+                 AND (
+                     COALESCE(classifier_version, '') <> ?
+                     OR classification_status = 'pending'
+                 )
                ORDER BY id ASC LIMIT ?""",
             (version, safe_limit),
         ).fetchall()
@@ -1123,8 +1139,9 @@ def get_reclassify_candidates(limit: int = 5000) -> List[Dict[str, Any]]:
 def mark_classifier_version(media_id: int, version: Optional[str] = None) -> bool:
     """Stamp the active classifier revision without changing category or status.
 
-    Used for rows outside the curated surfaces whose verdict was computed but
-    intentionally not applied, so the next pass does not process them again.
+    This records only the revision; a row left in ``pending`` still returns from
+    ``get_reclassify_candidates()`` because a missing verdict is the signal that
+    matters. Callers should prefer ``save_classification_result()`.
     """
     now = datetime.now().isoformat(timespec="seconds")
     with get_connection() as conn:

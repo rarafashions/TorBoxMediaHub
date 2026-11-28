@@ -218,14 +218,48 @@ class ClassificationDatabaseOperationsTests(ClassificationDatabaseFixtureMixin, 
         self.assertEqual(saved["classifier_version"], classifier.CLASSIFIER_VERSION)
         self.assertNotIn("stale-1", [c["unique_key"] for c in db.get_reclassify_candidates()])
 
-    def test_mark_classifier_version_excludes_row_without_changing_category(self):
+    def test_mark_classifier_version_keeps_pending_row_eligible(self):
         db.migrate_classification_schema()
         media_id = self._insert_reclass_row("mark-1", category="tv_show")
         self.assertTrue(db.mark_classifier_version(media_id))
         item = db.get_media_item(media_id)
         self.assertEqual(item["content_category"], "tv_show")
         self.assertEqual(item["classifier_version"], classifier.CLASSIFIER_VERSION)
-        self.assertNotIn("mark-1", [c["unique_key"] for c in db.get_reclassify_candidates()])
+        # A version stamp cannot retire a row whose verdict was never recorded.
+        self.assertIn("mark-1", [c["unique_key"] for c in db.get_reclassify_candidates()])
+
+    def test_stamped_pending_row_stays_a_reclassify_candidate(self):
+        db.migrate_classification_schema()
+        media_id = self._insert_reclass_row("stamped-1", category="tv_show")
+        db.mark_classifier_version(media_id)
+        keys = [c["unique_key"] for c in db.get_reclassify_candidates()]
+        self.assertIn("stamped-1", keys)
+
+    def test_save_classification_records_status_without_touching_category_or_title(self):
+        db.migrate_classification_schema()
+        media_id = self._insert_reclass_row("keep-1", category="tv_show")
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE media_items SET normalized_title = ? WHERE id = ?",
+                ("Canonical Provider Title", media_id),
+            )
+        saved = db.save_classification_result(
+            media_id,
+            {
+                "classification_status": "classified",
+                "detected_category": "general_movie",
+                "normalized_title": "Filename Guess",
+                "classification_method": "title_plus_year",
+                "category_confidence": 82,
+                "signals": [],
+            },
+            apply_category=False,
+            apply_title=False,
+        )
+        self.assertEqual(saved["content_category"], "tv_show")
+        self.assertEqual(saved["normalized_title"], "Canonical Provider Title")
+        self.assertEqual(saved["classification_status"], "classified")
+        self.assertEqual(saved["classification_method"], "title_plus_year")
 
     def test_reclassify_skips_manual_classifications(self):
         db.migrate_classification_schema()
