@@ -423,6 +423,27 @@
   flex: none;
 }
 
+/* Badge "WAS IN LIBRARY": judul pernah ada, lalu dihapus. */
+.card__lib-badge--was {
+  background: rgba(245, 158, 11, 0.94);
+  color: #2a1700;
+}
+
+.tag--was {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  color: #fbbf24;
+}
+
+.tag--was .btn__svg {
+  width: 11px;
+  height: 11px;
+  flex: none;
+}
+
 .tag--lib {
   display: inline-flex;
   align-items: center;

@@ -41,7 +41,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DS"  # single source of truth; templates render this
+APP_VERSION = "v1.3DT"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -383,11 +383,18 @@ def delete_media_physical(
                     report["warnings"].append(f"TorBox delete request error: {exc}")
 
     # 3. Remove from SQLite database (and playlist links)
+    # Record a tombstone first: the catalog badge uses it to show
+    # "WAS IN LIBRARY" once the row itself is gone.
+    report["tombstoned"] = bool(
+        db.add_media_tombstone(item, reason="physical_delete")
+    )
     with db.get_connection() as conn:
         conn.execute("DELETE FROM playlist_items WHERE media_id = ?", (media_id,))
         conn.execute("DELETE FROM media_items WHERE id = ?", (media_id,))
         conn.commit()
 
+    # The catalog badge must flip from IN LIBRARY to WAS IN LIBRARY at once.
+    invalidate_library_index()
     return report
 
 
@@ -3427,6 +3434,7 @@ def api_bootstrap():
             "stats": db.get_telemetry_stats(),
             "items": _public_items(items),
             "playlists": _public_playlists(db.get_all_playlists()),
+            "marks": db.get_media_tombstone_marks(),
             "task": TASK_MGR.status(),
         }
     )
@@ -4673,6 +4681,34 @@ def _adult_library_matches(title: str) -> List[Dict[str, Any]]:
     return matches
 
 
+def _adult_tombstone_matches(title: str) -> List[Dict[str, Any]]:
+    """Removed Library items with the same adult title ("WAS IN LIBRARY")."""
+    wanted = " ".join(str(title or "").split()).casefold()
+    if len(wanted) < 4:
+        return []
+    rows = db.query_media_tombstones(
+        search=str(title or "").strip()[:120], category="english_adult", limit=20
+    )
+    matches: List[Dict[str, Any]] = []
+    for row in rows or []:
+        candidate = " ".join(
+            str(row.get("title") or row.get("file_name") or "").split()
+        ).casefold()
+        if not candidate:
+            continue
+        if candidate == wanted or wanted in candidate:
+            matches.append(
+                {
+                    "title": row.get("title") or row.get("file_name"),
+                    "file_name": row.get("file_name") or "",
+                    "deleted_at": row.get("deleted_at") or "",
+                }
+            )
+        if len(matches) >= 5:
+            break
+    return matches
+
+
 @app.route("/api/adult/detail", methods=["GET"])
 def api_adult_detail():
     """Card detail plus optional TPDB metadata and an in-library hint."""
@@ -4707,6 +4743,7 @@ def api_adult_detail():
             "item": item,
             "tpdb": metadata,
             "in_library": _adult_library_matches(item.get("title") or ""),
+            "was_in_library": _adult_tombstone_matches(item.get("title") or ""),
         }
     )
 
@@ -5176,7 +5213,14 @@ def api_media_list():
         classification_status=request.args.get("classification_status", "all"),
     )
     _attach_subtitle_track_summaries(items)
-    return jsonify({"ok": True, "items": _public_items(items), "stats": db.get_telemetry_stats()})
+    return jsonify(
+        {
+            "ok": True,
+            "items": _public_items(items),
+            "marks": db.get_media_tombstone_marks(),
+            "stats": db.get_telemetry_stats(),
+        }
+    )
 
 
 @app.route("/api/media/<int:media_id>/poster", methods=["GET"])

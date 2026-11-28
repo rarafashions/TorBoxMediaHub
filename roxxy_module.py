@@ -312,6 +312,10 @@ _LIBRARY_SELECT = (
     "id, title, file_name, parent_name, source_type, content_category, "
     "has_metadata, has_subtitle, season_num, episode_num, code_id"
 )
+# Tombstones keep the identity fields but carry no stream URL or media id.
+_TOMBSTONE_SELECT = (
+    "title, file_name, code_id, series_title, season_num, episode_num, deleted_at"
+)
 # Badge checks happen once per card, so the index is shared for a short window.
 _LIBRARY_INDEX_TTL_SECONDS = 20.0
 _library_index_cache: Dict[str, Any] = {"index": None, "at": 0.0}
@@ -405,7 +409,17 @@ def _load_library_index() -> Dict[str, Dict[str, Any]]:
             rows = conn.execute(
                 f"SELECT {_LIBRARY_SELECT} FROM media_items ORDER BY id DESC"
             ).fetchall()
+            try:
+                tombstone_rows = conn.execute(
+                    f"SELECT {_TOMBSTONE_SELECT} FROM media_tombstones ORDER BY id DESC"
+                ).fetchall()
+            except Exception:
+                # Older database snapshots may predate the tombstone table.
+                tombstone_rows = []
         index = _build_library_index(rows)
+        # Removed titles live alongside the live index so one cache build and
+        # one TTL invalidation cover both badge states.
+        index["tombstones"] = _build_library_index(tombstone_rows)
         _library_index_cache["index"] = index
         _library_index_cache["at"] = now
         return index
@@ -443,6 +457,24 @@ def _library_match_for_meta(
     return None
 
 
+def _tombstone_index(index: Any) -> Dict[str, Dict[str, Any]]:
+    """Nested removed-title index attached by ``_load_library_index``."""
+    if not isinstance(index, dict):
+        return {}
+    tombstones = index.get("tombstones")
+    return tombstones if isinstance(tombstones, dict) else {}
+
+
+def _library_state_for_meta(meta: Any, index: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Badge state for a meta: in library, removed earlier, or never seen."""
+    match = _library_match_for_meta(meta, index)
+    if match:
+        return {"state": "in_library", "match": match, "was_match": None}
+    was_match = _library_match_for_meta(meta, _tombstone_index(index))
+    state = "was_in_library" if was_match else "not_in_library"
+    return {"state": state, "match": None, "was_match": was_match}
+
+
 def _episode_library_match(
     series_name: Any,
     season: Any,
@@ -474,6 +506,7 @@ def _episode_library_match(
 
 
 _EPISODE_MATCH_FIELDS = ("id", "title", "file_name", "season_num", "episode_num")
+_TOMBSTONE_MATCH_FIELDS = ("title", "file_name", "season_num", "episode_num", "deleted_at")
 
 
 def _annotate_episodes(meta: Dict[str, Any], index: Dict[str, Dict[str, Any]]) -> bool:
@@ -482,13 +515,29 @@ def _annotate_episodes(meta: Dict[str, Any], index: Dict[str, Dict[str, Any]]) -
     if not series:
         return False
     series_name = str(meta.get("name") or "")
+    tombstones = _tombstone_index(index)
     owned = 0
     for group in series["seasons"]:
         for episode in group["episodes"]:
             match = _episode_library_match(
                 series_name, episode["season"], episode["episode"], episode["title"], index
             )
+            was_match = None
+            if match is None and tombstones:
+                was_match = _episode_library_match(
+                    series_name,
+                    episode["season"],
+                    episode["episode"],
+                    episode["title"],
+                    tombstones,
+                )
             episode["in_library"] = match is not None
+            episode["was_in_library"] = was_match is not None
+            episode["library_state"] = (
+                "in_library"
+                if match
+                else ("was_in_library" if was_match else "not_in_library")
+            )
             if match:
                 owned += 1
                 episode["library_match"] = {
@@ -497,6 +546,14 @@ def _annotate_episodes(meta: Dict[str, Any], index: Dict[str, Dict[str, Any]]) -
                 episode["library_match"]["match_reason"] = match.get("match_reason")
             else:
                 episode["library_match"] = None
+            episode["was_library_match"] = (
+                {
+                    field: was_match.get(field)
+                    for field in _TOMBSTONE_MATCH_FIELDS
+                }
+                if was_match
+                else None
+            )
     series["library_count"] = owned
     meta["series"] = series
     meta["is_series"] = True
@@ -683,8 +740,12 @@ def api_catalog(catalog_type: str, catalog_id: str):
         for item in metas:
             item["jav_code"] = _extract_code(f"{item.get('id','')} {item.get('name','')} {item.get('description','')}")
             # Show the green badge on the grid itself so an owned title is
-            # visible before the user opens the detail drawer.
-            item["in_library"] = _library_match_for_meta(item, index) is not None
+            # visible before the user opens the detail drawer. A removed title
+            # keeps a muted "WAS IN LIBRARY" badge instead of vanishing.
+            state = _library_state_for_meta(item, index)
+            item["library_state"] = state["state"]
+            item["in_library"] = state["state"] == "in_library"
+            item["was_in_library"] = state["state"] == "was_in_library"
         return jsonify({"ok": True, "metas": metas, "cacheMaxAge": data.get("cacheMaxAge")})
     except Exception as exc:
         return jsonify({"ok": False, "error": _safe_error(exc)}), 502
@@ -699,9 +760,12 @@ def api_meta(meta_type: str, meta_id: str):
         meta = data.get("meta") or {}
         meta["jav_code"] = _extract_code(f"{meta.get('id','')} {meta.get('name','')} {meta.get('description','')}")
         index = _load_library_index()
-        match = _library_match_for_meta(meta, index)
-        meta["in_library"] = match is not None
-        meta["library_match"] = match
+        state = _library_state_for_meta(meta, index)
+        meta["library_state"] = state["state"]
+        meta["in_library"] = state["state"] == "in_library"
+        meta["was_in_library"] = state["state"] == "was_in_library"
+        meta["library_match"] = state["match"]
+        meta["was_library_match"] = state["was_match"]
         # Donghua/general series arrive as one title with every episode in
         # `videos[]`; group them and flag the episodes already in the Library.
         _annotate_episodes(meta, index)

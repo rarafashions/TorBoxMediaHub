@@ -971,6 +971,8 @@
 
     let allItems = [];
     let allPlaylists = [];
+    // Judul yang sudah dihapus dari Library; dipakai badge "WAS IN LIBRARY".
+    let allTombstones = [];
     let selectedIds = new Set();
     let activeMediaId = null;
     let playlistScope = "unassigned";
@@ -1375,8 +1377,8 @@
       return "";
     }
 
-    function findMatchingLibraryItems(discItem) {
-      if (!discItem || !Array.isArray(allItems)) return [];
+    function findMatchingRows(discItem, rows) {
+      if (!discItem || !Array.isArray(rows)) return [];
 
       const category = getDiscoveryLibraryCategory();
       if (!category) return [];
@@ -1390,7 +1392,7 @@
 
       if (!targetTitle && !targetTmdbId && !targetAnilistId) return [];
 
-      return allItems.filter(localIt => {
+      return rows.filter(localIt => {
         // Category equality is mandatory for every Discovery category.
         if (String(localIt.content_category || "").toLowerCase() !== category) return false;
 
@@ -1420,6 +1422,15 @@
         }
         return true;
       });
+    }
+
+    function findMatchingLibraryItems(discItem) {
+      return findMatchingRows(discItem, allItems);
+    }
+
+    // Removed titles use the same matching rules as live Library rows.
+    function findTombstoneLibraryItems(discItem) {
+      return findMatchingRows(discItem, allTombstones);
     }
 
     // Discovery posters come from TMDb and AniList CDNs, which allow direct hotlinking.
@@ -1455,7 +1466,8 @@
       const posterAspectClass = "aspect-video";
       const evaluatedItems = discItems.map((item, idx) => {
         const matches = findMatchingLibraryItems(item);
-        return { item, idx, matches, inLib: matches.length > 0 };
+        const wasMatches = matches.length ? [] : findTombstoneLibraryItems(item);
+        return { item, idx, matches, wasMatches, inLib: matches.length > 0, wasInLib: wasMatches.length > 0 };
       });
       const visibleItems = discHideInLibraryItems
         ? evaluatedItems.filter(entry => !entry.inLib)
@@ -1472,7 +1484,7 @@
       }
       empty.classList.add("hidden");
 
-      grid.innerHTML = visibleItems.map(({ item, idx, matches, inLib }) => {
+      grid.innerHTML = visibleItems.map(({ item, idx, matches, wasMatches, inLib, wasInLib }) => {
         const posterSrc = getDiscoveryPosterSrc(item);
         const fallbackLabel = escapeHtml(item.title);
         const overviewText = String(item.overview || "").trim();
@@ -1495,7 +1507,7 @@
              </div>`;
 
         return `
-          <div class="group poster-card bg-white/[0.02] border ${inLib ? "border-emerald-500/50" : "border-white/10 hover:border-sky-500/50"} rounded-2xl overflow-hidden flex flex-col transition shadow-lg">
+          <div class="group poster-card bg-white/[0.02] border ${inLib ? "border-emerald-500/50" : (wasInLib ? "border-amber-500/40" : "border-white/10 hover:border-sky-500/50")} rounded-2xl overflow-hidden flex flex-col transition shadow-lg">
             <div class="relative ${posterAspectClass} bg-black/40 overflow-hidden">
               ${posterHtml}
               <div class="absolute top-2 left-2 flex flex-wrap gap-1">
@@ -1505,6 +1517,10 @@
               ${inLib ? `
                 <div class="absolute bottom-2 left-2 right-2">
                   <span class="px-2 py-0.5 rounded-md bg-emerald-500/95 text-slate-950 text-[10px] font-bold shadow">&#10003; IN LIBRARY (${matches.length})</span>
+                </div>
+              ` : wasInLib ? `
+                <div class="absolute bottom-2 left-2 right-2">
+                  <span class="px-2 py-0.5 rounded-md bg-amber-500/95 text-amber-950 text-[10px] font-bold shadow" title="Pernah ada di Library, sudah dihapus">&#8634; WAS IN LIBRARY (${wasMatches.length})</span>
                 </div>
               ` : ""}
             </div>
@@ -1838,13 +1854,16 @@ function adultStreamEsc(value) {
       return escapeHtml(String(value == null ? "" : value));
     }
 
-    function setAdultLibraryBadge(inLibrary, detail) {
+    function setAdultLibraryBadge(inLibrary, detail, wasInLibrary) {
       const badge = document.getElementById("adult-detail-library-badge");
       if (!badge) return;
-      badge.textContent = inLibrary ? "✓ IN LIBRARY" : "NOT IN LIBRARY";
+      const was = !inLibrary && Boolean(wasInLibrary);
+      badge.textContent = inLibrary ? "✓ IN LIBRARY" : (was ? "WAS IN LIBRARY" : "NOT IN LIBRARY");
       badge.className = inLibrary
         ? "inline-flex items-center gap-1.5 rounded-full bg-emerald-500 px-3 py-1 text-[10px] font-bold tracking-wide text-emerald-950 shadow-lg shadow-emerald-500/30"
-        : "inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[10px] font-bold tracking-wide text-slate-300";
+        : (was
+          ? "inline-flex items-center gap-1.5 rounded-full bg-amber-500 px-3 py-1 text-[10px] font-bold tracking-wide text-amber-950 shadow-lg shadow-amber-500/30"
+          : "inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1 text-[10px] font-bold tracking-wide text-slate-300");
       badge.title = detail || "";
     }
 
@@ -1868,7 +1887,7 @@ function adultStreamEsc(value) {
       if (!box) return;
       box.classList.remove("hidden");
       box.scrollTop = 0;
-      setAdultLibraryBadge(false, "");
+      setAdultLibraryBadge(false, "", false);
       const titleEl = document.getElementById("adult-detail-title");
       if (titleEl) titleEl.textContent = item.title || "";
       const subEl = document.getElementById("adult-detail-sub");
@@ -2014,15 +2033,21 @@ function adultStreamEsc(value) {
       }
     }
 
-    function renderAdultDetail(library) {
+    function renderAdultDetail(library, wasLibrary) {
       if (!adultSelected) return;
       const item = adultSelected;
       const meta = adultDetailMeta || {};
       const found = meta.status === "found";
       const inLibrary = Array.isArray(library) && library.length > 0;
+      const wasInLibrary = !inLibrary && Array.isArray(wasLibrary) && wasLibrary.length > 0;
       setAdultLibraryBadge(
         inLibrary,
-        inLibrary ? `Sudah ada di Library: ${library.map(it => it.title || it.file_name || it.id).join(" · ")}` : ""
+        inLibrary
+          ? `Sudah ada di Library: ${library.map(it => it.title || it.file_name || it.id).join(" · ")}`
+          : (wasInLibrary
+            ? `Pernah ada di Library, sudah dihapus: ${wasLibrary.map(it => it.title || it.file_name).join(" · ")}`
+            : ""),
+        wasInLibrary
       );
       renderAdultTpdb();
       applyAdultVisualMeta();
@@ -2039,6 +2064,9 @@ function adultStreamEsc(value) {
         if (inLibrary) {
           libEl.className = "text-[11px] text-emerald-300";
           libEl.textContent = `Sudah ada di Library (${library.length}): ${library.map(it => it.title || it.file_name || it.id).join(" · ")}`;
+        } else if (wasInLibrary) {
+          libEl.className = "text-[11px] text-amber-300";
+          libEl.textContent = `Pernah ada di Library, sudah dihapus (${wasLibrary.length}): ${wasLibrary.map(it => it.title || it.file_name).join(" · ")}. Unduh lagi untuk memasukkannya kembali.`;
         } else {
           libEl.className = "text-[11px] text-slate-400";
           libEl.textContent = "Belum ada judul serupa di Library kategori English Adult.";
@@ -2068,9 +2096,12 @@ function adultStreamEsc(value) {
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
         if (data.item) adultSelected = { ...adultSelected, ...data.item };
         adultDetailMeta = data.tpdb || null;
-        renderAdultDetail(Array.isArray(data.in_library) ? data.in_library : []);
+        renderAdultDetail(
+          Array.isArray(data.in_library) ? data.in_library : [],
+          Array.isArray(data.was_in_library) ? data.was_in_library : []
+        );
       } catch (e) {
-        renderAdultDetail([]);
+        renderAdultDetail([], []);
         showToast(`Detail tidak lengkap: ${e.message || e}`, true);
       }
     }
@@ -3363,6 +3394,7 @@ function adultStreamEsc(value) {
       updateStats(data.stats);
       allItems = data.items || [];
       allPlaylists = data.playlists || [];
+      allTombstones = Array.isArray(data.marks) ? data.marks : [];
       renderLibraryView();
       renderPlaylists(allPlaylists);
       if (data.task && data.task.running) {
@@ -3398,6 +3430,7 @@ function adultStreamEsc(value) {
         if (!data.ok) return;
         updateStats(data.stats);
         allItems = data.items || [];
+        if (Array.isArray(data.marks)) allTombstones = data.marks;
         renderLibraryView();
       } catch (e) {
         if (seq === mediaRequestSeq) console.warn("loadMedia gagal:", e);

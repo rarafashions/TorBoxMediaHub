@@ -17,6 +17,7 @@
   const state = {
     items: [],
     playlists: [],
+    marks: [],
     stats: null,
     env: null,
     version: "",
@@ -336,6 +337,7 @@
       if (controller.signal.aborted) return;
       state.items = Array.isArray(data.items) ? data.items : [];
       state.playlists = Array.isArray(data.playlists) ? data.playlists : [];
+      state.marks = Array.isArray(data.marks) ? data.marks : [];
       state.stats = data.stats || null;
       state.env = data.env || null;
       state.version = data.version || "";
@@ -607,6 +609,7 @@
   /* ------------------- Library match untuk Discovery --------------------- */
 
   let libraryIndexCache = null;
+  let tombstoneIndexCache = null;
 
   function normalizeMatchText(value) {
     return String(value || "")
@@ -618,11 +621,9 @@
       .trim();
   }
 
-  function discoveryLibraryIndex() {
-    const items = Array.isArray(state.items) ? state.items : [];
-    if (libraryIndexCache && libraryIndexCache.items === items) return libraryIndexCache.byCategory;
+  function buildDiscoveryIndex(rows) {
     const byCategory = new Map();
-    for (const row of items) {
+    for (const row of rows) {
       const category = String(row.content_category || "").toLowerCase();
       if (!category) continue;
       let bucket = byCategory.get(category);
@@ -643,16 +644,29 @@
       bucket.exact.set(key, (bucket.exact.get(key) || 0) + 1);
       bucket.rows.push({ norm, year, title: row.title || row.file_name || "" });
     }
+    return byCategory;
+  }
+
+  function discoveryLibraryIndex() {
+    const items = Array.isArray(state.items) ? state.items : [];
+    if (libraryIndexCache && libraryIndexCache.items === items) return libraryIndexCache.byCategory;
+    const byCategory = buildDiscoveryIndex(items);
     libraryIndexCache = { items, byCategory };
     return byCategory;
   }
 
-  function discoverLibraryMatch(item) {
-    if (!item) return { count: 0 };
-    const category = String(item.category || "").toLowerCase();
-    if (!category) return { count: 0 };
-    const bucket = discoveryLibraryIndex().get(category);
-    if (!bucket) return { count: 0 };
+  function discoveryTombstoneIndex() {
+    const marks = Array.isArray(state.marks) ? state.marks : [];
+    if (tombstoneIndexCache && tombstoneIndexCache.marks === marks) {
+      return tombstoneIndexCache.byCategory;
+    }
+    const byCategory = buildDiscoveryIndex(marks);
+    tombstoneIndexCache = { marks, byCategory };
+    return byCategory;
+  }
+
+  function matchDiscoveryBucket(bucket, item) {
+    if (!bucket || !item) return { count: 0 };
 
     // Canonical IDs from TMDb/AniList are the strongest signal.
     const tmdb = String(item.tmdb_id || "").trim();
@@ -667,7 +681,7 @@
     if (direct) return { count: direct };
 
     let count = 0;
-    const isAdult = category === "english_adult";
+    const isAdult = String(item.category || "").toLowerCase() === "english_adult";
     for (const row of bucket.rows) {
       if (!row.norm) continue;
       if (row.norm === norm) {
@@ -687,6 +701,20 @@
     return { count };
   }
 
+  function discoverLibraryMatch(item) {
+    if (!item) return { count: 0 };
+    const category = String(item.category || "").toLowerCase();
+    if (!category) return { count: 0 };
+    return matchDiscoveryBucket(discoveryLibraryIndex().get(category), item);
+  }
+
+  function discoverTombstoneMatch(item) {
+    if (!item) return { count: 0 };
+    const category = String(item.category || "").toLowerCase();
+    if (!category) return { count: 0 };
+    return matchDiscoveryBucket(discoveryTombstoneIndex().get(category), item);
+  }
+
   function libraryBadgeNode(count, opts) {
     if (!count) return null;
     const options = opts || {};
@@ -697,6 +725,26 @@
     });
     node.title = `Sudah ada di Library${count > 1 ? ` (${count} item)` : ""}`;
     return node;
+  }
+
+  function wasLibraryBadgeNode(count, opts) {
+    if (!count) return null;
+    const options = opts || {};
+    const label = `WAS IN LIBRARY${count > 1 ? ` (${count})` : ""}`;
+    const node = el("span", {
+      class: options.tag ? "tag tag--was tag--lib" : "card__lib-badge card__lib-badge--was",
+      html: `${ICON.refresh}<span>${label}</span>`,
+    });
+    node.title = `Pernah ada di Library, sudah dihapus${count > 1 ? ` (${count} item)` : ""}`;
+    return node;
+  }
+
+  function discoveryBadgeNode(item, opts) {
+    const lib = discoverLibraryMatch(item);
+    if (lib.count) return libraryBadgeNode(lib.count, opts);
+    const was = discoverTombstoneMatch(item);
+    if (was.count) return wasLibraryBadgeNode(was.count, opts);
+    return null;
   }
 
   /* --------------------------- Filtering/sort --------------------------- */
@@ -4219,8 +4267,8 @@
     }
     if (badges.childElementCount) frame.append(badges);
 
-    const libMatch = discoverLibraryMatch(item);
-    if (libMatch.count) frame.append(libraryBadgeNode(libMatch.count));
+    const libBadge = discoveryBadgeNode(item);
+    if (libBadge) frame.append(libBadge);
 
     const subParts = [];
     if (item.year) subParts.push(String(item.year));
@@ -4365,7 +4413,7 @@
     const metaLine = [item.year, Number(item.rating) > 0 ? `★ ${Number(item.rating).toFixed(1)}` : "", catLabel(item.category)]
       .filter(Boolean)
       .join(" · ");
-    const discoverMatch = discoverLibraryMatch(item);
+    const discoverBadge = discoveryBadgeNode(item, { tag: true });
 
     const poster = el(
       "div",
@@ -4420,7 +4468,7 @@
             el(
               "div",
               { class: "tagrow" },
-              libraryBadgeNode(discoverMatch.count, { tag: true }),
+              discoverBadge,
               ...(item.year ? [el("span", { class: "tag", text: String(item.year) })] : []),
               ...(Number(item.rating) > 0
                 ? [el("span", { class: "tag", text: `★ ${Number(item.rating).toFixed(1)}` })]
@@ -4771,10 +4819,10 @@
     }
     frame.append(badges);
 
-    const libMatch = discoverLibraryMatch(
+    const libBadge = discoveryBadgeNode(
       Object.assign({}, item, { category: "english_adult" })
     );
-    if (libMatch.count) frame.append(libraryBadgeNode(libMatch.count));
+    if (libBadge) frame.append(libBadge);
 
     const subParts = [];
     if (Number(item.rating) > 0) subParts.push(`★ ${Number(item.rating).toFixed(1)}`);
@@ -4855,12 +4903,22 @@
     const page = (streamData && streamData.page_meta) || {};
     const tpdb = detail && detail.tpdb && detail.tpdb.status === "found" ? detail.tpdb : {};
     const inLibrary = detail && Array.isArray(detail.in_library) ? detail.in_library : [];
+    const wasInLibrary = detail && Array.isArray(detail.was_in_library) ? detail.was_in_library : [];
     const localLibraryMatch = discoverLibraryMatch({
       category: "english_adult",
       title: merged.title || "",
       year: merged.year || page.year || 0,
     });
     const libraryCount = inLibrary.length || localLibraryMatch.count;
+    const localTombstoneMatch = discoverTombstoneMatch({
+      category: "english_adult",
+      title: merged.title || "",
+      year: merged.year || page.year || 0,
+    });
+    const wasCount = wasInLibrary.length || (libraryCount ? 0 : localTombstoneMatch.count);
+    const libraryBadge = libraryCount
+      ? libraryBadgeNode(libraryCount, { tag: true })
+      : wasLibraryBadgeNode(wasCount, { tag: true });
     const tags = [...(Array.isArray(merged.tags) ? merged.tags : []), ...(Array.isArray(tpdb.tags) ? tpdb.tags : [])]
       .map((t) => String(t).trim())
       .filter(Boolean);
@@ -4920,7 +4978,7 @@
           el(
             "div",
             { class: "tagrow" },
-            libraryBadgeNode(libraryCount, { tag: true }),
+            libraryBadge,
             el("span", { class: "tag", text: merged.site_label || merged.provider || "Adult" }),
             duration ? el("span", { class: "tag", text: duration }) : null,
             Number(merged.rating) > 0 ? el("span", { class: "tag", text: `★ ${Number(merged.rating).toFixed(1)}` }) : null,
@@ -4938,6 +4996,8 @@
               ? `Sudah ada di Library (${inLibrary.length}): ${inLibrary.map((it) => it.title || it.id).join(" · ")}`
               : libraryCount
               ? `Sudah ada di Library (${libraryCount}) berdasarkan kecocokan judul.`
+              : wasInLibrary.length || wasCount
+              ? "Pernah ada di Library, sudah dihapus. Unduh lagi untuk memasukkannya kembali."
               : "Belum ada judul serupa di Library kategori English Adult.",
           })
         )

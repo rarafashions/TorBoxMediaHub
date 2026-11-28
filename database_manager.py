@@ -5,7 +5,7 @@ import platform
 import platform_support
 import re
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
@@ -532,9 +532,31 @@ def init_db() -> None:
                 completed_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS media_tombstones (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                identity_key TEXT NOT NULL UNIQUE,
+                title TEXT,
+                file_name TEXT,
+                code_id TEXT,
+                series_title TEXT,
+                season_num INTEGER,
+                episode_num INTEGER,
+                year INTEGER,
+                tmdb_id INTEGER,
+                anilist_id INTEGER,
+                content_category TEXT,
+                torbox_kind TEXT,
+                torbox_item_id TEXT,
+                unique_key TEXT,
+                delete_reason TEXT,
+                deleted_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_media_category ON media_items(content_category);
             CREATE INDEX IF NOT EXISTS idx_media_has_meta ON media_items(has_metadata);
             CREATE INDEX IF NOT EXISTS idx_media_has_sub ON media_items(has_subtitle);
+            CREATE INDEX IF NOT EXISTS idx_tombstones_deleted_at ON media_tombstones(deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_tombstones_category ON media_tombstones(content_category);
             """
         )
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(media_items)").fetchall()]
@@ -2436,12 +2458,23 @@ def run_db_maintenance() -> Dict[str, Any]:
     removed_local = 0
     cleared_subs = verify_subtitle_files()
     with get_connection() as conn:
-        local_rows = conn.execute("SELECT id, file_path FROM media_items WHERE source_type = 'local'").fetchall()
+        local_rows = conn.execute(
+            """
+            SELECT id, title, file_name, file_path, code_id, series_title, season_num,
+                   episode_num, year, tmdb_id, anilist_id, content_category, torbox_kind,
+                   torbox_item_id, unique_key
+            FROM media_items WHERE source_type = 'local'
+            """
+        ).fetchall()
         for r in local_rows:
             fp = r["file_path"]
             if fp and not os.path.exists(fp):
+                # A DB row whose file vanished is treated as a removal so the
+                # catalog badge can say "WAS IN LIBRARY" instead of forgetting it.
+                _insert_media_tombstone(conn, dict(r), reason="missing_local_file")
                 conn.execute("DELETE FROM media_items WHERE id = ?", (r["id"],))
                 removed_local += 1
+        pruned_tombstones = _prune_media_tombstones(conn)
         conn.execute("DELETE FROM playlist_items WHERE media_id NOT IN (SELECT id FROM media_items)")
         consolidated = consolidate_series_groups(conn)
         conn.commit()
@@ -2451,6 +2484,7 @@ def run_db_maintenance() -> Dict[str, Any]:
         "removed_missing_local_files": removed_local,
         "cleared_missing_subtitles": cleared_subs,
         "consolidated_series_items": consolidated,
+        "pruned_tombstones": pruned_tombstones,
     }
 
 
@@ -2520,8 +2554,14 @@ def erase_all_media_data() -> Dict[str, Any]:
     with get_connection() as conn:
         deleted_media = conn.execute("DELETE FROM media_items").rowcount
         deleted_playlists = conn.execute("DELETE FROM playlists").rowcount
+        # A full erase is a deliberate reset, not a removal of individual
+        # titles, so the "WAS IN LIBRARY" history is cleared as well.
+        deleted_tombstones = conn.execute("DELETE FROM media_tombstones").rowcount
         conn.execute("DELETE FROM series_season_cache")
-        conn.execute("DELETE FROM sqlite_sequence WHERE name IN ('media_items', 'playlists', 'playlist_items')")
+        conn.execute(
+            "DELETE FROM sqlite_sequence WHERE name IN "
+            "('media_items', 'playlists', 'playlist_items', 'media_tombstones')"
+        )
         conn.commit()
 
     _run_vacuum_standalone()
@@ -2538,6 +2578,7 @@ def erase_all_media_data() -> Dict[str, Any]:
     return {
         "deleted_media": deleted_media,
         "deleted_playlists": deleted_playlists,
+        "deleted_tombstones": deleted_tombstones,
         "cleared_cache_files": cleared_cache,
     }
 
@@ -2572,7 +2613,211 @@ def delete_media_record_and_cache(media_id: int) -> Optional[Dict[str, Any]]:
 
     # 3. Hapus dari SQLite (playlist_items otomatis terhapus karena ON DELETE CASCADE)
     with get_connection() as conn:
+        _insert_media_tombstone(conn, item, reason="record_delete")
+        _prune_media_tombstones(conn)
         conn.execute("DELETE FROM media_items WHERE id = ?", (media_id,))
         conn.commit()
 
     return item
+
+
+# --- Media tombstones -------------------------------------------------------
+# Deleting a title used to erase every trace of it, so the catalog badge fell
+# straight back to "NOT IN LIBRARY". A tombstone keeps just enough identity
+# (title, file name, code, series/season/episode) to show "WAS IN LIBRARY"
+# without retaining the stream URL or the media row itself.
+TOMBSTONE_RETENTION_DAYS = 365
+TOMBSTONE_MAX_ROWS = 5000
+
+_TOMBSTONE_VIDEO_SUFFIXES = {
+    ".mp4", ".mkv", ".avi", ".mov", ".webm", ".m4v", ".ts", ".wmv",
+    ".mpg", ".mpeg", ".flv",
+}
+
+
+def _tombstone_match_key(value: Any) -> str:
+    """Fold a title or file name into a comparison key, mirroring Roxxy."""
+    text = str(value or "").strip()
+    stem, extension = os.path.splitext(text)
+    if extension.casefold() in _TOMBSTONE_VIDEO_SUFFIXES:
+        text = stem
+    text = re.sub(r"[^0-9a-z]+", " ", text.casefold())
+    key = " ".join(text.split())
+    if len(key) < 6 or not any(ch.isalpha() for ch in key):
+        return ""
+    return key
+
+
+def _tombstone_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _media_tombstone_identity(item: Dict[str, Any]) -> str:
+    """Stable key so re-deleting the same title refreshes one row, not many."""
+    code = str(item.get("code_id") or "").strip().upper()
+    if code:
+        return f"code:{code}"
+    title_key = _tombstone_match_key(item.get("title"))
+    file_key = _tombstone_match_key(item.get("file_name"))
+    series_key = _tombstone_match_key(item.get("series_title"))
+    season = _tombstone_int(item.get("season_num"))
+    episode = _tombstone_int(item.get("episode_num"))
+    if season is not None and episode is not None:
+        base = series_key or title_key or file_key
+        if base:
+            return f"episode:{base}|s{season}|e{episode}"
+    key = title_key or file_key
+    return f"title:{key}" if key else ""
+
+
+def _insert_media_tombstone(
+    conn: sqlite3.Connection, item: Dict[str, Any], reason: str = "deleted"
+) -> int:
+    if not isinstance(item, dict):
+        return 0
+    identity = _media_tombstone_identity(item)
+    if not identity:
+        return 0
+    now = datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        """
+        INSERT INTO media_tombstones (
+            identity_key, title, file_name, code_id, series_title, season_num,
+            episode_num, year, tmdb_id, anilist_id, content_category,
+            torbox_kind, torbox_item_id, unique_key, delete_reason, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(identity_key) DO UPDATE SET
+            title = excluded.title,
+            file_name = excluded.file_name,
+            code_id = excluded.code_id,
+            series_title = excluded.series_title,
+            season_num = excluded.season_num,
+            episode_num = excluded.episode_num,
+            year = excluded.year,
+            tmdb_id = excluded.tmdb_id,
+            anilist_id = excluded.anilist_id,
+            content_category = excluded.content_category,
+            torbox_kind = excluded.torbox_kind,
+            torbox_item_id = excluded.torbox_item_id,
+            unique_key = excluded.unique_key,
+            delete_reason = excluded.delete_reason,
+            deleted_at = excluded.deleted_at
+        """,
+        (
+            identity,
+            item.get("title"),
+            item.get("file_name"),
+            str(item.get("code_id") or "").strip().upper() or None,
+            item.get("series_title"),
+            _tombstone_int(item.get("season_num")),
+            _tombstone_int(item.get("episode_num")),
+            _tombstone_int(item.get("year")),
+            _tombstone_int(item.get("tmdb_id")),
+            _tombstone_int(item.get("anilist_id")),
+            item.get("content_category"),
+            item.get("torbox_kind"),
+            str(item.get("torbox_item_id") or "").strip() or None,
+            item.get("unique_key"),
+            str(reason or "deleted"),
+            now,
+        ),
+    )
+    return 1
+
+
+def _prune_media_tombstones(
+    conn: sqlite3.Connection,
+    max_rows: int = TOMBSTONE_MAX_ROWS,
+    max_age_days: int = TOMBSTONE_RETENTION_DAYS,
+) -> int:
+    """Bound the history table by age, then by newest rows."""
+    cutoff = (datetime.now() - timedelta(days=int(max_age_days))).isoformat(timespec="seconds")
+    removed = conn.execute("DELETE FROM media_tombstones WHERE deleted_at < ?", (cutoff,)).rowcount
+    total = conn.execute("SELECT COUNT(*) FROM media_tombstones").fetchone()[0]
+    overflow = int(total or 0) - max(0, int(max_rows))
+    if overflow > 0:
+        removed += conn.execute(
+            """
+            DELETE FROM media_tombstones WHERE id IN (
+                SELECT id FROM media_tombstones ORDER BY id ASC LIMIT ?
+            )
+            """,
+            (overflow,),
+        ).rowcount
+    return removed
+
+
+def add_media_tombstone(item: Dict[str, Any], reason: str = "deleted") -> int:
+    """Remember a removed title so catalog badges can show "WAS IN LIBRARY"."""
+    try:
+        with get_connection() as conn:
+            inserted = _insert_media_tombstone(conn, item, reason)
+            _prune_media_tombstones(conn)
+            conn.commit()
+    except sqlite3.OperationalError:
+        # A caller may run against a pre-tombstone snapshot; deletion must not fail.
+        return 0
+    return inserted
+
+
+_TOMBSTONE_PUBLIC_FIELDS = (
+    "title, file_name, code_id, series_title, season_num, episode_num, year, "
+    "tmdb_id, anilist_id, content_category, delete_reason, deleted_at"
+)
+
+
+def get_media_tombstone_marks(limit: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Removed-title marks for the browser catalog matcher (no URLs/secrets)."""
+    cap = TOMBSTONE_MAX_ROWS if limit is None else max(1, min(int(limit), TOMBSTONE_MAX_ROWS))
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {_TOMBSTONE_PUBLIC_FIELDS}
+                FROM media_tombstones
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (cap,),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [dict(r) for r in rows]
+
+
+def query_media_tombstones(
+    search: str = "", category: str = "", limit: int = 20
+) -> List[Dict[str, Any]]:
+    """Title search over removed items, used for the adult detail hint."""
+    clauses = ["1=1"]
+    params: List[Any] = []
+    term = str(search or "").strip()
+    if term:
+        like = f"%{term}%"
+        clauses.append("(title LIKE ? OR file_name LIKE ? OR series_title LIKE ?)")
+        params.extend([like, like, like])
+    if category and category != "all":
+        clauses.append("content_category = ?")
+        params.append(category)
+    cap = max(1, min(int(limit), 200))
+    params.append(cap)
+    try:
+        with get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {_TOMBSTONE_PUBLIC_FIELDS}
+                FROM media_tombstones
+                WHERE {' AND '.join(clauses)}
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+    except sqlite3.OperationalError:
+        return []
+    return [dict(r) for r in rows]
