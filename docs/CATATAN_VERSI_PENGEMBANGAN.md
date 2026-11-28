@@ -1,8 +1,8 @@
 # Catatan Versi dan Pengembangan — TorBox Media Hub
 
-**Versi saat ini:** `v1.3DP`
+**Versi saat ini:** `v1.3DQ`
 **Tanggal status:** 28 November 2026
-**Baseline tes:** `python -m pytest tests -q --no-header` → **536 passed, 204 subtests passed** (0 gagal)
+**Baseline tes:** `python -m pytest tests -q --no-header` → **537 passed, 219 subtests passed** (0 gagal)
 **Harness UI:** jsdom `v2_app_check.js` → `ALL CHECKS PASSED`
 
 Dokumen ini mencatat riwayat versi, keputusan teknis yang mengikat, status pengembangan, dan prosedur rilis. Untuk panduan pemakaian lihat [`DOKUMENTASI_APLIKASI.md`](DOKUMENTASI_APLIKASI.md).
@@ -62,6 +62,7 @@ Tanggal mengikuti commit Git. Build yang tidak punya catatan rilis terpisah diga
 | `v1.3DN` | 28 Nov 2026 | Toolbar Discovery satu baris (tab + chip kategori + chip urutan + status di kanan), kartu naik ~275 px, dan kontras teks sekunder/tersier pada kanvas gelap dinaikkan |
 | `v1.3DO` | 28 Nov 2026 | Detail English Adult memulihkan daftar sumber unduhan: analisis provider + rute Cached TorBox, Torrent ke TorBox, NZB ke TorBox, dan unduh lokal yt-dlp/aria2c |
 | `v1.3DP` | 28 Nov 2026 | Kartu Discovery (Film, Serial TV, Anime, Donghua, English Adult) menampilkan badge centang **IN LIBRARY**; sheet detail juga menampilkan tag yang sama |
+| `v1.3DQ` | 28 Nov 2026 | Tahap 2: filter kualitas + scope playlist di Library, audit subtitle per item, dan tautan M3U LAN di detail |
 
 > Build `D6`, `D7`, dan `DA`–`DE` tidak memiliki entri rilis terpisah di repo; perubahan pada rentang itu tercakup dalam audit DB, perbaikan metadata/klasifikasi, dan pembangunan shell v2.
 
@@ -235,6 +236,15 @@ Restart app live port 5050 dilakukan setelah antrean TorBox/lokal 0 dan task idl
 - **Panel Serial v2**: Swallowed Star menampilkan tiga tab season (`Season 01 · 2/26`, `Season 02 · 0/26`, `Season 04 · 2`), 243 baris episode, status episode hilang, dan panel **Cari semua episode hilang** yang mengembalikan **425 rilis** (122 CACHED) dengan badge CACHED/UNCACHED, sumber, `Seed`/`Leech`/`Peer`, ukuran, dan tombol **+ TorBox**; catatan NZBGeek premium tampil.
 - **Stabilitas**: `logs/app.log` aktif (3,36 MB); koneksi `CloseWait` outbound tetap **10** setelah 45 detik idle.
 - **Belum diverifikasi (butuh aksi tulis/kuota)**: simpan Pengaturan, probe stream gagal, cache magnet batch, impor Donghua/Indo, NZB forwarder, job gagal, reklasifikasi, riwayat >50 job, konfirmasi unduhan IN LIBRARY, badge setelah impor, watcher TorBox, dan pengiriman `+ TorBox` dari panel Serial.
+
+### 4.18 `v1.3DQ` — Tahap 2: filter kualitas, scope playlist, audit subtitle, M3U per item
+
+- **Filter kualitas**: Library mendapat select **Kualitas** (4K/2160p, 1440p, 1080p, 720p, SD ≤576p, tanpa info). Nilai diambil dari `file_name`/`title` lewat `QUALITY_TOKENS` yang sama dengan pengurutan duplikat episode; kartu menampilkan label kualitas di subjudul dan hover, detail menampilkannya di baris meta dan fakta.
+- **Scope playlist**: baris chip baru di Library (`Semua item`, `Belum di playlist`, `Sudah di playlist`) memakai `in_playlist` dari bootstrap; hitungan mengikuti filter lain dan tidak memuat ulang server karena `state.items` sudah berisi semua item. Default dan reset tetap `scope: "all"`.
+- **Audit subtitle per item**: detail v2 memiliki tombol **Audit subtitle** (read-only) yang memanggil `POST /api/subtitle-quality/audit` untuk satu ID dan menampilkan status keseluruhan plus tiap track (`EN · file · Sehat`; track embedded ditandai `Embedded`).
+- **M3U remote per item**: detail menampilkan tautan **M3U LAN** ke `/api/media/<id>/remote-m3u` (`Content-Type: audio/x-mpegurl`, nama file aman). URL bertanda tangan tidak pernah dirender di UI.
+- **Tes**: `test_library_scope_quality_and_item_actions` (12 marker JS + 3 marker CSS); suite **537 passed, 219 subtests**.
+- **Verifikasi live** (port 5050, `v1.3DQ`, antrean TorBox/lokal 0, task idle): chip scope **Semua 611 / Belum 539 / Sudah 72**; filter 1080p memuat **53 judul** dan subjudul kartu memuat `1080p`; detail film menampilkan meta `2026 · 1j 49m · 1080p · Film · 1.6 GB`, tautan `M3U LAN` → `/api/media/300/remote-m3u` (HTTP 200, `audio/x-mpegurl`), dan audit `Embedded · 2 track`; tanpa error konsol.
 
 ---
 

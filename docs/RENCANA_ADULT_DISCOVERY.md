@@ -1,9 +1,9 @@
 # Rencana Fase A — English Adult Discovery di Discovery Hub
 
-**Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; port `/v2` menyusul bersama Tahap 1
+**Status:** Fase **A1-A6 selesai** untuk backend dan UI legacy `/`; Tahap 1 dan Tahap 2 selesai di `/v2`
 **Tanggal:** 28 November 2026
-**Versi acuan:** `v1.3DP`
-**Baseline tes:** `536 passed, 204 subtests passed`
+**Versi acuan:** `v1.3DQ`
+**Baseline tes:** `537 passed, 219 subtests passed`
 
 ---
 
@@ -584,6 +584,7 @@ Tujuan: kartu adult bisa dibuka sebagai modal yang menampilkan **badge Library**
 | Playwright port 5056 (`/v2#/discover`, `v1.3DO`) | Detail adult dengan respons stream tiruan: 4 kartu sumber, 4 analisis, tombol Cached TorBox / Torrent ke TorBox / NZB ke TorBox / yt-dlp / aria2c; pengiriman TorBox dan job lokal terverifikasi; tanpa overflow di 390 px |
 | Playwright port 5056 (`/v2#/discover`, `v1.3DP`) | Badge `IN LIBRARY`: Film 8, Serial TV 2 (`(29)`, `(8)`), Anime 1, Donghua 1 pada pencarian "Swallowed Star" (2 item), English Adult 5; tag badge tampil di sheet detail; tanpa overflow di 390 px |
 | Live port 5050 (`v1.3DP`, salinan DB asli) | Delapan view v2 tanpa galat; Discovery 50 kartu/feed, badge Film 7/Serial 2/Anime 2/Adult 5, poster proxy 0 panggilan; legacy dua kolom + 4 baris health; `/roxxy` 341 hasil search-all dan MissAV Uncensored 100 judul; panel Serial 425 rilis (122 CACHED); token manifest tersamarkan; CloseWait stabil 10 |
+| Live port 5050 (`v1.3DQ`, Tahap 2) | Chip scope 611/539/72; filter 1080p 53 judul dengan label kualitas di subjudul; detail: meta kualitas, `M3U LAN` 200 `audio/x-mpegurl`, audit `Embedded · 2 track`; tanpa error konsol |
 
 Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app live sedang idle tetapi kuota/antrean TorBox tidak boleh diganggu tanpa persetujuan; jalur engine sudah diuji unit lewat payload yang sama dengan Roxxy.
 
@@ -594,7 +595,7 @@ Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app liv
 | Tahap | Isi | Ketergantungan |
 |---|---|---|
 | **1** | Discovery di v2 (mainstream + adult), hapus fisik, edit manual + klasifikasi, poster manual — **selesai `v1.3DM`** | A1–A4 menyuplai API adult |
-| **2** | Audit subtitle + filter kualitas, remote M3U per item, scope playlist | Tidak bergantung adult |
+| **2** | Audit subtitle + filter kualitas, remote M3U per item, scope playlist — **selesai `v1.3DQ`** | Tidak bergantung adult |
 | **3** | `/` diarahkan ke v2, UI lama di `/legacy` | Semua di atas |
 
 **Status Tahap 1 (`v1.3DM`, dipoles di `v1.3DN`):** view `/v2#/discover` memuat film/serial/anime/donghua dari `/api/discover` dan tab English Adult bergate dari `/api/adult/*`; sheet rilis memakai `search-cache` + `add-cached`, sedangkan WebDL adult memakai `/api/adult/webdl`. Panel detail v2 sekarang punya aksi **Edit metadata**, **Klasifikasi**, **Poster**, dan **Hapus fisik** lewat route media lama. Tidak ada endpoint baru dan discovery legacy di `/` tetap utuh. Verifikasi Playwright di port 5056 (salinan DB): 50 kartu Film, 60 item adult, sheet rilis dengan dua baris mock, keempat aksi kurasi terbuka.
@@ -604,6 +605,8 @@ Catatan: unduhan lokal nyata belum dijalankan pada verifikasi ini karena app liv
 **Pulih `v1.3DO`:** detail English Adult kembali memuat section **Sumber unduhan**. `openAdultDiscoverItem` tidak lagi membuang array `streams`; setiap stream dianalisis lewat `/api/roxxy/analyze` (maksimal 3 paralel), lalu tombol rute dibuat dari `analysis.options`: Cached TorBox / Torrent ke TorBox / NZB ke TorBox (`/api/torbox/add-cached`) atau yt-dlp/aria2c lokal (`/api/roxxy/local/start`, setelah konfirmasi). Metadata memakai `_roxxySource: english_adult` + `id` provider.
 
 **Penanda `v1.3DP`:** kartu Discovery memakai indeks Library per kategori (`state.items`) dan menampilkan badge centang **IN LIBRARY** bila `tmdb_id`/`anilist_id` cocok, atau judul ternormalisasi + tahun cocok. Adult memakai pencocokan judul seperti server.
+
+**Penanda `v1.3DQ` (Tahap 2):** Library punya select **Kualitas** (4K/1440/1080/720/SD/tanpa info) dan chip scope playlist (Semua/Belum/Sudah) yang dihitung dari `in_playlist`. Detail item mendapat tombol **Audit subtitle** (`/api/subtitle-quality/audit`, satu ID, read-only) dan tautan **M3U LAN** per item (`/api/media/<id>/remote-m3u`).
 
 Urutan yang disarankan: **A1 → A2 → A3 → A4 → A5(legacy) → Tahap 1 (v2 Discovery + kurasi) → Tahap 2 → Tahap 3.** Dengan begitu Discovery adult sudah bisa dipakai sebelum wajah v2 diubah.
 

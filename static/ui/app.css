@@ -202,6 +202,11 @@
   margin-block: 10px;
 }
 
+/* Baris scope playlist di Library, rapat di bawah chip kategori. */
+.chips--scope {
+  margin-block: 0 8px;
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -1293,6 +1298,33 @@ a.stat-tile:hover {
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--text-3);
+}
+
+/* Hasil audit subtitle per item (read-only, muncul setelah tombol audit). */
+.detail__audit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  color: var(--text-2);
+  font-size: 11.5px;
+}
+
+.detail__audit:empty {
+  display: none;
+}
+
+.detail__audit-line {
+  margin: 0;
+}
+
+.detail__audit-line strong {
+  color: var(--text-1);
+  font-weight: 800;
 }
 
 .detail__playlists {

@@ -28,7 +28,9 @@
     searchIndex: new Map(),
     filters: {
       cat: "all",
+      scope: "all",
       source: "all",
+      quality: "all",
       watched: "all",
       sub: "all",
       meta: "all",
@@ -440,6 +442,32 @@
     return 0;
   }
 
+  const QUALITY_LABEL = {
+    2160: "4K",
+    1440: "1440p",
+    1080: "1080p",
+    720: "720p",
+    576: "576p",
+    540: "540p",
+    480: "480p",
+    360: "360p",
+  };
+
+  // Bucket dipakai filter Library; 0 berarti nama file tidak menyebut kualitas.
+  function qualityBucket(item) {
+    const value = videoQuality(item);
+    if (!value) return "unknown";
+    if (value >= 2160) return "2160";
+    if (value >= 1440) return "1440";
+    if (value >= 1080) return "1080";
+    if (value >= 720) return "720";
+    return "sd";
+  }
+
+  function qualityLabel(item) {
+    return QUALITY_LABEL[videoQuality(item)] || "";
+  }
+
   function episodeOrder(a, b) {
     return (
       Number(a.season_num || 1) - Number(b.season_num || 1) ||
@@ -683,7 +711,13 @@
     if (!itemMatchesSearch(item)) return false;
     const f = state.filters;
     if (skip !== "cat" && f.cat !== "all" && item.content_category !== f.cat) return false;
+    if (skip !== "scope") {
+      const inPlaylist = truthyFlag(item.in_playlist);
+      if (f.scope === "unassigned" && inPlaylist) return false;
+      if (f.scope === "assigned" && !inPlaylist) return false;
+    }
     if (f.source !== "all" && item.source_type !== f.source) return false;
+    if (f.quality !== "all" && qualityBucket(item) !== f.quality) return false;
     if (f.watched === "watched" && !truthyFlag(item.is_watched)) return false;
     if (f.watched === "unwatched" && truthyFlag(item.is_watched)) return false;
     if (f.sub === "has" && !truthyFlag(item.has_subtitle)) return false;
@@ -745,6 +779,18 @@
     return counts;
   }
 
+  // Hitungan scope playlist mengikuti filter lain, tetapi tidak scope itu sendiri.
+  function scopeCounts() {
+    const counts = { all: 0, unassigned: 0, assigned: 0 };
+    for (const item of state.items) {
+      if (!passesFilters(item, "scope")) continue;
+      counts.all += 1;
+      if (truthyFlag(item.in_playlist)) counts.assigned += 1;
+      else counts.unassigned += 1;
+    }
+    return counts;
+  }
+
   function seriesEntries() {
     const items = state.items.filter(
       (it) =>
@@ -760,7 +806,9 @@
     const f = state.filters;
     return (
       f.cat === "all" &&
+      f.scope === "all" &&
       f.source === "all" &&
+      f.quality === "all" &&
       f.watched === "all" &&
       f.sub === "all" &&
       f.meta === "all" &&
@@ -773,7 +821,9 @@
   function resetFilters() {
     state.filters = {
       cat: "all",
+      scope: "all",
       source: "all",
+      quality: "all",
       watched: "all",
       sub: "all",
       meta: "all",
@@ -789,7 +839,9 @@
   function goLibrary(patch) {
     const next = {
       cat: "all",
+      scope: "all",
       source: "all",
+      quality: "all",
       watched: "all",
       sub: "all",
       meta: "all",
@@ -1002,7 +1054,9 @@
 
     const hoverFacts = isSeries
       ? `${seasonCount} season · ${entry.total} episode`
-      : [entryYear(entry) || null, runtimeLabel(item.runtime) || null].filter(Boolean).join(" · ");
+      : [qualityLabel(item) || null, entryYear(entry) || null, runtimeLabel(item.runtime) || null]
+          .filter(Boolean)
+          .join(" · ");
 
     frame.append(
       el(
@@ -1023,7 +1077,7 @@
     let subText = "";
     if (isSeries) subText = `${entry.total} episode`;
     else if (truthyFlag(item.is_watched)) subText = "Sudah ditonton";
-    else if (entryYear(entry)) subText = String(entryYear(entry));
+    else subText = [entryYear(entry), qualityLabel(item)].filter(Boolean).join(" · ");
 
     const body = el(
       "div",
@@ -1541,6 +1595,22 @@
       })),
     });
 
+    const scopes = scopeCounts();
+    const scopeChips = chipRow({
+      label: "Filter playlist",
+      items: [
+        { value: "all", label: "Semua item", count: scopes.all },
+        { value: "unassigned", label: "Belum di playlist", count: scopes.unassigned },
+        { value: "assigned", label: "Sudah di playlist", count: scopes.assigned },
+      ].map((s) => ({
+        label: s.label,
+        count: s.count,
+        active: state.filters.scope === s.value,
+        onclick: () => updateFilters({ scope: s.value }),
+      })),
+    });
+    scopeChips.classList.add("chips--scope");
+
     const filters = el(
       "div",
       { class: "filters" },
@@ -1554,6 +1624,22 @@
           ],
           state.filters.source,
           (v) => updateFilters({ source: v })
+        )
+      ),
+      filterField(
+        "Kualitas",
+        selectNode(
+          [
+            { value: "all", label: "Semua kualitas" },
+            { value: "2160", label: "4K / 2160p" },
+            { value: "1440", label: "1440p" },
+            { value: "1080", label: "1080p" },
+            { value: "720", label: "720p" },
+            { value: "sd", label: "SD (≤576p)" },
+            { value: "unknown", label: "Tanpa info" },
+          ],
+          state.filters.quality,
+          (v) => updateFilters({ quality: v })
         )
       ),
       filterField(
@@ -1682,6 +1768,7 @@
         actions
       ),
       chipRowNode,
+      scopeChips,
       filters,
       resultbar,
       grid
@@ -5585,7 +5672,7 @@
       : el("div", { class: "detail__poster card__fallback", text: initials(item.title || item.file_name) });
 
     const metaRow = el("div", { class: "detail__meta" });
-    [item.year, runtimeLabel(item.runtime), catLabel(item.content_category), bytesLabel(item.file_size), dateLabel(item.updated_at)]
+    [item.year, runtimeLabel(item.runtime), qualityLabel(item), catLabel(item.content_category), bytesLabel(item.file_size), dateLabel(item.updated_at)]
       .filter(Boolean)
       .forEach((t, i) => {
         if (i > 0) metaRow.append(el("span", { class: "dot", text: "·" }));
@@ -5757,6 +5844,63 @@
       });
     }
 
+    const AUDIT_STATUS_LABEL = {
+      healthy: "Sehat",
+      warning: "Perlu dicek",
+      invalid: "Bermasalah",
+      not_applicable: "Embedded",
+      not_available: "Belum ada subtitle",
+    };
+
+    const subtitleAuditHost = el("div", { class: "detail__audit" });
+
+    function paintAuditResult(result) {
+      if (!result) {
+        subtitleAuditHost.replaceChildren(
+          el("p", { class: "detail__audit-line", text: "Hasil audit tidak tersedia." })
+        );
+        return;
+      }
+      const tracks = Array.isArray(result.tracks) ? result.tracks : [];
+      const nodes = [
+        el(
+          "p",
+          { class: "detail__audit-line" },
+          el("strong", { text: `Audit: ${AUDIT_STATUS_LABEL[result.status] || result.status || "-"}` }),
+          el("span", { text: ` · ${numberLabel(tracks.length)} track` })
+        ),
+      ];
+      for (const track of tracks) {
+        const language = String(track.language || "?").toUpperCase();
+        const source = track.source === "embedded" ? "embedded" : "file";
+        const status = AUDIT_STATUS_LABEL[track.status] || track.status || "-";
+        const issues = Array.isArray(track.issues) && track.issues.length ? ` · ${numberLabel(track.issues.length)} catatan` : "";
+        nodes.push(el("p", { class: "detail__audit-line", text: `${language} · ${source} · ${status}${issues}` }));
+      }
+      subtitleAuditHost.replaceChildren(...nodes);
+    }
+
+    const auditBtn = el("button", {
+      class: "btn btn--ghost btn--sm",
+      type: "button",
+      html: `${ICON.activity}<span>Audit subtitle</span>`,
+      title: "Periksa berkas subtitle item ini tanpa mengubah data",
+      onclick: async (ev) => {
+        const btn = ev.currentTarget;
+        btn.disabled = true;
+        btn.innerHTML = `${ICON.refresh}<span>Mengaudit...</span>`;
+        try {
+          const data = await api("/api/subtitle-quality/audit", jsonBody({ media_ids: [item.id] }));
+          paintAuditResult((data.results || [])[0]);
+        } catch (err) {
+          toast(err.message, "error");
+        } finally {
+          btn.disabled = false;
+          btn.innerHTML = `${ICON.activity}<span>Audit subtitle</span>`;
+        }
+      },
+    });
+
     const enriching = el("button", {
       class: "btn btn--ghost btn--sm",
       type: "button",
@@ -5847,6 +5991,12 @@
                   html: `${ICON.play}<span>Putar</span>`,
                   onclick: () => playItem(item),
                 }),
+                el("a", {
+                  class: "btn btn--ghost",
+                  href: `/api/media/${item.id}/remote-m3u`,
+                  html: `${ICON.download}<span>M3U LAN</span>`,
+                  title: "Unduh M3U remote untuk pemutar di perangkat LAN",
+                }),
                 watchedBtn,
                 buildStars(item)
               )
@@ -5858,10 +6008,12 @@
             el("span", { class: "detail__extra-label", text: "Subtitle" }),
             subtitleAction("id", "Cari subtitle ID"),
             subtitleAction("en", "Cari subtitle EN"),
+            auditBtn,
             el("span", { style: "flex:1 1 auto" }),
             enriching,
             posterBtn
           ),
+          subtitleAuditHost,
           chipsHost,
           addHost,
           curationHost,
@@ -5872,6 +6024,7 @@
             fact("Sutradara", item.director),
             fact("Sumber", item.source_type === "local" ? "Lokal" : item.source_type === "cloud" ? "TorBox Cloud" : item.source_type),
             fact("Ukuran", bytesLabel(item.file_size)),
+            fact("Kualitas", qualityLabel(item)),
             fact("Tahun", item.year),
             fact("Kode", item.code_id),
             fact("Seri", item.series_title),

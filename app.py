@@ -41,7 +41,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DP"  # single source of truth; templates render this
+APP_VERSION = "v1.3DQ"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(

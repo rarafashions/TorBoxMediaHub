@@ -121,6 +121,27 @@ class V2DiscoveryUiTests(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, self.css)
 
+    def test_library_scope_quality_and_item_actions(self):
+        for marker in (
+            'scope: "all"',
+            'quality: "all"',
+            "scopeCounts",
+            "Belum di playlist",
+            "Sudah di playlist",
+            "Semua kualitas",
+            "qualityBucket",
+            "qualityLabel",
+            "/api/subtitle-quality/audit",
+            "Audit subtitle",
+            "remote-m3u",
+            "M3U LAN",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.js)
+        for marker in (".chips--scope", ".detail__audit", ".detail__audit-line"):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.css)
+
     def test_secondary_and_tertiary_text_stay_readable_on_dark_surface(self):
         import re
 

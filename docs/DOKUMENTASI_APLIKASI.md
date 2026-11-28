@@ -1,8 +1,8 @@
 # Dokumentasi Lengkap — TorBox Media Hub
 
-**Versi aplikasi:** `v1.3DP`  
+**Versi aplikasi:** `v1.3DQ`  
 **Status dokumen:** 28 November 2026  
-**Baseline tes:** `python -m pytest tests -q --no-header` → **536 passed, 204 subtests passed**
+**Baseline tes:** `python -m pytest tests -q --no-header` → **537 passed, 219 subtests passed**
 
 Dokumen ini menjelaskan aplikasi secara menyeluruh: fitur, cara menjalankan untuk pengguna baru, konfigurasi, mesin internal, keamanan, batasan, dan pemecahan masalah. Untuk catatan rilis dan keputusan pengembangan, lihat [`CATATAN_VERSI_PENGEMBANGAN.md`](CATATAN_VERSI_PENGEMBANGAN.md). Untuk draf README GitHub, lihat [`README_GITHUB_DRAFT.md`](README_GITHUB_DRAFT.md).
 
@@ -273,7 +273,9 @@ Keduanya memakai API, database, dan mesin yang sama. Route lama tidak diubah; v2
 Filter yang tersedia:
 
 - **Chip kategori**: Semua, General Movie, TV Show, Anime, Donghua, JAV, English Adult, Indonesia Movies, Indo, Uncategorized (sesuai isi DB).
+- **Scope playlist**: Semua item, Belum di playlist, Sudah di playlist (dengan hitungan yang mengikuti filter lain).
 - **Sumber**: semua, TorBox Cloud, lokal.
+- **Kualitas**: semua, 4K/2160p, 1440p, 1080p, 720p, SD (≤576p), tanpa info.
 - **Status tonton**: semua, belum, sudah.
 - **Subtitle**: semua, ada, tanpa.
 - **Cover**: semua, ada, tanpa.
@@ -287,7 +289,7 @@ Aksi:
 - **Pilih** → mode pilih massal; item terpilih bisa ditandai ditonton/belum dan diputar berurutan.
 - **Segarkan** memuat ulang bootstrap tanpa kehilangan posisi overlay.
 - Klik kartu membuka detail.
-- Di UI lama tersedia **Select All/Clear Selection**, scope playlist (Unassigned/In Playlists/All), dan bulk add ke playlist.
+- Di UI lama juga tersedia **Select All/Clear Selection** dan bulk add ke playlist.
 
 Detail media (v2) menampilkan poster, judul, tahun, durasi, rating bintang, status tonton, studio, sutradara, sumber, ukuran, kode JAV, seri/season/episode, status klasifikasi, kategori, playlist, tag, dan nama file.
 
@@ -297,6 +299,8 @@ Aksi detail v2:
 - **Tandai ditonton/belum**.
 - **Rating 1–5 bintang**.
 - **Cari subtitle ID / EN** (per bahasa, tersimpan di `media_subtitles`).
+- **Audit subtitle** per item (`POST /api/subtitle-quality/audit`): status keseluruhan dan tiap track, read-only.
+- **M3U LAN** per item (`/api/media/<id>/remote-m3u`) untuk pemutar di perangkat LAN.
 - **Enrich ulang** metadata.
 - **Coba poster** bila cover gagal.
 - **Tambah/hapus dari playlist**.
