@@ -7,6 +7,7 @@ cache/
 playlists/
 backups/
 logs/
+tests/
 *.db
 *.db-wal
 *.db-shm
