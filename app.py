@@ -39,7 +39,7 @@ from roxxy_module import (
     source_category,
 )
 
-APP_VERSION = "v1.3DB"  # single source of truth; templates render this
+APP_VERSION = "v1.3DD"  # single source of truth; templates render this
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app = Flask(
@@ -889,6 +889,9 @@ _EPISODIC_CATEGORIES = {"tv_show", "anime", "donghua"}
 # Categories that came from a provider, a validated code, or a targeted parser.
 # Only rows whose category is a plain filename guess may be re-filed by the batch.
 _WEAK_CATEGORY_SOURCES = {"", "filename_parser", "uncategorized"}
+# A JAV code parsed from a file name still needs verification; codes stored by a
+# provider are the evidence the JAV surface was built on.
+_JAV_FILENAME_ONLY_SOURCES = {"jav_code_parser"}
 
 
 def _row_category_is_evidence_backed(item: Dict[str, Any]) -> bool:
@@ -936,6 +939,50 @@ def _reclassification_category_change_allowed(
     if old_category in _EPISODIC_CATEGORIES:
         return new_category in _EPISODIC_CATEGORIES
     return False
+
+
+def _preserve_evidence_backed_category(
+    old_category: str,
+    item: Dict[str, Any],
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Record a "category kept" verdict when provider evidence disagrees.
+
+    A batch pass only sees the fields stored in ``media_items``, which are
+    thinner than the provider response that produced the original category: a
+    TMDb episode keeps its show category even when its stripped file name no
+    longer proves an episode. Turning those rows into Needs Review would fill the
+    queue with false alarms, so the stored category is recorded as the verdict
+    instead. Adult surfaces, manifest categories, and unprotected buckets are
+    left to the caller's guards, and a verdict that already agrees passes through.
+    """
+    if not _row_category_is_evidence_backed(item):
+        return result
+    old_category = str(old_category or "uncategorized")
+    if (
+        old_category == "uncategorized"
+        or old_category in _ADULT_CATEGORIES
+        or old_category in _STICKY_MANIFEST_CATEGORIES
+    ):
+        return result
+    status = result.get("classification_status")
+    verdict = result.get("detected_category")
+    if status == "classified" and verdict == old_category:
+        return result
+
+    kept = dict(result)
+    kept["classification_status"] = "classified"
+    kept["detected_category"] = old_category
+    kept["classification_method"] = "kept_stored_category"
+    signals = list(result.get("signals") or []) + [f"stored_category:{old_category}"]
+    if status == "classified" and verdict:
+        signals.append(f"classifier_verdict:{verdict}")
+    kept["signals"] = signals
+    if status != "classified":
+        kept["warnings"] = list(result.get("warnings") or []) + [
+            "Classifier tidak dapat memastikan kategori dari field tersimpan; kategori provider dipertahankan."
+        ]
+    return kept
 
 
 def _get_lan_ip() -> str:
@@ -1491,24 +1538,35 @@ def _classify_pending_worker() -> None:
                 old_category = str(item.get("content_category") or "uncategorized")
                 stored_code = str(item.get("code_id") or "").strip()
                 new_category = result.get("detected_category")
-                if old_category == "jav" and result.get("classification_status") == "classified":
-                    if stored_code and new_category != "jav":
-                        # A validated production code is stronger evidence than a
-                        # second filename read, so keep the JAV surface.
+                if old_category == "jav":
+                    keeps_jav = (
+                        result.get("classification_status") == "classified"
+                        and new_category == "jav"
+                    )
+                    if not keeps_jav:
+                        # The batch has no metadata provider, so it can neither
+                        # confirm nor refute a stored code. A code a provider
+                        # already validated is the evidence that put the row on
+                        # the JAV surface; a code parsed from the file name alone
+                        # still needs a human.
+                        code_source = str(item.get("metadata_source") or "").strip().lower()
+                        trusted_code = stored_code and code_source not in _JAV_FILENAME_ONLY_SOURCES
                         result = dict(result)
-                        result["detected_category"] = "jav"
-                        result["classification_method"] = "stored_jav_code"
-                        result["signals"] = list(result.get("signals") or []) + [
-                            f"stored_jav_code:{stored_code}"
-                        ]
-                    elif not stored_code and new_category != "jav":
-                        result = dict(result)
-                        result["classification_status"] = "needs_review"
-                        result["detected_category"] = None
-                        result["warnings"] = list(result.get("warnings") or []) + [
-                            "JAV tanpa production code terverifikasi; kategori dipertahankan untuk review."
-                        ]
+                        if trusted_code:
+                            result["classification_status"] = "classified"
+                            result["detected_category"] = "jav"
+                            result["classification_method"] = "stored_jav_code"
+                            result["signals"] = list(result.get("signals") or []) + [
+                                f"stored_jav_code:{stored_code}"
+                            ]
+                        else:
+                            result["classification_status"] = "needs_review"
+                            result["detected_category"] = None
+                            result["warnings"] = list(result.get("warnings") or []) + [
+                                "JAV tanpa production code terverifikasi; kategori dipertahankan untuk review."
+                            ]
                 result = _guard_adult_reclassification(item, result)
+                result = _preserve_evidence_backed_category(old_category, item, result)
                 # Record a verdict for every candidate. The category only moves
                 # when the bucket was provisional or an adult/episodic verdict is
                 # provable; provider-canonical titles are never replaced.

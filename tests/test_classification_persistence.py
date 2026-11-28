@@ -63,6 +63,43 @@ class CategoryChangePolicyTests(unittest.TestCase):
         self.assertTrue(self._allowed("english_adult", new="indo", item=roxxy_row))
 
 
+class EvidenceBackedCategoryTests(unittest.TestCase):
+    """A provider category survives a thinner second read."""
+
+    def _preserve(self, old, item, status="needs_review", verdict=None):
+        return app_module._preserve_evidence_backed_category(
+            old, item, {"classification_status": status, "detected_category": verdict}
+        )
+
+    def test_provider_row_gets_a_kept_verdict(self):
+        kept = self._preserve("tv_show", {"metadata_source": "tmdb"})
+        self.assertEqual(kept["classification_status"], "classified")
+        self.assertEqual(kept["detected_category"], "tv_show")
+        self.assertEqual(kept["classification_method"], "kept_stored_category")
+
+    def test_agreeing_verdict_is_left_alone(self):
+        result = {"classification_status": "classified", "detected_category": "tv_show"}
+        self.assertIs(
+            app_module._preserve_evidence_backed_category("tv_show", {"metadata_source": "tmdb"}, result),
+            result,
+        )
+
+    def test_weak_adult_manifest_and_uncategorized_rows_are_untouched(self):
+        weak = {"metadata_source": "filename_parser"}
+        result = {"classification_status": "needs_review", "detected_category": None}
+        for old, item in (
+            ("tv_show", weak),
+            ("english_adult", {"metadata_source": "theporndb"}),
+            ("jav", {"metadata_source": "javdatabase"}),
+            ("indo_movie", {"metadata_source": "roxxy"}),
+            ("uncategorized", {"metadata_source": "tmdb"}),
+        ):
+            self.assertIs(
+                app_module._preserve_evidence_backed_category(old, item, result), result,
+                msg=old,
+            )
+
+
 class ReclassifyWorkerPersistenceTests(unittest.TestCase):
     def _run(self, item, verdict):
         saved = {}
@@ -153,6 +190,103 @@ class ReclassifyWorkerPersistenceTests(unittest.TestCase):
         self.assertEqual(saved["kwargs"]["apply_category"], False)
         self.assertEqual(saved["result"]["classification_status"], "needs_review")
         self.assertIsNone(saved["result"]["detected_category"])
+        self.assertIn("1 needs review", task.finish.call_args.args[0])
+
+    def test_filename_parsed_jav_code_still_needs_verification(self):
+        item = {
+            "id": 509, "file_name": "IMJO-015.mp4", "parent_name": "",
+            "title": "IMJO-015", "normalized_title": "IMJO-015",
+            "content_category": "jav", "has_metadata": 0, "title_is_manual": 0,
+            "metadata_source": "jav_code_parser", "code_id": "IMJO-015",
+            "studio": "", "genres": [], "plot": "", "year": None,
+        }
+        verdict = {
+            "classification_status": "needs_review", "detected_category": None,
+            "normalized_title": "IMJO-015", "classification_method": "unverified_code",
+            "category_confidence": 0, "signals": [],
+        }
+        saved, task = self._run(item, verdict)
+        self.assertEqual(saved["result"]["classification_status"], "needs_review")
+        self.assertEqual(saved["kwargs"]["apply_category"], False)
+        self.assertIn("1 needs review", task.finish.call_args.args[0])
+
+    def test_provider_confirmed_code_pins_jav_even_without_a_fresh_verdict(self):
+        item = {
+            "id": 510, "file_name": "START-672.mp4", "parent_name": "",
+            "title": "START-672", "normalized_title": "START-672",
+            "content_category": "jav", "has_metadata": 1, "title_is_manual": 0,
+            "metadata_source": "javdatabase", "code_id": "START-672",
+            "studio": "", "genres": [], "plot": "", "year": 2024,
+        }
+        verdict = {
+            "classification_status": "needs_review", "detected_category": None,
+            "normalized_title": "START-672", "classification_method": "no_engine_matched",
+            "category_confidence": 0, "signals": [],
+        }
+        saved, task = self._run(item, verdict)
+        self.assertEqual(saved["result"]["classification_status"], "classified")
+        self.assertEqual(saved["result"]["detected_category"], "jav")
+        self.assertEqual(saved["result"]["classification_method"], "stored_jav_code")
+        self.assertEqual(saved["kwargs"]["apply_category"], False)
+        self.assertIn("1 classified", task.finish.call_args.args[0])
+
+    def test_provider_row_records_kept_category_instead_of_false_review(self):
+        # A TMDb episode keeps its show category even when the stripped file name
+        # no longer proves an episode; that must not enter the review queue.
+        item = {
+            "id": 506, "file_name": "Il Signore degli Anelli 3x01 Marnukh ITA.mkv",
+            "parent_name": "", "title": "The Rings of Power", "normalized_title": "The Rings of Power",
+            "content_category": "tv_show", "has_metadata": 1, "title_is_manual": 0,
+            "metadata_source": "tmdb", "code_id": None,
+            "studio": "", "genres": [], "plot": "", "year": 2024,
+        }
+        verdict = {
+            "classification_status": "needs_review", "detected_category": None,
+            "normalized_title": "Il Signore degli Anelli", "classification_method": "filename_parser",
+            "category_confidence": 40, "signals": [],
+        }
+        saved, task = self._run(item, verdict)
+        self.assertEqual(saved["kwargs"]["apply_category"], False)
+        self.assertEqual(saved["kwargs"]["apply_title"], False)
+        self.assertEqual(saved["result"]["classification_status"], "classified")
+        self.assertEqual(saved["result"]["detected_category"], "tv_show")
+        self.assertEqual(saved["result"]["classification_method"], "kept_stored_category")
+        self.assertIn("stored_category:tv_show", saved["result"]["signals"])
+        self.assertIn("1 classified", task.finish.call_args.args[0])
+
+    def test_provider_row_with_different_verdict_keeps_its_category(self):
+        item = {
+            "id": 507, "file_name": "Show.S01E01.mkv", "parent_name": "",
+            "title": "Show", "normalized_title": "Show",
+            "content_category": "tv_show", "has_metadata": 1, "title_is_manual": 0,
+            "metadata_source": "anilist", "code_id": None,
+            "studio": "", "genres": [], "plot": "", "year": 2023,
+        }
+        verdict = {
+            "classification_status": "classified", "detected_category": "general_movie",
+            "normalized_title": "Show", "classification_method": "title_plus_year",
+            "category_confidence": 82, "signals": [],
+        }
+        saved, task = self._run(item, verdict)
+        self.assertEqual(saved["kwargs"]["apply_category"], False)
+        self.assertEqual(saved["result"]["detected_category"], "tv_show")
+        self.assertIn("classifier_verdict:general_movie", saved["result"]["signals"])
+
+    def test_filename_only_row_still_needs_review_when_unprovable(self):
+        item = {
+            "id": 508, "file_name": "unknown-scene.mp4", "parent_name": "",
+            "title": "Unknown Scene", "normalized_title": None,
+            "content_category": "general_movie", "has_metadata": 0, "title_is_manual": 0,
+            "metadata_source": "filename_parser", "code_id": None,
+            "studio": "", "genres": [], "plot": "", "year": None,
+        }
+        verdict = {
+            "classification_status": "needs_review", "detected_category": None,
+            "normalized_title": "Unknown Scene", "classification_method": "filename_parser",
+            "category_confidence": 30, "signals": [],
+        }
+        saved, task = self._run(item, verdict)
+        self.assertEqual(saved["result"]["classification_status"], "needs_review")
         self.assertIn("1 needs review", task.finish.call_args.args[0])
 
     def test_manifest_category_is_kept_and_flagged_for_review(self):
